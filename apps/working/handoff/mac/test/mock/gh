@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# pickup.sh のテスト用。呼ばれた引数を記録し、$STATE の JSON を読み書きする。
+set -euo pipefail
+printf 'gh %s\n' "$*" >>"$STATE/calls"
+case "$1 $2" in
+"search issues") cat "$STATE/issues.json" ;;
+"issue edit")
+	number="$3"
+	shift 3
+	repo="" label=""
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		--repo) repo="$2" ;;
+		--add-label) label="$2" ;;
+		esac
+		shift
+	done
+	jq --argjson n "$number" --arg repo "$repo" --arg label "$label" '
+		map(if .number == $n and .repository.nameWithOwner == $repo
+		    then .labels += [{name: $label}] else . end)' \
+		"$STATE/issues.json" >"$STATE/issues.json.tmp"
+	mv "$STATE/issues.json.tmp" "$STATE/issues.json"
+	;;
+"issue comment" | "label create") ;;
+*)
+	echo "mock gh: unexpected $*" >&2
+	exit 1
+	;;
+esac

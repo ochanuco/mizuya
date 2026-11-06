@@ -8,21 +8,14 @@
 		"node": ">=24"
 	},
 	"scripts": {
-		"postinstall": "wrangler types",
-		"dev": "wrangler dev",
-		"build": "wrangler deploy --dry-run --outdir dist",
-		"typecheck": "tsc",
+		"build": "pnpm -r --if-present run build",
+		"typecheck": "pnpm -r --if-present run typecheck",
 		"lint": "biome check .",
-		"test": "vitest run",
+		"test": "pnpm -r --if-present run test",
 		"format": "biome format --write ."
-	},
-	"dependencies": {
-		"valibot": "^1.5.0"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.6.5",
-		"typescript": "^7.0.2",
-		"vitest": "^5.0.0",
-		"wrangler": "^4.151.0"
+		"typescript": "^7.0.2"
 	}
 }

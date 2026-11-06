@@ -6,6 +6,13 @@ run-name: deploy mizuya @ ${{ inputs.ref || github.sha }}
 on:
   push:
     branches: [main]
+    paths:
+      - apps/worker/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - .github/deploy/**
+      - .github/workflows/deploy.yml
   workflow_dispatch:
     inputs:
       ref:
@@ -37,5 +44,5 @@ jobs:
       ref: ${{ needs.plan.outputs.sha }}
       approval-environment: ${{ needs.plan.outputs.approval-environment }}
       op-env-file: .github/deploy/production.env.op
-      run: scripts/deploy.sh production
+      run: apps/worker/scripts/deploy.sh production
     secrets: inherit

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# 使い方: scripts/deploy.sh production
+# 使い方: apps/worker/scripts/deploy.sh production
 # CLOUDFLARE_API_TOKEN と Worker の secret は呼び出し側（deploy workflow の op run）が環境変数で渡す。
 # secret は毎回すべて反映する。argv に載せないよう --secrets-file で渡す。
 set -euo pipefail
 
 if [ "${1:-}" != "production" ]; then
-  echo "usage: scripts/deploy.sh production" >&2
+  echo "usage: apps/worker/scripts/deploy.sh production" >&2
   exit 2
 fi
 

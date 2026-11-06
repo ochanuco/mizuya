@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# pickup.sh のテスト用。$STATE/orca-down があれば Orca が止まっている扱いにする。
+set -euo pipefail
+printf 'orca %s\n' "$*" >>"$STATE/calls"
+case "$1 $2" in
+"status --json")
+	[ ! -e "$STATE/orca-down" ] || exit 1
+	echo '{"ok":true,"result":{"runtime":{"reachable":true}}}'
+	;;
+"repo list") cat "$STATE/repos.json" ;;
+"worktree list") cat "$STATE/worktrees.json" ;;
+"worktree create")
+	shift 2
+	branch="" issue=""
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		--branch) branch="$2" ;;
+		--issue) issue="$2" ;;
+		esac
+		shift
+	done
+	jq --arg ref "refs/heads/$branch" --argjson n "$issue" '
+		.result.worktrees += [{path: "/tmp/wt", branch: $ref, linkedIssue: $n}]' \
+		"$STATE/worktrees.json" >"$STATE/worktrees.json.tmp"
+	mv "$STATE/worktrees.json.tmp" "$STATE/worktrees.json"
+	echo '{"ok":true}'
+	;;
+*)
+	echo "mock orca: unexpected $*" >&2
+	exit 1
+	;;
+esac

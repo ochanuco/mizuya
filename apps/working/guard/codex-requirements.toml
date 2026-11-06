@@ -1,0 +1,20 @@
+# 席の Codex CLI の managed な要件。/etc/codex/requirements.toml に置き、root の持ち物にする。
+# Claude CLI の managed-settings.json と同じ hook を通し、席の Codex が自分で外せないようにする。
+allow_managed_hooks_only = true
+
+# 秘密情報の読み出しと、秘密情報や許可の記録の場所への書き込みを止める
+[[hooks.PreToolUse]]
+matcher = "*"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "/usr/local/bin/node /opt/yunomi-guard/hook.ts"
+timeout = 30
+
+# 手元のリポジトリを含む関連リポジトリセットを出す
+[[hooks.SessionStart]]
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "/usr/local/bin/node /opt/yunomi-repo-map/hook.ts"
+timeout = 30

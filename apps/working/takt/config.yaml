@@ -1,0 +1,9 @@
+# claude-sdk は claude のログイン（サブスクリプション）をそのまま使い、API キーが要らない。
+# claude-headless はプロンプトを 1 つの引数で渡すので、step が進むと Linux の引数の上限を超えて spawn E2BIG で止まる。
+provider: claude-sdk
+model: sonnet
+language: ja
+# リポジトリの .takt/config.yaml に書いたテストのコマンドを、claude ではなく TAKT が実行する。
+# 席の claude は Bash の承認に答えられないので、テストは TAKT に回させる。
+workflow_command_gates:
+  custom_scripts: true

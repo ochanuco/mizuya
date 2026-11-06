@@ -2,7 +2,12 @@
 
 水屋（みずや）は、茶室の裏にある準備の場所。表で話す yunomi に対して、mizuya は裏で仕事と運用を受け持つ窓口で、人が操作し許可する仕組みを置く。
 
-いまの機能は GitHub Actions のデプロイ承認だけ。Environment の required reviewers で止まった run を Discord に知らせ、ボタンで承認・却下できるようにする。
+機能は 2 つあり、それぞれ `apps/` の下に置く。
+
+| 場所 | 中身 |
+| --- | --- |
+| `apps/worker` | GitHub Actions のデプロイ承認。Environment の required reviewers で止まった run を Discord に知らせ、ボタンで承認・却下できるようにする Cloudflare Worker。この README の以下の節はこれの説明 |
+| `apps/working` | Working（仕事）。Discord の仕事フォーラムの依頼を Orca の席で Claude CLI と Codex CLI に作業させる、docker01 のコンテナ。記憶と人格は yunomi のものを使う。説明は [apps/working/README.md](apps/working/README.md) |
 
 ## 動き
 
@@ -21,12 +26,14 @@
 
 - Cloudflare Worker `mizuya`。chabatake が管理する独自ドメインだけで受け、`workers.dev` は閉じている。常時接続は持たない（Discord は HTTP interactions）。
 - ストレージは使わない。
-- `src/index.ts` が経路の振り分け、`src/webhook.ts` が GitHub の webhook、`src/interactions.ts` が Discord のボタン、`src/review.ts` がメッセージの組み立てと、メッセージから対象を読む処理、`src/signature.ts` が署名検証、`src/github.ts` と `src/discord.ts` が外部 API。
+- `apps/worker/src/` の `index.ts` が経路の振り分け、`webhook.ts` が GitHub の webhook、`interactions.ts` が Discord のボタン、`review.ts` がメッセージの組み立てと、メッセージから対象を読む処理、`signature.ts` が署名検証、`github.ts` と `discord.ts` が外部 API。
 
 ## 開発
 
+repo の root で、pnpm workspace の全 app に対して実行する。
+
 ```sh
-pnpm install          # postinstall で wrangler types を生成する
+pnpm install          # apps/worker の postinstall で wrangler types を生成する
 pnpm run typecheck
 pnpm run lint
 pnpm test
@@ -35,9 +42,9 @@ pnpm run build        # wrangler deploy --dry-run
 
 ## デプロイ
 
-main への push で GitHub Actions の `deploy` workflow が出す（ochanuco/.github の `deploy-plan.yml` と `deploy.yml`）。前回の記録がない・ロールバックのときだけ Environment `production-approval` の承認で止まる。手動実行（入力 `ref` は main か main 上の SHA）はロールバック用。
+main への push で `apps/worker` などが変わると、GitHub Actions の `deploy` workflow が出す（ochanuco/.github の `deploy-plan.yml` と `deploy.yml`）。前回の記録がない・ロールバックのときだけ Environment `production-approval` の承認で止まる。手動実行（入力 `ref` は main か main 上の SHA）はロールバック用。
 
-認証情報は Environment `production` の secret `OP_SA_DEPLOY`（1Password の service account）で、`.github/deploy/production.env.op` の参照を `op run` が解決する。`scripts/deploy.sh` が secret がすべてそろっていることを確かめ、Worker に反映して `wrangler deploy` し、`/health` を確かめる。
+認証情報は Environment `production` の secret `OP_SA_DEPLOY`（1Password の service account）で、`.github/deploy/production.env.op` の参照を `op run` が解決する。`apps/worker/scripts/deploy.sh` が secret がすべてそろっていることを確かめ、Worker に反映して `wrangler deploy` し、`/health` を確かめる。
 
 ## secret
 

@@ -1,0 +1,8 @@
+{
+	"name": "@mizuya/working-handoff",
+	"version": "0.0.0",
+	"private": true,
+	"scripts": {
+		"test": "bash mac/test/run.sh"
+	}
+}
