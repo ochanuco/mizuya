@@ -19,7 +19,7 @@
 
 ## 構成
 
-- Cloudflare Worker `mizuya`。独自ドメイン `mizuya.chanu.co` だけで受け、`workers.dev` は閉じている。常時接続は持たない（Discord は HTTP interactions）。
+- Cloudflare Worker `mizuya`。chabatake が管理する独自ドメインだけで受け、`workers.dev` は閉じている。常時接続は持たない（Discord は HTTP interactions）。
 - ストレージは使わない。
 - `src/index.ts` が経路の振り分け、`src/webhook.ts` が GitHub の webhook、`src/interactions.ts` が Discord のボタン、`src/review.ts` がメッセージの組み立てと、メッセージから対象を読む処理、`src/signature.ts` が署名検証、`src/github.ts` と `src/discord.ts` が外部 API。
 
@@ -56,9 +56,9 @@ Worker の secret はすべて 1Password の vault `gh-deploy` に置き、デ�
 ## 人がやるセットアップ
 
 1. Discord Developer Portal で application「mizuya」を作り、bot を有効にして token を発行する。General Information の Public Key と合わせて 1Password に登録する。
-2. Interactions Endpoint URL に `https://mizuya.chanu.co/discord/interactions` を設定する。Discord は保存時に PING を送るので、Worker のデプロイ後に行う。
+2. Interactions Endpoint URL に `<Worker のドメイン>/discord/interactions` を設定する。Discord は保存時に PING を送るので、Worker のデプロイ後に行う。
 3. サーバーに承認用チャンネルを作り、mizuya bot を招待して、そのチャンネルで View Channel・Send Messages・Embed Links・Read Message History を許す。Read Message History は、二重投稿の確認と GitHub 側で決着したメッセージを探すのに使う。
 4. GitHub で fine-grained PAT を発行する（required reviewer 本人のアカウント。対象 repo の Deployments: write と Actions: read）。
 5. 上の secret をすべて 1Password に登録する。
 
-GitHub の webhook（URL `https://mizuya.chanu.co/github/webhook`、イベント `deployment_review`、content type json）と、デプロイ用の Environment、DNS は `ochanuco/chabatake` が管理する。webhook の secret は `GITHUB_WEBHOOK_SECRET` と同じ値にする。
+GitHub の webhook（URL `<Worker のドメイン>/github/webhook`、イベント `deployment_review`、content type json）と、デプロイ用の Environment、DNS は `ochanuco/chabatake` が管理する。webhook の secret は `GITHUB_WEBHOOK_SECRET` と同じ値にする。
