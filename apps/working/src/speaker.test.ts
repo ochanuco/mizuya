@@ -20,7 +20,11 @@ const json = (body: unknown, status = 200) =>
 type Call = { method: string; url: string; body: unknown };
 
 /** Discord の API の代わり。チャンネル、webhook、送ったメッセージを手元に持つ。 */
-const fakeApi = (hooks: Record<string, unknown[]> = {}) => {
+const fakeApi = (
+	hooks: Record<string, unknown[]> = {},
+	/** この webhook への書き込みを、消された webhook として断る。 */
+	gone = new Set<string>(),
+) => {
 	const calls: Call[] = [];
 	let n = 0;
 	const fetch = vi.fn(
@@ -52,6 +56,10 @@ const fakeApi = (hooks: Record<string, unknown[]> = {}) => {
 					name: WEBHOOK_NAME,
 					application_id: APP,
 				});
+			}
+			const hookId = /^\/webhooks\/([^/]+)\//.exec(path)?.[1] ?? "";
+			if (path.startsWith("/webhooks/") && gone.has(hookId)) {
+				return json({ code: 10015, message: "Unknown Webhook" }, 404);
 			}
 			if (path.startsWith("/webhooks/") && method === "POST") {
 				const thread = new URL(url).searchParams.get("thread_id");
@@ -173,6 +181,26 @@ describe("席の話し手", () => {
 		await speaker.setTags(THREAD, ["tag1"]);
 		expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
 			`PATCH https://discord.com/api/v10/channels/${THREAD}`,
+		]);
+	});
+
+	it("書けなかった webhook は忘れ、次は引き直して作る", async () => {
+		const listed = [
+			{ id: "old", token: "tk", name: WEBHOOK_NAME, application_id: APP },
+		];
+		const { calls, speaker } = fakeApi({ [TEXT]: listed }, new Set(["old"]));
+		expect((await speaker.send(TEXT, "a")).ok).toBe(false);
+		// Discord の画面で消されたので、一覧にももう出ない
+		listed.length = 0;
+		calls.length = 0;
+		expect(await speaker.send(TEXT, "b")).toEqual({
+			ok: true,
+			value: { messageIds: ["m1"] },
+		});
+		expect(calls.map((c) => `${c.method} ${c.url.split("?")[0]}`)).toEqual([
+			`GET https://discord.com/api/v10/channels/${TEXT}/webhooks`,
+			`POST https://discord.com/api/v10/channels/${TEXT}/webhooks`,
+			`POST https://discord.com/api/v10/webhooks/hook-${TEXT}/new-token`,
 		]);
 	});
 });

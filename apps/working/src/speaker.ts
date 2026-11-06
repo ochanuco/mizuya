@@ -5,6 +5,7 @@ import {
 	MESSAGE_LIMIT,
 	splitMessage,
 	type Webhook,
+	type WebhookMessage,
 } from "./discord-rest.ts";
 import {
 	type DomainError,
@@ -31,6 +32,8 @@ type HookTarget = {
 export type WebhookDirectory = {
 	/** チャンネルに書くための webhook と、スレッドなら thread_id。 */
 	targetOf: (channelId: string) => Promise<Result<HookTarget, DomainError>>;
+	/** 書けなかった webhook を忘れ、次は一覧から引き直すか作り直す。Discord の画面で消されたときに戻れるようにする。 */
+	forget: (webhookId: string) => void;
 };
 
 /**
@@ -93,6 +96,11 @@ export const createWebhookDirectory = (
 				threadId: parent.value === null ? null : channelId,
 			});
 		},
+		forget: (webhookId) => {
+			for (const [channelId, hook] of hooks) {
+				if (hook.id === webhookId) hooks.delete(channelId);
+			}
+		},
 	};
 };
 
@@ -112,6 +120,18 @@ export const createSpeaker = (
 	who: SpeakerIdentity,
 ): DiscordApi => {
 	const named = { username: who.name, avatarUrl: who.avatarUrl };
+	const execute = async (
+		target: HookTarget,
+		message: WebhookMessage,
+	): Promise<Result<{ id: string; channelId: string }, DomainError>> => {
+		const r = await rest.executeWebhook(
+			target.webhook,
+			target.threadId,
+			message,
+		);
+		if (!r.ok) hooks.forget(target.webhook.id);
+		return r;
+	};
 	const prefixed = (buttons: readonly Button[] = []) =>
 		buttons.map((b) => ({
 			...b,
@@ -130,7 +150,7 @@ export const createSpeaker = (
 		createForumPost: async (forumId, post) => {
 			const hook = await hooks.targetOf(forumId);
 			if (!hook.ok) return hook;
-			const r = await rest.executeWebhook(hook.value.webhook, null, {
+			const r = await execute(hook.value, {
 				...named,
 				content: post.content,
 				threadName: post.name,
@@ -147,15 +167,11 @@ export const createSpeaker = (
 			const messageIds: string[] = [];
 			for (const [i, chunk] of chunks.entries()) {
 				const last = i === chunks.length - 1;
-				const r = await rest.executeWebhook(
-					hook.value.webhook,
-					hook.value.threadId,
-					{
-						...named,
-						content: chunk,
-						...(last ? { files, buttons: prefixed(buttons) } : {}),
-					},
-				);
+				const r = await execute(hook.value, {
+					...named,
+					content: chunk,
+					...(last ? { files, buttons: prefixed(buttons) } : {}),
+				});
 				if (!r.ok) return r;
 				messageIds.push(r.value.id);
 			}
@@ -164,22 +180,23 @@ export const createSpeaker = (
 		createMessage: async (channelId, content) => {
 			const hook = await hooks.targetOf(channelId);
 			if (!hook.ok) return hook;
-			const r = await rest.executeWebhook(
-				hook.value.webhook,
-				hook.value.threadId,
-				{ ...named, content: content.slice(0, MESSAGE_LIMIT) },
-			);
+			const r = await execute(hook.value, {
+				...named,
+				content: content.slice(0, MESSAGE_LIMIT),
+			});
 			return r.ok ? ok({ id: r.value.id }) : r;
 		},
 		editMessage: async (channelId, messageId, content) => {
 			const hook = await hooks.targetOf(channelId);
 			if (!hook.ok) return hook;
-			return rest.editWebhookMessage(
+			const r = await rest.editWebhookMessage(
 				hook.value.webhook,
 				hook.value.threadId,
 				messageId,
 				content,
 			);
+			if (!r.ok) hooks.forget(hook.value.webhook.id);
+			return r;
 		},
 	};
 };
