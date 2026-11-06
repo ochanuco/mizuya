@@ -8,7 +8,7 @@ matcher = "*"
 
 [[hooks.PreToolUse.hooks]]
 type = "command"
-command = "/usr/local/bin/node /opt/yunomi-guard/hook.ts"
+command = "/usr/local/bin/node /opt/mizuya-guard/hook.ts"
 timeout = 30
 
 # 手元のリポジトリを含む関連リポジトリセットを出す
@@ -16,5 +16,5 @@ timeout = 30
 
 [[hooks.SessionStart.hooks]]
 type = "command"
-command = "/usr/local/bin/node /opt/yunomi-repo-map/hook.ts"
+command = "/usr/local/bin/node /opt/mizuya-repo-map/hook.ts"
 timeout = 30

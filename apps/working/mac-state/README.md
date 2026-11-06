@@ -7,7 +7,7 @@ Mac の Orca の席の状態（worktree と agent の一覧）を、Working の�
 | ファイル                               | 役割                                                                                               |
 | -------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | `send.sh`                              | `orca worktree ps --json` を要約して送る。Orca が起動していなければ何もしない                      |
-| `local.yunomi.working-mac-state.plist` | launchd の plist の雛形。ログイン時と、その後 10 分おきに走る                                      |
+| `local.mizuya.working-mac-state.plist` | launchd の plist の雛形。ログイン時と、その後 10 分おきに走る                                      |
 | `test/run.sh`                          | `orca`・`curl` をモックにした `send.sh` のテスト（`pnpm --filter @mizuya/working-mac-state test`） |
 
 ## 送るもの
@@ -56,16 +56,16 @@ worktree ごとに、repo、ブランチ、表示名、状態、開いている�
        -e "s|__URL__|<受付の URL>|" \
        -e "s|__TOKEN_FILE__|<トークンのファイル>|" \
        -e "s|__LOG__|<ログのパス>|g" \
-       apps/working/mac-state/local.yunomi.working-mac-state.plist \
-       > ~/Library/LaunchAgents/local.yunomi.working-mac-state.plist
-   plutil -lint ~/Library/LaunchAgents/local.yunomi.working-mac-state.plist
+       apps/working/mac-state/local.mizuya.working-mac-state.plist \
+       > ~/Library/LaunchAgents/local.mizuya.working-mac-state.plist
+   plutil -lint ~/Library/LaunchAgents/local.mizuya.working-mac-state.plist
    ```
 
 4. 読み込む。読み込んだ時点で 1 回走る。
 
    ```sh
-   launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/local.yunomi.working-mac-state.plist
-   launchctl print "gui/$(id -u)/local.yunomi.working-mac-state" | grep -E 'state|last exit'
+   launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/local.mizuya.working-mac-state.plist
+   launchctl print "gui/$(id -u)/local.mizuya.working-mac-state" | grep -E 'state|last exit'
    ```
 
-すぐに走らせ直すときは `launchctl kickstart "gui/$(id -u)/local.yunomi.working-mac-state"`、外すときは `launchctl bootout "gui/$(id -u)/local.yunomi.working-mac-state"` を使う。
+すぐに走らせ直すときは `launchctl kickstart "gui/$(id -u)/local.mizuya.working-mac-state"`、外すときは `launchctl bootout "gui/$(id -u)/local.mizuya.working-mac-state"` を使う。

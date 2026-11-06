@@ -17,7 +17,7 @@ const setup = () => {
 			partner_id: "yukarin",
 		}),
 	);
-	return { YUNOMI_STATE_DIR: dir };
+	return { MIZUYA_STATE_DIR: dir };
 };
 
 const respond = (status: number, body: unknown) =>
@@ -185,7 +185,7 @@ describe("runMemoryCli", () => {
 	});
 
 	it("watch-add を席の中で呼ぶと、その席の投稿を新着を書く先として送る", async () => {
-		const env = { ...setup(), YUNOMI_SEATS_DIR: "/seats" };
+		const env = { ...setup(), MIZUYA_SEATS_DIR: "/seats" };
 		const f = respond(201, { id: "w1" });
 		await runMemoryCli(
 			["watch-add", "--query", "中古の万年筆"],
@@ -322,7 +322,7 @@ describe("runMemoryCli", () => {
 		const f = respond(200, {});
 		const out = await runMemoryCli(
 			["read"],
-			{ YUNOMI_STATE_DIR: tempDir() },
+			{ MIZUYA_STATE_DIR: tempDir() },
 			f as typeof fetch,
 		);
 		expect(out.code).toBe(1);

@@ -191,7 +191,7 @@ const runHook = (stateDir: string | null, cwd: string) =>
 		input: JSON.stringify({ hook_event_name: "SessionStart", cwd }),
 		env: {
 			PATH: process.env.PATH ?? "",
-			...(stateDir && { YUNOMI_STATE_DIR: stateDir }),
+			...(stateDir && { MIZUYA_STATE_DIR: stateDir }),
 		},
 		encoding: "utf8",
 		timeout: 30_000,

@@ -227,7 +227,7 @@ export const codexAppServerCall = (opts: {
 		send({
 			id: 1,
 			method: "initialize",
-			params: { clientInfo: { name: "yunomi-working", version: "0" } },
+			params: { clientInfo: { name: "mizuya-working", version: "0" } },
 		});
 	});
 

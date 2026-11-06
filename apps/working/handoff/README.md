@@ -15,7 +15,7 @@ Working のコンテナで続けられない作業を、Mac が起きたとき�
 | `prompt.md`                              | Working の CLI に渡す指示文の断片。引き継ぐときの手順（push、label の作成、issue の作成）を書く。渡すときは後ろに `issue-template.md` を続ける |
 | `issue-template.md`                      | 申し送り issue の本文の雛形。対象リポジトリ、作業ブランチ、何をしたか、どこで詰まったか、次に何をするか                                        |
 | `mac/pickup.sh`                          | Mac 側で申し送りを集めて Orca に引き継ぐスクリプト                                                                                             |
-| `mac/local.yunomi.working-handoff.plist` | launchd の plist の雛形                                                                                                                        |
+| `mac/local.mizuya.working-handoff.plist` | launchd の plist の雛形                                                                                                                        |
 | `mac/test/run.sh`                        | `gh`・`orca`・`git` をモックにした `pickup.sh` のテスト（`pnpm --filter @mizuya/working-handoff test`）                                        |
 
 ## 引き継ぎの約束
@@ -79,16 +79,16 @@ Orca の repo は、`orca repo list` の `gitRemoteIdentity.canonicalKey`（`git
    sed -e "s|__REPO__|<checkout のパス>|" \
        -e "s|__PATH__|<PATH>|" \
        -e "s|__LOG__|<ログのパス>|g" \
-       apps/working/handoff/mac/local.yunomi.working-handoff.plist \
-       > ~/Library/LaunchAgents/local.yunomi.working-handoff.plist
-   plutil -lint ~/Library/LaunchAgents/local.yunomi.working-handoff.plist
+       apps/working/handoff/mac/local.mizuya.working-handoff.plist \
+       > ~/Library/LaunchAgents/local.mizuya.working-handoff.plist
+   plutil -lint ~/Library/LaunchAgents/local.mizuya.working-handoff.plist
    ```
 
 3. 読み込む。読み込んだ時点で 1 回走る。
 
    ```sh
-   launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/local.yunomi.working-handoff.plist
-   launchctl print "gui/$(id -u)/local.yunomi.working-handoff" | grep -E 'state|last exit'
+   launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/local.mizuya.working-handoff.plist
+   launchctl print "gui/$(id -u)/local.mizuya.working-handoff" | grep -E 'state|last exit'
    ```
 
-すぐに走らせ直すときは `launchctl kickstart "gui/$(id -u)/local.yunomi.working-handoff"`、外すときは `launchctl bootout "gui/$(id -u)/local.yunomi.working-handoff"` を使う。
+すぐに走らせ直すときは `launchctl kickstart "gui/$(id -u)/local.mizuya.working-handoff"`、外すときは `launchctl bootout "gui/$(id -u)/local.mizuya.working-handoff"` を使う。

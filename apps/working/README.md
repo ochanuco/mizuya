@@ -15,8 +15,8 @@ Working（仕事）を受け持つコンテナ。`orca serve`、Claude CLI、Cod
 | `src/`                          | Working 受付（`@mizuya/working`）。gateway から envelope を受け、Discord REST と Orca の席で作業する                                                                                                                         |
 | `src/memory-cli/`               | 記憶の道具 `yunomi-memory`。Worker の Working の記憶の口を読み書きする。node の組み込みだけで書き、`/opt/yunomi-memory/` に置いて node で直接動かす                                                                          |
 | `mac-state/`                    | Mac から Orca の席の状態を送るスクリプトと launchd の plist の雛形（[mac-state/README.md](mac-state/README.md)）                                                                                                             |
-| `src/guard/`                    | Claude CLI の PreToolUse hook。道具を使う前に、聞かずに実行してよいかを決める。node の組み込みだけで書き、`/opt/yunomi-guard/` に置いて node で直接動かす                                                                    |
-| `src/repo-map/`                 | 受付が chabatake の `repo-map.yaml` を取って `STATE_DIR` に写しを置く処理と、席の Claude の SessionStart hook。hook は node の組み込みだけで書き、`/opt/yunomi-repo-map/` に置いて node で直接動かす                         |
+| `src/guard/`                    | Claude CLI の PreToolUse hook。道具を使う前に、聞かずに実行してよいかを決める。node の組み込みだけで書き、`/opt/mizuya-guard/` に置いて node で直接動かす                                                                    |
+| `src/repo-map/`                 | 受付が chabatake の `repo-map.yaml` を取って `STATE_DIR` に写しを置く処理と、席の Claude の SessionStart hook。hook は node の組み込みだけで書き、`/opt/mizuya-repo-map/` に置いて node で直接動かす                         |
 | `guard/managed-settings.json`   | hook を登録する Claude CLI の managed settings。`/etc/claude-code/` に置く                                                                                                                                                   |
 | `guard/codex-requirements.toml` | 同じ hook を登録する Codex CLI の managed な要件。`/etc/codex/requirements.toml` に置く                                                                                                                                      |
 | `start.sh`                      | コンテナの entrypoint。受付と、引数で渡したコマンド（`orca-ide serve …`）を並べて動かし、どちらかが終わればコンテナを終わらせる                                                                                              |
@@ -29,11 +29,11 @@ Orca の Linux 版は GitHub Releases（`stablyai/orca`）の `orca-ide_<版>_<a
 
 | volume                  | マウント先             | 残るもの                                                                                                                                                                                                                                                                                                              |
 | ----------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `yunomi-working-claude` | `/home/worker/.claude` | Claude CLI のログイン情報（`.credentials.json`）、設定（`.claude.json`）、セッション（`projects/`）                                                                                                                                                                                                                   |
-| `yunomi-working-codex`  | `/home/worker/.codex`  | Codex CLI のログイン情報（`auth.json`）、設定（`config.toml`）、会話（`sessions/`）                                                                                                                                                                                                                                   |
-| `yunomi-working-orca`   | `/home/worker/.config` | orcad の本体と状態、pairing 済みの端末                                                                                                                                                                                                                                                                                |
-| `yunomi-working-state`  | `/home/worker/state`   | フォーラム投稿と席の対応、Orca の Run と受付の端末（`seats.json`）、許可を待っている操作（`approvals.json`）、止めた操作と許可の記録（`guard/`）、最後に届いた Mac の席の状態（`mac-state.json`）、活動ログの記録（`activity-log.jsonl`・`activity-log-state.json`）、記憶の口の接続情報（`memory-credentials.json`） |
-| `yunomi-working-work`   | `/home/worker/work`    | 席の元にする空の git リポジトリ（`seats/`）と、席の worktree（`orca/workspaces/seats/seat-<投稿の ID>/`）。席の Claude はその中に clone する。mise が入れた道具（`.mise/`）、pnpm の store（`.pnpm-store/`）、uv のキャッシュと Python（`.cache/uv/`・`.uv/`）                                                        |
+| `mizuya-working-claude` | `/home/worker/.claude` | Claude CLI のログイン情報（`.credentials.json`）、設定（`.claude.json`）、セッション（`projects/`）                                                                                                                                                                                                                   |
+| `mizuya-working-codex`  | `/home/worker/.codex`  | Codex CLI のログイン情報（`auth.json`）、設定（`config.toml`）、会話（`sessions/`）                                                                                                                                                                                                                                   |
+| `mizuya-working-orca`   | `/home/worker/.config` | orcad の本体と状態、pairing 済みの端末                                                                                                                                                                                                                                                                                |
+| `mizuya-working-state`  | `/home/worker/state`   | フォーラム投稿と席の対応、Orca の Run と受付の端末（`seats.json`）、許可を待っている操作（`approvals.json`）、止めた操作と許可の記録（`guard/`）、最後に届いた Mac の席の状態（`mac-state.json`）、活動ログの記録（`activity-log.jsonl`・`activity-log-state.json`）、記憶の口の接続情報（`memory-credentials.json`） |
+| `mizuya-working-work`   | `/home/worker/work`    | 席の元にする空の git リポジトリ（`seats/`）と、席の worktree（`orca/workspaces/seats/seat-<投稿の ID>/`）。席の Claude はその中に clone する。mise が入れた道具（`.mise/`）、pnpm の store（`.pnpm-store/`）、uv のキャッシュと Python（`.cache/uv/`・`.uv/`）                                                        |
 
 `CLAUDE_CONFIG_DIR` を `~/.claude` に向けているので、通常は `~/.claude.json` に置かれる設定も volume に入る。Orca は worktree を `~/orca/workspaces` に作るので、`~/orca` は `~/work/orca` への symlink にしてある。
 
@@ -129,7 +129,7 @@ gateway が仕事カテゴリの発言と、bot のメッセージに付けた�
 
 - `out/` の外のパス（絶対パス、`..` で外に出るもの）と、実体が worktree の `out/` の外にあるシンボリックリンクは付けない。
 - Discord の上限（1 件に 10 個、1 ファイル 10 MB、1 件の合計 24 MB）を超えるもの、無いファイル、取れなかった画像は付けず、本文の最後に「添付できなかったもの」として理由と一緒に書く。同じ名前のファイルには番号を付ける。
-- chimera は Cloudflare Access の後ろにある。受付は `CHIMERA_ACCESS_CLIENT_ID` / `CHIMERA_ACCESS_CLIENT_SECRET` を `CF-Access-Client-Id` / `CF-Access-Client-Secret` に載せ、User-Agent（`yunomi-working/1.0`）を明示して取る。転送（Access のログイン画面）や画像でない応答は失敗として扱う。`CHIMERA_URL` と service token のどれかが欠けていれば、`chimera:` の行は「受付に chimera の設定が無い」と書く。
+- chimera は Cloudflare Access の後ろにある。受付は `CHIMERA_ACCESS_CLIENT_ID` / `CHIMERA_ACCESS_CLIENT_SECRET` を `CF-Access-Client-Id` / `CF-Access-Client-Secret` に載せ、User-Agent（`mizuya-working/1.0`）を明示して取る。転送（Access のログイン画面）や画像でない応答は失敗として扱う。`CHIMERA_URL` と service token のどれかが欠けていれば、`chimera:` の行は「受付に chimera の設定が無い」と書く。
 - 使い方は `WORKING_INSTRUCTIONS` に書いてある（chimera で描いたら short_id を返事に書く）。
 
 ### 席の Claude の権限
@@ -146,7 +146,7 @@ managed settings（`/etc/claude-code/managed-settings.json`、root の持ち物�
 
 hook は席の場所（`CLAUDE_PROJECT_DIR`）で、止めた操作の紐づけ先をその投稿にする。
 
-席の Claude は `orca-ide serve` の環境変数を受け継ぐ。start.sh は `seat-env.sh` で、`HOME`・`PATH`・`GH_TOKEN`・`GIT_AUTHOR_*` / `GIT_COMMITTER_*` などと、hook が使う `YUNOMI_STATE_DIR`・`YUNOMI_SEATS_DIR`、mise・uv・pnpm の置き場所だけを渡して起動する。Discord のトークン、`WORKING_TOKEN`、`MAC_STATE_TOKEN`、記憶の口と chimera の service token は渡さない。
+席の Claude は `orca-ide serve` の環境変数を受け継ぐ。start.sh は `seat-env.sh` で、`HOME`・`PATH`・`GH_TOKEN`・`GIT_AUTHOR_*` / `GIT_COMMITTER_*` などと、hook が使う `MIZUYA_STATE_DIR`・`MIZUYA_SEATS_DIR`、mise・uv・pnpm の置き場所だけを渡して起動する。Discord のトークン、`WORKING_TOKEN`、`MAC_STATE_TOKEN`、記憶の口と chimera の service token は渡さない。
 
 ### 席の Codex の権限
 
@@ -312,7 +312,7 @@ bot には仕事フォーラムでの投稿の作成・メッセージ送信・�
 
 ## 配備
 
-main への push で `.github/workflows/working-image.yml` が `ghcr.io/ochanuco/mizuya-working:main` と `:sha-<short>` を公開する。PR ではビルドだけ確かめる。公開の後、Environment `production-approval` で持ち主が承認すると、`deploy` job が chabatake の `docker01-app` を dispatch して `:sha-<short>` を docker01 に配置する（`.github/actions/docker01-app`）。docker01 の stack（chabatake の `docker01/yunomi-working`）は、volume を引き継ぐため yunomi の頃の名前のままにしている。作り直すと作業中の席が切れるので、承認は作業の切れ目に出す。
+main への push で `.github/workflows/working-image.yml` が `ghcr.io/ochanuco/mizuya-working:main` と `:sha-<short>` を公開する。PR ではビルドだけ確かめる。公開の後、Environment `production-approval` で持ち主が承認すると、`deploy` job が chabatake の `docker01-app` を dispatch して `:sha-<short>` を docker01 に配置する（`.github/actions/docker01-app`）。docker01 の stack は chabatake の `docker01/mizuya-working` にある。作り直すと作業中の席が切れるので、承認は作業の切れ目に出す。
 
 gateway と同じホストに、gateway とは別の compose project で置く（`compose.example.yaml`）。gateway を更新しても Working の作業は止まらない。
 
@@ -330,7 +330,7 @@ docker exec -it <コンテナ名> claude   # /login で表示された URL を�
 docker exec <コンテナ名> claude auth status
 ```
 
-ログイン情報は `yunomi-working-claude` の volume に残る。期限が切れたら同じ手順でやり直す。
+ログイン情報は `mizuya-working-claude` の volume に残る。期限が切れたら同じ手順でやり直す。
 
 #### Codex CLI のログイン
 
@@ -341,7 +341,7 @@ docker exec -it <コンテナ名> codex login --device-auth   # 表示された 
 docker exec <コンテナ名> codex login status
 ```
 
-ログイン情報は `yunomi-working-codex` の volume に残る。
+ログイン情報は `mizuya-working-codex` の volume に残る。
 
 #### Mac の Orca との pairing
 
@@ -353,7 +353,7 @@ orca environment add --name working --pairing-code "$code"   # Mac で実行す�
 orca status --environment working   # runtimeConnectionState: connected
 ```
 
-pairing のコードは端末の認証情報なので、ログや Issue に貼らない。pairing 済みの端末は `yunomi-working-orca` の volume に残る。
+pairing のコードは端末の認証情報なので、ログや Issue に貼らない。pairing 済みの端末は `mizuya-working-orca` の volume に残る。
 
 ## 人格
 
@@ -374,11 +374,11 @@ docker run -d --name working \
   -p 127.0.0.1:16768:6768 \
   -p 127.0.0.1:18080:8080 \
   --env-file .env.working \
-  -v yunomi-working-claude:/home/worker/.claude \
-  -v yunomi-working-codex:/home/worker/.codex \
-  -v yunomi-working-orca:/home/worker/.config \
-  -v yunomi-working-state:/home/worker/state \
-  -v yunomi-working-work:/home/worker/work \
+  -v mizuya-working-claude:/home/worker/.claude \
+  -v mizuya-working-codex:/home/worker/.codex \
+  -v mizuya-working-orca:/home/worker/.config \
+  -v mizuya-working-state:/home/worker/state \
+  -v mizuya-working-work:/home/worker/work \
   mizuya-working:spike \
   orca-ide serve --port 6768 --pairing-address 127.0.0.1:16768
 ```

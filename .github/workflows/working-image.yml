@@ -88,16 +88,15 @@ jobs:
     timeout-minutes: 40
     environment: production
     concurrency:
-      group: docker01-yunomi-working
+      group: docker01-mizuya-working
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: .github/actions
           persist-credentials: false
-      # docker01 の stack は volume（席の状態とログイン情報）を引き継ぐため、yunomi の頃の名前のまま
       - uses: ./.github/actions/docker01-app
         with:
-          service: yunomi-working
+          service: mizuya-working
           tag: ${{ needs.publish.outputs.tag }}
           op-service-account-token: ${{ secrets.OP_SA_DEPLOY }}

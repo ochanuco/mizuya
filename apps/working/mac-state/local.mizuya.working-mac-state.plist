@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>local.yunomi.working-mac-state</string>
+	<string>local.mizuya.working-mac-state</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>/bin/bash</string>

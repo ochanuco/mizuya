@@ -21,8 +21,8 @@ reject() {
 }
 expect "HOME=/home/w"
 expect "GH_TOKEN=gh"
-expect "YUNOMI_STATE_DIR=/s"
-expect "YUNOMI_SEATS_DIR=/home/w/work/orca/workspaces/seats"
+expect "MIZUYA_STATE_DIR=/s"
+expect "MIZUYA_SEATS_DIR=/home/w/work/orca/workspaces/seats"
 reject DISCORD_TOKEN
 reject WORKING_TOKEN
 reject CF_ACCESS_CLIENT_SECRET

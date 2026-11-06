@@ -61,7 +61,7 @@ const readCwd = (): string => {
 };
 
 try {
-	const stateDir = process.env.YUNOMI_STATE_DIR;
+	const stateDir = process.env.MIZUYA_STATE_DIR;
 	if (stateDir) {
 		const map = JSON.parse(
 			readFileSync(repoMapPathOf(stateDir), "utf8"),

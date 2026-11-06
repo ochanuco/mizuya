@@ -26,7 +26,7 @@ describe("childEnv", () => {
 			HOME: "/home/w",
 			PATH: "/bin",
 			GH_TOKEN: "gh",
-			YUNOMI_STATE_DIR: "/home/w/state",
+			MIZUYA_STATE_DIR: "/home/w/state",
 		});
 	});
 });

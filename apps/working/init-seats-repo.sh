@@ -9,4 +9,4 @@ cd "$repo"
 git init -q -b main
 printf '/*\n!/.gitignore\n' >.gitignore
 git add .gitignore
-git -c user.name=yunomi-working -c user.email=yunomi-working@localhost commit -qm "席の元"
+git -c user.name=mizuya-working -c user.email=mizuya-working@localhost commit -qm "席の元"
