@@ -6,16 +6,16 @@
 
 ## 動き
 
-1. Environment の承認待ちが起きると、GitHub が `deployment_review`（`requested`）の webhook を `POST /github/webhook` に送る。
-2. mizuya は承認用チャンネルに、repo・workflow・ref と SHA・Environment・run へのリンクと「承認」「却下」ボタンの付いたメッセージを投稿する。同じ承認待ちのメッセージが未決着で残っていれば投稿しない。
+1. job が Environment の承認待ちに入ると、GitHub が `workflow_job`（`waiting`）の webhook を `POST /github/webhook` に送る。payload は Environment を持たないので、mizuya はその run の `pending_deployments` から承認待ちの Environment を取る。
+2. mizuya は承認用チャンネルに、Environment ごとに repo・workflow・ref と SHA・Environment・待っている job・run へのリンクと「承認」「却下」ボタンの付いたメッセージを投稿する。同じ承認待ちのメッセージが未決着で残っていれば投稿しない。
 3. ボタンを押すと、Discord が `POST /discord/interactions` を呼ぶ。押した人が承認者でなければ本人にだけ見える返事で断る。承認者なら deferred update で応答し、メッセージの run の URL と Environment 欄から対象を読み、同じ run の `pending_deployments` から Environment の ID を取って承認・却下を送る。決着したら誰が決めたかを書いてボタンを消す。失敗したらエラーを書き、押し直せるようボタンを残す。承認待ちがもう無ければ、押した人にだけそう伝える。
-4. GitHub の画面で承認・却下された場合は `approved` / `rejected` の webhook が来るので、承認用チャンネルを直近 500 件までさかのぼり、ボタンの残るメッセージを run の URL と Environment で探して決着済みに書き換える。対応表は持たない。
+4. GitHub の画面で承認・却下された場合は、待っていた job の `workflow_job` が `in_progress`（承認）か `completed`（却下は `failure`、run の取り消しは `cancelled`）で来る。承認用チャンネルを直近 500 件までさかのぼり、ボタンの残るメッセージを run の URL と job で探して決着済みに書き換える。対応表は持たない。
 
-| エンドポイント               | 用途                                                           |
-| ---------------------------- | -------------------------------------------------------------- |
-| `POST /github/webhook`       | `X-Hub-Signature-256` を検証し、`deployment_review` を処理する |
-| `POST /discord/interactions` | Ed25519 署名を検証し、PING とボタンを処理する                  |
-| `GET /health`                | 疎通確認                                                       |
+| エンドポイント               | 用途                                                      |
+| ---------------------------- | --------------------------------------------------------- |
+| `POST /github/webhook`       | `X-Hub-Signature-256` を検証し、`workflow_job` を処理する |
+| `POST /discord/interactions` | Ed25519 署名を検証し、PING とボタンを処理する             |
+| `GET /health`                | 疎通確認                                                  |
 
 ## 構成
 
@@ -61,4 +61,4 @@ Worker の secret はすべて 1Password の vault `gh-deploy` に置き、デ�
 4. GitHub で fine-grained PAT を発行する（required reviewer 本人のアカウント。対象 repo の Deployments: write と Actions: read）。
 5. 上の secret をすべて 1Password に登録する。
 
-GitHub の webhook（URL `<Worker のドメイン>/github/webhook`、イベント `deployment_review`、content type json）と、デプロイ用の Environment、DNS は `ochanuco/chabatake` が管理する。webhook の secret は `GITHUB_WEBHOOK_SECRET` と同じ値にする。
+GitHub の webhook（URL `<Worker のドメイン>/github/webhook`、イベント `workflow_job`、content type json）と、デプロイ用の Environment、DNS は `ochanuco/chabatake` が管理する。webhook の secret は `GITHUB_WEBHOOK_SECRET` と同じ値にする。

@@ -1,7 +1,10 @@
 import * as v from "valibot";
 import { createMessage, editMessage, findMessages } from "./discord.ts";
 import type { Bindings } from "./env.ts";
+import { listPendingDeployments } from "./github.ts";
 import {
+	jobIdOf,
+	type Outcome,
 	type ReviewTarget,
 	requestedMessage,
 	sameTarget,
@@ -10,28 +13,30 @@ import {
 } from "./review.ts";
 import { verifyGithubSignature } from "./signature.ts";
 
-const UserSchema = v.object({ login: v.string() });
-
-const JobRunSchema = v.object({ environment: v.string() });
-
-const DeploymentReviewSchema = v.object({
+const WorkflowJobSchema = v.object({
 	action: v.string(),
 	repository: v.object({ full_name: v.string(), html_url: v.string() }),
-	workflow_run: v.object({
+	workflow_job: v.object({
 		id: v.number(),
-		name: v.nullish(v.string()),
+		run_id: v.number(),
+		name: v.string(),
 		html_url: v.string(),
+		workflow_name: v.nullish(v.string()),
 		head_branch: v.nullish(v.string()),
 		head_sha: v.string(),
+		conclusion: v.nullish(v.string()),
 	}),
-	environment: v.optional(v.string()),
-	requestor: v.nullish(UserSchema),
-	approver: v.nullish(UserSchema),
-	workflow_job_run: v.nullish(JobRunSchema),
-	workflow_job_runs: v.nullish(v.array(JobRunSchema)),
 });
 
-type DeploymentReview = v.InferOutput<typeof DeploymentReviewSchema>;
+type WorkflowJob = v.InferOutput<typeof WorkflowJobSchema>;
+
+export function parseJson(body: string): unknown {
+	try {
+		return JSON.parse(body);
+	} catch {
+		return undefined;
+	}
+}
 
 export async function handleGithubWebhook(
 	request: Request,
@@ -47,130 +52,132 @@ export async function handleGithubWebhook(
 
 	const event = request.headers.get("x-github-event");
 	if (event === "ping") return new Response("pong");
-	if (event !== "deployment_review") return new Response(null, { status: 204 });
+	if (event !== "workflow_job") return new Response(null, { status: 204 });
 
-	const parsed = v.safeParse(DeploymentReviewSchema, parseJson(body));
+	const parsed = v.safeParse(WorkflowJobSchema, parseJson(body));
 	if (!parsed.success) {
 		return new Response("unexpected payload", { status: 400 });
 	}
-	const review = parsed.output;
+	const job = parsed.output;
 
 	// 結果は GitHub の配信ログに残るよう、Discord への反映を待ってから応答する
-	switch (review.action) {
-		case "requested":
-			return postRequested(review, env);
-		case "approved":
-		case "rejected":
-			return settleFromGithub(review, env);
+	switch (job.action) {
+		case "waiting":
+			return postWaiting(job, env);
+		case "in_progress":
+		case "completed":
+			return settleFromGithub(job, env);
 		default:
 			return new Response(null, { status: 204 });
 	}
 }
 
-export function parseJson(body: string): unknown {
-	try {
-		return JSON.parse(body);
-	} catch {
-		return undefined;
-	}
-}
-
-function pendingMessages(env: Bindings, matches: (t: ReviewTarget) => boolean) {
+function pendingMessages(
+	env: Bindings,
+	matches: (t: ReviewTarget, jobId: number | null) => boolean,
+) {
 	return findMessages(
 		env.DISCORD_BOT_TOKEN,
 		env.DISCORD_APPROVAL_CHANNEL_ID,
 		(message) => {
 			const target = targetOf(message);
-			return target !== null && matches(target);
+			return target !== null && matches(target, jobIdOf(message));
 		},
 	);
 }
 
-async function postRequested(
-	review: DeploymentReview,
-	env: Bindings,
-): Promise<Response> {
-	const environment =
-		review.environment ?? review.workflow_job_run?.environment;
-	if (!environment) return new Response("environment missing", { status: 400 });
-
-	// 配信のやり直しで同じ承認待ちのボタンが二つ並ばないよう、未決着のものがあれば投稿しない
-	const target = {
-		repo: review.repository.full_name,
-		runId: review.workflow_run.id,
-		environment,
-	};
-	const existing = await pendingMessages(env, (t) => sameTarget(t, target));
-	if (!existing.ok) {
-		console.error("discord: メッセージ一覧の取得に失敗", existing.error);
-		return new Response("discord error", { status: 502 });
-	}
-	if (existing.value.length > 0) return new Response("already posted");
-
-	const res = await createMessage(
-		env.DISCORD_BOT_TOKEN,
-		env.DISCORD_APPROVAL_CHANNEL_ID,
-		requestedMessage({
-			repo: review.repository.full_name,
-			repoUrl: review.repository.html_url,
-			runId: review.workflow_run.id,
-			runUrl: review.workflow_run.html_url,
-			workflow: review.workflow_run.name ?? "(不明)",
-			ref: review.workflow_run.head_branch ?? null,
-			sha: review.workflow_run.head_sha,
-			environment,
-			requestor: review.requestor?.login ?? null,
-		}),
-	);
-	if (!res.ok) {
-		console.error("discord: 承認待ちの投稿に失敗", res.error);
-		return new Response("discord error", { status: 502 });
-	}
-	return new Response("posted");
+function discordError(error: unknown): Response {
+	console.error("discord:", error);
+	return new Response("discord error", { status: 502 });
 }
 
-/** GitHub の画面で決着した承認待ちを、Discord のメッセージにも反映する */
+/** waiting は保護ルールの承認待ち。payload は Environment を持たないので、run の pending_deployments から取る */
+async function postWaiting(job: WorkflowJob, env: Bindings): Promise<Response> {
+	const repo = job.repository.full_name;
+	const runId = job.workflow_job.run_id;
+	const pending = await listPendingDeployments(
+		env.GITHUB_APPROVER_TOKEN,
+		repo,
+		runId,
+	);
+	if (!pending.ok) {
+		console.error("github: pending_deployments の取得に失敗", pending.error);
+		return new Response("github error", { status: 502 });
+	}
+	if (pending.value.length === 0) return new Response("nothing pending");
+
+	// 配信のやり直しや、同じ run で別の job が待ちに入ったときに、同じ承認待ちのボタンが二つ並ばないようにする
+	const existing = await pendingMessages(
+		env,
+		(t) => t.repo === repo && t.runId === runId,
+	);
+	if (!existing.ok) return discordError(existing.error);
+	const posted = existing.value
+		.map((m) => targetOf(m))
+		.filter((t): t is ReviewTarget => t !== null);
+
+	let count = 0;
+	for (const deployment of pending.value) {
+		const target = { repo, runId, environment: deployment.environment.name };
+		if (posted.some((t) => sameTarget(t, target))) continue;
+		const res = await createMessage(
+			env.DISCORD_BOT_TOKEN,
+			env.DISCORD_APPROVAL_CHANNEL_ID,
+			requestedMessage({
+				repo,
+				repoUrl: job.repository.html_url,
+				runId,
+				runUrl: `${job.repository.html_url}/actions/runs/${runId}`,
+				workflow: job.workflow_job.workflow_name ?? "(不明)",
+				ref: job.workflow_job.head_branch ?? null,
+				sha: job.workflow_job.head_sha,
+				environment: target.environment,
+				job: { name: job.workflow_job.name, url: job.workflow_job.html_url },
+			}),
+		);
+		if (!res.ok) return discordError(res.error);
+		count++;
+	}
+	return new Response(`posted ${count}`);
+}
+
+// 承認されると job が走り出し、却下されると job は failure で終わる。
+// Discord のボタンで決着したものは先にボタンが消えているので、ここでは見つからない
+function outcomeOf(job: WorkflowJob): Outcome {
+	if (job.action === "in_progress") return { type: "approved", by: "GitHub" };
+	switch (job.workflow_job.conclusion) {
+		case "success":
+			return { type: "approved", by: "GitHub" };
+		case "cancelled":
+			return { type: "cancelled", by: "run の取り消し" };
+		default:
+			return { type: "rejected", by: "GitHub" };
+	}
+}
+
+/** 承認待ちだった job が動き出す・終わると、GitHub の画面で決着したものとして Discord に反映する */
 async function settleFromGithub(
-	review: DeploymentReview,
+	job: WorkflowJob,
 	env: Bindings,
 ): Promise<Response> {
-	const environments = new Set(
-		[
-			...(review.workflow_job_runs ?? []),
-			...(review.workflow_job_run ? [review.workflow_job_run] : []),
-		].map((j) => j.environment),
-	);
-	const repo = review.repository.full_name;
-	const runId = review.workflow_run.id;
-
-	// 対応表を持たず、承認用チャンネルのボタンが残るメッセージを run の URL と Environment で探す
-	const recent = await pendingMessages(
+	const repo = job.repository.full_name;
+	const runId = job.workflow_job.run_id;
+	const matches = await pendingMessages(
 		env,
-		(t) =>
-			t.repo === repo && t.runId === runId && environments.has(t.environment),
+		(t, jobId) =>
+			t.repo === repo && t.runId === runId && jobId === job.workflow_job.id,
 	);
-	if (!recent.ok) {
-		console.error("discord: メッセージ一覧の取得に失敗", recent.error);
-		return new Response("discord error", { status: 502 });
-	}
-	const matches = recent.value;
+	if (!matches.ok) return discordError(matches.error);
 
-	const by = `GitHub で ${review.approver?.login ?? "不明"}`;
-	const outcome =
-		review.action === "approved"
-			? ({ type: "approved", by } as const)
-			: ({ type: "rejected", by } as const);
-	for (const message of matches) {
+	const outcome = outcomeOf(job);
+	for (const message of matches.value) {
 		const res = await editMessage(
 			env.DISCORD_BOT_TOKEN,
 			env.DISCORD_APPROVAL_CHANNEL_ID,
 			message.id,
 			settledMessage(message, outcome),
 		);
-		if (!res.ok) {
-			console.error("discord: メッセージの更新に失敗", res.error);
-			return new Response("discord error", { status: 502 });
-		}
+		if (!res.ok) return discordError(res.error);
 	}
-	return new Response(`settled ${matches.length}`);
+	return new Response(`settled ${matches.value.length}`);
 }

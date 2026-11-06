@@ -15,7 +15,10 @@ describe("targetOf", () => {
 			ref: "main",
 			sha: "0123456789abcdef0123456789abcdef01234567",
 			environment: longEnvironment,
-			requestor: null,
+			job: {
+				name: "deploy",
+				url: "https://github.com/example/app/actions/runs/1/job/2",
+			},
 		});
 		const message = {
 			embeds: posted.embeds,
