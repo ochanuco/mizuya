@@ -59,16 +59,16 @@ main への push で `apps/worker` などが変わると、GitHub Actions の `d
 
 Worker の secret はすべて 1Password の vault `gh-deploy` に置き、デプロイのたびに反映する。
 
-| 名前                          | 1Password の参照                                      | 中身                                                                                                       |
-| ----------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `CLOUDFLARE_API_TOKEN`        | `gh-deploy/cloudflare-workers/credential`             | デプロイ用（Worker には入れない）                                                                          |
-| `GITHUB_WEBHOOK_SECRET`       | `gh-deploy/mizuya-worker/github_webhook_secret`       | webhook の署名鍵。各 repo の webhook と同じ値                                                              |
-| `GITHUB_APPROVER_TOKEN`       | `gh-deploy/mizuya-worker/github_approver_token`       | required reviewer 本人の fine-grained PAT。対象 repo の Deployments: write と Actions: read                |
-| `DISCORD_PUBLIC_KEY`          | `gh-deploy/mizuya-worker/discord_public_key`          | Discord application の Public Key                                                                          |
-| `DISCORD_BOT_TOKEN`           | `gh-deploy/mizuya-worker/discord_bot_token`           | mizuya bot の token                                                                                        |
-| `DISCORD_APPROVER_USER_ID`    | `gh-deploy/mizuya-worker/discord_approver_user_id`    | ボタンを押してよい Discord の user ID                                                                      |
-| `DISCORD_APPROVAL_CHANNEL_ID` | `gh-deploy/mizuya-worker/discord_approval_channel_id` | 承認用チャンネルの ID                                                                                      |
-| `WORKING_INBOX_TOKEN`         | `gh-deploy/mizuya-worker/working_inbox_token`         | Working が受け箱につなぐときの token。Working の `MIZUYA_INBOX_TOKEN` と同じ値。無ければ受け箱の口を閉じる |
+| 名前                          | 1Password の参照                                      | 中身                                                                                                                              |
+| ----------------------------- | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `CLOUDFLARE_API_TOKEN`        | `gh-deploy/cloudflare-workers/credential`             | デプロイ用（Worker には入れない）                                                                                                 |
+| `GITHUB_WEBHOOK_SECRET`       | `gh-deploy/mizuya-worker/github_webhook_secret`       | webhook の署名鍵。各 repo の webhook と同じ値                                                                                     |
+| `GITHUB_APPROVER_TOKEN`       | `gh-deploy/mizuya-worker/github_approver_token`       | required reviewer 本人の fine-grained PAT。対象 repo の Deployments: write と Actions: read                                       |
+| `DISCORD_PUBLIC_KEY`          | `gh-deploy/mizuya-worker/discord_public_key`          | Discord application の Public Key                                                                                                 |
+| `DISCORD_BOT_TOKEN`           | `gh-deploy/mizuya-worker/discord_bot_token`           | mizuya bot の token                                                                                                               |
+| `DISCORD_APPROVER_USER_ID`    | `gh-deploy/mizuya-worker/discord_approver_user_id`    | ボタンを押してよい Discord の user ID                                                                                             |
+| `DISCORD_APPROVAL_CHANNEL_ID` | `gh-deploy/mizuya-worker/discord_approval_channel_id` | 承認用チャンネルの ID                                                                                                             |
+| `WORKING_INBOX_TOKEN`         | `gh-deploy/mizuya-worker/working_inbox_token`         | Working が受け箱につなぐときの token。Working の `MIZUYA_INBOX_TOKEN` と同じ値。Worker に一度も入れていなければ受け箱の口を閉じる |
 
 ## 人がやるセットアップ
 

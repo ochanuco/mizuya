@@ -77,7 +77,12 @@ export class WorkingInbox extends DurableObject<Bindings> {
 		code: number,
 		reason: string,
 	): Promise<void> {
-		ws.close(code, reason);
+		// 1005（コードなし）と 1006（異常切断）は close() に渡せない予約コード。閉じ終わっていれば close() は投げる
+		try {
+			ws.close(code === 1005 || code === 1006 ? 1000 : code, reason);
+		} catch {
+			// すでに閉じている
+		}
 	}
 
 	override async alarm(): Promise<void> {

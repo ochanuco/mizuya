@@ -36,6 +36,8 @@ fi
 # 受け箱の token は無くても出せる。無ければ Worker が受け箱の口を閉じる
 if [ -n "${WORKING_INBOX_TOKEN:-}" ]; then
   secrets+=(WORKING_INBOX_TOKEN)
+else
+  echo "warning: WORKING_INBOX_TOKEN が未設定。Worker に前の値が無ければ、受け箱の口は閉じたまま" >&2
 fi
 
 secrets_file=$(mktemp)
