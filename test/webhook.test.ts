@@ -159,7 +159,7 @@ describe("POST /github/webhook", () => {
 		);
 		expect(posts).toHaveLength(1);
 		expect(
-			(posts[0]?.body as PostedBody).embeds[0]?.fields.find(
+			(posts[0]?.body as PostedBody | undefined)?.embeds[0]?.fields.find(
 				(f) => f.name === "Environment",
 			)?.value,
 		).toBe("staging");
