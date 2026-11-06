@@ -21,11 +21,7 @@ import { loadConfig } from "./config.ts";
 import { createDiscordRest } from "./discord-rest.ts";
 import { spawnExec } from "./exec.ts";
 import { startWorkGateway } from "./gateway.ts";
-import {
-	createGithubEventsClient,
-	runGithubEvents,
-	startGithubEventPoller,
-} from "./github-events.ts";
+import { createGithubEventBatcher, runGithubEvents } from "./github-events.ts";
 import { guardDirOf } from "./guard/env.ts";
 import { createLedger } from "./guard/ledger.ts";
 import { startInbox } from "./inbox.ts";
@@ -379,29 +375,6 @@ const gateway = await startWorkGateway({
 	logger,
 });
 
-if (!cfg.inbox) {
-	logger.warn("mizuya inbox disabled; buttons are not received", {
-		reason:
-			"MIZUYA_INBOX_URL / MIZUYA_INBOX_TOKEN / MIZUYA_ACCESS_CLIENT_ID / MIZUYA_ACCESS_CLIENT_SECRET",
-	});
-}
-const inbox = cfg.inbox
-	? startInbox({
-			connection: cfg.inbox,
-			handlers: {
-				press: (envelope) => {
-					void intake.press(envelope).catch((e: unknown) => {
-						logger.error("intake crashed", {
-							event_id: envelope.event_id,
-							error: String(e),
-						});
-					});
-				},
-			},
-			logger,
-		})
-	: null;
-
 const stopWorkActivity = startWorkActivity({
 	snapshot: () => ({
 		partners: intake.summary().partners,
@@ -511,36 +484,55 @@ const githubSelfLogin = async (): Promise<string | null> => {
 	return login;
 };
 
-const GITHUB_EVENTS_POLL_MS = 60_000;
-// GitHub の webhook は Worker が受けて溜めている。取りに行くには Worker の working の service token が要る
-const githubEventPoller =
-	cfg.standup.enabled && cfg.memory
-		? await (async (memory) => {
-				const selfLogin = await githubSelfLogin();
-				return startGithubEventPoller({
-					client: createGithubEventsClient({
-						baseUrl: memory.url,
-						clientId: memory.clientId,
-						clientSecret: memory.clientSecret,
+// 同じ PR の出来事が続けて届いたら一つの席にまとめるため、少し待ってから回す
+const GITHUB_EVENTS_WAIT_MS = 30_000;
+const githubEvents = cfg.standup.enabled
+	? await (async () => {
+			const selfLogin = await githubSelfLogin();
+			return createGithubEventBatcher({
+				run: (events) =>
+					inPatrolLane(async () => {
+						await runGithubEvents(
+							{
+								store: patrolStore,
+								preamble,
+								selfLogin,
+								start: intake.startStandup,
+								logger,
+							},
+							events,
+						);
 					}),
-					run: (events) =>
-						inPatrolLane(async () => {
-							await runGithubEvents(
-								{
-									store: patrolStore,
-									preamble,
-									selfLogin,
-									start: intake.startStandup,
-									logger,
-								},
-								events,
-							);
-						}),
-					intervalMs: GITHUB_EVENTS_POLL_MS,
-					logger,
-				});
-			})(cfg.memory)
-		: null;
+				waitMs: GITHUB_EVENTS_WAIT_MS,
+				logger,
+			});
+		})()
+	: null;
+
+// 受け箱は GitHub の出来事の渡し先ができてからつなぐ。つないだ直後に溜まっていた行が届く
+if (!cfg.inbox) {
+	logger.warn("mizuya inbox disabled; buttons are not received", {
+		reason:
+			"MIZUYA_INBOX_URL / MIZUYA_INBOX_TOKEN / MIZUYA_ACCESS_CLIENT_ID / MIZUYA_ACCESS_CLIENT_SECRET",
+	});
+}
+const inbox = cfg.inbox
+	? startInbox({
+			connection: cfg.inbox,
+			handlers: {
+				press: (envelope) => {
+					void intake.press(envelope).catch((e: unknown) => {
+						logger.error("intake crashed", {
+							event_id: envelope.event_id,
+							error: String(e),
+						});
+					});
+				},
+				...(githubEvents ? { github: githubEvents.push } : {}),
+			},
+			logger,
+		})
+	: null;
 
 const shutdown = (signal: string) => {
 	logger.info("shutting down", { signal });
@@ -550,7 +542,7 @@ const shutdown = (signal: string) => {
 	usage.stop();
 	standupTimer?.stop();
 	activityLogTimer?.stop();
-	githubEventPoller?.stop();
+	githubEvents?.stop();
 	macStateServer?.close();
 	server.close();
 	inbox?.stop();

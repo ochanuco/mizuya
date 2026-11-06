@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import * as v from "valibot";
 import {
+	type GithubWorkEvent,
+	githubWorkEventSchema,
+} from "./github-events.ts";
+import {
 	DISCORD_BUTTON_PRESSED,
 	DISCORD_SOURCE,
 	type DiscordButtonPressedEnvelope,
@@ -10,7 +14,7 @@ import type { Logger } from "./logger.ts";
 import { WORKING_BUTTON_PREFIX } from "./speaker.ts";
 
 /**
- * mizuya の Worker の受け箱。Worker が受けたボタン（と GitHub の出来事）を、外向きの WebSocket で受け取る。
+ * mizuya の Worker の受け箱。Worker が受けたボタンと GitHub の出来事を、外向きの WebSocket で受け取る。
  * 受け取った行は ack し、Worker はそれを消す。ack する前に切れた行は、つなぎ直したときにもう一度来る。
  */
 
@@ -29,6 +33,8 @@ const itemSchema = v.object({
 export type InboxHandlers = {
 	/** 押されたボタン。custom_id は Working の頭を外した形で渡す。 */
 	press: (envelope: DiscordButtonPressedEnvelope) => void;
+	/** 席を動かす GitHub の出来事。未設定なら受け取って捨てる。 */
+	github?: (event: GithubWorkEvent) => void;
 };
 
 /**
@@ -55,6 +61,20 @@ export const dispatchInboxMessage = (
 		return null;
 	}
 	const { id, kind, received_at, body } = item.output;
+	if (kind === "github") {
+		const event = v.safeParse(githubWorkEventSchema, body);
+		if (!event.success) {
+			logger.warn("inbox github event unreadable", { id });
+		} else if (handlers.github) {
+			handlers.github(event.output);
+		} else {
+			logger.info("inbox github event dropped", {
+				id,
+				reason: "standup disabled",
+			});
+		}
+		return id;
+	}
 	if (kind !== "button") {
 		logger.warn("inbox item of unknown kind dropped", { id, kind });
 		return id;
