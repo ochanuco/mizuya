@@ -16,6 +16,7 @@ const CUSTOM_ID = {
 	reject: "mizuya:reject",
 } as const;
 const ENVIRONMENT_FIELD = "Environment";
+const JOB_FIELD = "job";
 const RESULT_FIELD = "結果";
 const ERROR_FIELD = "直近のエラー";
 const PENDING_TITLE = "承認待ち: ";
@@ -24,6 +25,7 @@ const SETTLED_TITLE = "決着: ";
 const COLOR_PENDING = 0xf1c40f;
 const COLOR_APPROVED = 0x2ecc71;
 const COLOR_REJECTED = 0xe74c3c;
+const COLOR_CANCELLED = 0x95a5a6;
 
 export function decisionOf(customId: string): Decision | null {
 	if (customId === CUSTOM_ID.approve) return "approve";
@@ -50,6 +52,17 @@ export function targetOf(
 	return { repo: match[1], runId: Number(match[2]), environment };
 }
 
+const JOB_URL = /\/actions\/runs\/\d+\/job\/(\d+)\)/;
+
+/** 承認待ちを起こした job の ID。job の開始・終了の webhook とメッセージを結びつける */
+export function jobIdOf(message: Pick<Message, "embeds">): number | null {
+	const value = message.embeds[0]?.fields?.find(
+		(f) => f.name === JOB_FIELD,
+	)?.value;
+	const match = value?.match(JOB_URL);
+	return match?.[1] ? Number(match[1]) : null;
+}
+
 export function sameTarget(a: ReviewTarget, b: ReviewTarget): boolean {
 	return (
 		a.repo === b.repo && a.runId === b.runId && a.environment === b.environment
@@ -65,7 +78,7 @@ export type ReviewRequest = {
 	ref: string | null;
 	sha: string;
 	environment: string;
-	requestor: string | null;
+	job: { name: string; url: string };
 };
 
 export function requestedMessage(req: ReviewRequest): MessageBody {
@@ -74,14 +87,16 @@ export function requestedMessage(req: ReviewRequest): MessageBody {
 		{ name: "workflow", value: req.workflow, inline: true },
 		{ name: ENVIRONMENT_FIELD, value: req.environment, inline: true },
 		{
+			name: JOB_FIELD,
+			value: `[${req.job.name.replace(/[[\]]/g, "")}](${req.job.url})`,
+			inline: true,
+		},
+		{
 			name: "ref",
 			value: `${req.ref ?? "(なし)"} @ [${shortSha}](${req.repoUrl}/commit/${req.sha})`,
 			inline: false,
 		},
 	];
-	if (req.requestor) {
-		fields.push({ name: "起動した人", value: req.requestor, inline: true });
-	}
 	return {
 		embeds: [
 			{
@@ -105,7 +120,7 @@ export function requestedMessage(req: ReviewRequest): MessageBody {
 }
 
 export type Outcome =
-	| { type: "approved" | "rejected"; by: string }
+	| { type: "approved" | "rejected" | "cancelled"; by: string }
 	| { type: "failed"; decision: Decision; message: string };
 
 function withField(embed: Embed, name: string, value: string): Embed {
@@ -139,18 +154,18 @@ export function settledMessage(
 			allowed_mentions: { parse: [] },
 		};
 	}
-	const approved = outcome.type === "approved";
 	const name = base.title?.replace(PENDING_TITLE, "") ?? "";
+	const settled = {
+		approved: { label: "承認", color: COLOR_APPROVED },
+		rejected: { label: "却下", color: COLOR_REJECTED },
+		cancelled: { label: "取り消し", color: COLOR_CANCELLED },
+	}[outcome.type];
 	return {
 		embeds: [
 			{
-				...withField(
-					base,
-					RESULT_FIELD,
-					`${approved ? "承認" : "却下"}（${outcome.by}）`,
-				),
+				...withField(base, RESULT_FIELD, `${settled.label}（${outcome.by}）`),
 				title: `${SETTLED_TITLE}${name}`,
-				color: approved ? COLOR_APPROVED : COLOR_REJECTED,
+				color: settled.color,
 			},
 			...rest,
 		],
