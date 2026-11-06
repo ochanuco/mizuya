@@ -7,8 +7,8 @@
 ## 動き
 
 1. job が Environment の承認待ちに入ると、GitHub が `workflow_job`（`waiting`）の webhook を `POST /github/webhook` に送る。payload は Environment を持たないので、mizuya はその run の `pending_deployments` から承認待ちの Environment を取る。
-2. mizuya は承認用チャンネルに、Environment ごとに repo・workflow・ref と SHA・Environment・待っている job・run へのリンクと「承認」「却下」ボタンの付いたメッセージを投稿する。同じ承認待ちのメッセージが未決着で残っていれば投稿しない。
-3. ボタンを押すと、Discord が `POST /discord/interactions` を呼ぶ。押した人が承認者でなければ本人にだけ見える返事で断る。承認者なら deferred update で応答し、メッセージの run の URL と Environment 欄から対象を読み、同じ run の `pending_deployments` から Environment の ID を取って承認・却下を送る。決着したら誰が決めたかを書いてボタンを消す。失敗したらエラーを書き、押し直せるようボタンを残す。承認待ちがもう無ければ、押した人にだけそう伝える。
+2. mizuya は承認用チャンネルに、Environment ごとに repo・workflow（run 名）・Environment・待っている job・起動元のコミット・run へのリンクと「承認」「却下」ボタンの付いたメッセージを、承認者（`DISCORD_APPROVER_USER_ID`）へのメンション付きで投稿する。起動元のコミットは run を起動したコミットで、workflow_dispatch で別の ref を出すときはデプロイする ref と違う（deploy workflow は run 名にデプロイする ref を入れる）。同じ承認待ちのメッセージが未決着で残っていれば投稿しない。
+3. ボタンを押すと、Discord が `POST /discord/interactions` を呼ぶ。押した人が承認者でなければ本人にだけ見える返事で断る。承認者なら deferred update で応答し、メッセージの run の URL と Environment 欄から対象を読み、同じ run の `pending_deployments` から Environment の ID を取って承認・却下を送る。決着したらタイトルを「承認」「却下」「取り消し」に変え、誰が決めたかを書いてボタンを消す。書き換えでは承認者に再び通知しない。失敗したらエラーを書き、押し直せるようボタンを残す。承認待ちがもう無ければ、押した人にだけそう伝える。
 4. GitHub の画面で承認・却下された場合は、待っていた job の `workflow_job` が `in_progress`（承認）か `completed`（却下は `failure`、run の取り消しは `cancelled`）で来る。承認用チャンネルを直近 500 件までさかのぼり、ボタンの残るメッセージを run の URL と job で探して決着済みに書き換える。対応表は持たない。
 
 | エンドポイント               | 用途                                                      |

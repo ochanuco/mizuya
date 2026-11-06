@@ -90,7 +90,13 @@ function githubAndDiscord(
 }
 
 type EditBody = {
-	embeds: { color: number; fields: { name: string; value: string }[] }[];
+	content?: string;
+	allowed_mentions?: unknown;
+	embeds: {
+		title?: string;
+		color: number;
+		fields: { name: string; value: string }[];
+	}[];
 	components: unknown[];
 };
 
@@ -154,9 +160,12 @@ describe("POST /discord/interactions", () => {
 
 		const edit = calls[2]?.body as EditBody;
 		expect(edit.components).toEqual([]);
+		expect(edit.embeds[0]?.title).toBe(`承認: ${REPO}`);
 		expect(edit.embeds[0]?.fields.at(-1)?.value).toBe(
 			`承認（Discord で <@${APPROVER_ID}>）`,
 		);
+		expect(edit.content).toBeUndefined();
+		expect(edit.allowed_mentions).toEqual({ parse: [] });
 	});
 
 	it("却下は rejected で送る", async () => {
@@ -169,6 +178,7 @@ describe("POST /discord/interactions", () => {
 			comment: "mizuya: Discord から却下",
 		});
 		const edit = calls[2]?.body as EditBody;
+		expect(edit.embeds[0]?.title).toBe(`却下: ${REPO}`);
 		expect(edit.embeds[0]?.fields.at(-1)?.value).toBe(
 			`却下（Discord で <@${APPROVER_ID}>）`,
 		);

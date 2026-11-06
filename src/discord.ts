@@ -42,7 +42,7 @@ export type MessageBody = {
 	content?: string;
 	embeds: Embed[];
 	components: unknown[];
-	allowed_mentions?: { parse: string[] };
+	allowed_mentions?: { parse: string[]; users?: string[] };
 };
 
 export type DiscordError = {

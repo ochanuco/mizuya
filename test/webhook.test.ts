@@ -7,6 +7,7 @@ import {
 	workflowJobPayload,
 } from "./fixtures.ts";
 import {
+	APPROVER_ID,
 	type Call,
 	CHANNEL_ID,
 	callWorker,
@@ -69,6 +70,8 @@ function services({
 }
 
 type PostedBody = {
+	content?: string;
+	allowed_mentions?: { parse: string[]; users?: string[] };
 	embeds: {
 		title: string;
 		url: string;
@@ -128,6 +131,8 @@ describe("POST /github/webhook", () => {
 		expect(post?.headers.get("authorization")).toBe("Bot test-bot-token");
 
 		const body = post?.body as PostedBody;
+		expect(body.content).toBe(`<@${APPROVER_ID}> 承認待ちがあります`);
+		expect(body.allowed_mentions).toEqual({ parse: [], users: [APPROVER_ID] });
 		const embed = body.embeds[0];
 		expect(embed?.title).toBe(`承認待ち: ${REPO}`);
 		expect(embed?.url).toBe(
@@ -140,7 +145,7 @@ describe("POST /github/webhook", () => {
 			workflow: "deploy",
 			Environment: "production-approval",
 			job: `[deploy / approve](https://github.com/${REPO}/actions/runs/${RUN_ID}/job/${JOB_ID})`,
-			ref: `main @ [0123456](https://github.com/${REPO}/commit/0123456789abcdef0123456789abcdef01234567)`,
+			起動元のコミット: `main @ [0123456](https://github.com/${REPO}/commit/0123456789abcdef0123456789abcdef01234567)`,
 		});
 		expect(body.components[0]?.components).toEqual([
 			expect.objectContaining({ label: "承認", custom_id: "mizuya:approve" }),
@@ -197,7 +202,10 @@ describe("POST /github/webhook", () => {
 		expect(edits[0]?.url).toBe(`${MESSAGES_URL}/target`);
 		const body = edits[0]?.body as PostedBody;
 		expect(body.components).toEqual([]);
-		expect(body.embeds[0]?.title).toBe(`決着: ${REPO}`);
+		expect(body.embeds[0]?.title).toBe(`承認: ${REPO}`);
+		// 決着の書き換えでは本文を送らず、承認者に再び通知しない
+		expect(body.content).toBeUndefined();
+		expect(body.allowed_mentions).toEqual({ parse: [] });
 		expect(body.embeds[0]?.fields.at(-1)).toEqual({
 			name: "結果",
 			value: "承認（GitHub）",
@@ -206,14 +214,16 @@ describe("POST /github/webhook", () => {
 	});
 
 	it.each([
-		["failure", "却下（GitHub）"],
-		["cancelled", "取り消し（run の取り消し）"],
+		["success", "承認", "承認（GitHub）"],
+		["failure", "却下", "却下（GitHub）"],
+		["cancelled", "取り消し", "取り消し（run の取り消し）"],
 	])(
-		"待っていた job が %s で終わったら「%s」にする",
-		async (conclusion, text) => {
+		"待っていた job が %s で終わったら、タイトルを「%s」にして「%s」と書く",
+		async (conclusion, label, text) => {
 			const calls = services({ messages: [pendingMessage("target")] });
 			await webhook(workflowJobPayload("completed", { conclusion }));
 			const body = calls.find((c) => c.method === "PATCH")?.body as PostedBody;
+			expect(body.embeds[0]?.title).toBe(`${label}: ${REPO}`);
 			expect(body.embeds[0]?.fields.at(-1)?.value).toBe(text);
 		},
 	);

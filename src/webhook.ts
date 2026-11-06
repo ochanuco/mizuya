@@ -130,6 +130,7 @@ async function postWaiting(job: WorkflowJob, env: Bindings): Promise<Response> {
 				runUrl: `${job.repository.html_url}/actions/runs/${runId}`,
 				workflow: job.workflow_job.workflow_name ?? "(不明)",
 				ref: job.workflow_job.head_branch ?? null,
+				approverUserId: env.DISCORD_APPROVER_USER_ID,
 				sha: job.workflow_job.head_sha,
 				environment: target.environment,
 				job: { name: job.workflow_job.name, url: job.workflow_job.html_url },

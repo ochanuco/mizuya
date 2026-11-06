@@ -13,6 +13,7 @@ describe("targetOf", () => {
 				"https://github.com/example-organization/a-repository-with-a-very-long-name/actions/runs/98765432101",
 			workflow: "deploy",
 			ref: "main",
+			approverUserId: "100000000000000001",
 			sha: "0123456789abcdef0123456789abcdef01234567",
 			environment: longEnvironment,
 			job: {

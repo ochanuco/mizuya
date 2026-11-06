@@ -20,7 +20,6 @@ const JOB_FIELD = "job";
 const RESULT_FIELD = "結果";
 const ERROR_FIELD = "直近のエラー";
 const PENDING_TITLE = "承認待ち: ";
-const SETTLED_TITLE = "決着: ";
 
 const COLOR_PENDING = 0xf1c40f;
 const COLOR_APPROVED = 0x2ecc71;
@@ -76,6 +75,7 @@ export type ReviewRequest = {
 	runUrl: string;
 	workflow: string;
 	ref: string | null;
+	approverUserId: string;
 	sha: string;
 	environment: string;
 	job: { name: string; url: string };
@@ -92,12 +92,15 @@ export function requestedMessage(req: ReviewRequest): MessageBody {
 			inline: true,
 		},
 		{
-			name: "ref",
+			// workflow_job の head_branch と head_sha は run を起動したコミットで、
+			// workflow_dispatch で別の ref を出すときはデプロイする ref と違う。デプロイする ref は workflow 名（run 名）に出る
+			name: "起動元のコミット",
 			value: `${req.ref ?? "(なし)"} @ [${shortSha}](${req.repoUrl}/commit/${req.sha})`,
 			inline: false,
 		},
 	];
 	return {
+		content: `<@${req.approverUserId}> 承認待ちがあります`,
 		embeds: [
 			{
 				title: `${PENDING_TITLE}${req.repo}`,
@@ -115,7 +118,7 @@ export function requestedMessage(req: ReviewRequest): MessageBody {
 				],
 			},
 		],
-		allowed_mentions: { parse: [] },
+		allowed_mentions: { parse: [], users: [req.approverUserId] },
 	};
 }
 
@@ -164,7 +167,7 @@ export function settledMessage(
 		embeds: [
 			{
 				...withField(base, RESULT_FIELD, `${settled.label}（${outcome.by}）`),
-				title: `${SETTLED_TITLE}${name}`,
+				title: `${settled.label}: ${name}`,
 				color: settled.color,
 			},
 			...rest,
