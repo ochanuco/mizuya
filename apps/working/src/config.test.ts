@@ -4,7 +4,6 @@ import { loadConfig } from "./config.ts";
 const base = {
 	HOME: "/home/w",
 	DISCORD_TOKEN: "t",
-	WORKING_TOKEN: "shared",
 	WORK_TEXT_CHANNEL_ID: "100",
 	WORK_FORUM_CHANNEL_ID: "200",
 	WORKING_OWNER_DISCORD_USER_IDS: "300, 400,",
@@ -20,7 +19,6 @@ describe("loadConfig", () => {
 				avatarUrls: { yukarin: null, akarin: null },
 				inbox: null,
 				codexHome: "/home/w/.codex",
-				sharedToken: "shared",
 				workTextChannelId: "100",
 				workForumChannelId: "200",
 				ownerUserIds: new Set(["300", "400"]),

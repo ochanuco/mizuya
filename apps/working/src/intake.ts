@@ -18,6 +18,7 @@ import {
 	withNote,
 } from "./attachments.ts";
 import type { Summarizer } from "./claude-cli.ts";
+import type { ButtonPressEvent, WorkMessageEvent } from "./discord-events.ts";
 import type { Attachment, DiscordApi, PostedMessage } from "./discord-rest.ts";
 import { DISMISS_BUTTON, dismissedText, isDismissButton } from "./dismiss.ts";
 import { seatNameOf } from "./guard/env.ts";
@@ -25,10 +26,6 @@ import type { Ledger, Pending } from "./guard/ledger.ts";
 import type { Operation } from "./guard/operation.ts";
 import { createKeyedQueue } from "./keyed-queue.ts";
 import { PARTNER_IDS, type PartnerId } from "./lib/core.ts";
-import type {
-	DiscordButtonPressedEnvelope,
-	DiscordMessageCreatedEnvelope,
-} from "./lib/protocol.ts";
 import type { Logger } from "./logger.ts";
 import type { Orca, OrcaError, SeatAgent, SeatMessage } from "./orca.ts";
 import {
@@ -125,7 +122,7 @@ const defaultEvery = (ms: number, fn: () => void) => {
 	return () => clearInterval(timer);
 };
 
-type Payload = DiscordMessageCreatedEnvelope["payload"];
+type Payload = WorkMessageEvent["payload"];
 
 const HISTORY_LIMIT = 100;
 const FAILURE_TEXT =
@@ -204,9 +201,9 @@ export const busyText = (lastStatus: string | null) => {
 
 export type Intake = {
 	/** 受け付けた仕事が終わるまで待つ Promise を返す。HTTP は待たずに 202 を返す。 */
-	handle: (envelope: DiscordMessageCreatedEnvelope) => Promise<void>;
+	handle: (envelope: WorkMessageEvent) => Promise<void>;
 	/** 投稿のボタンが押された。許可の依頼のボタンだけを扱う。 */
-	press: (envelope: DiscordButtonPressedEnvelope) => Promise<void>;
+	press: (envelope: ButtonPressEvent) => Promise<void>;
 	/** 席から届いたメッセージ（質問、完了の報告、止まった知らせ）を投稿に運ぶ。 */
 	onSeatMessage: (msg: SeatMessage) => Promise<void>;
 	/** 朝会か見回りの席を作る。席の名前にする ID を返す。 */
@@ -259,7 +256,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		return m.authorName === yukarin.name ? "yukarin" : null;
 	};
 	const mentionsRole = (p: Payload, roleId: string | null) =>
-		roleId !== null && (p.mention_roles ?? []).includes(roleId);
+		roleId !== null && p.mention_roles.includes(roleId);
 	/** 投稿に書き込む話し手。読むだけの呼び出しは Yukarin の話し手のままにする（読むのはどちらも mizuya の bot）。 */
 	const botOf = (threadId: string) => speaker(partnerOf(threadId)).discord;
 
@@ -1248,7 +1245,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	 */
 	const pressed = async (
 		threadId: string,
-		p: DiscordButtonPressedEnvelope["payload"],
+		p: ButtonPressEvent["payload"],
 		answer: ApprovalAnswer,
 	) => {
 		const request = deps.approvals.get(threadId);
@@ -1309,7 +1306,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	/** 不要のボタン。押されたメッセージからボタンを外し、閉じたことを書き足す。 */
 	const dismissPressed = async (
 		threadId: string,
-		p: DiscordButtonPressedEnvelope["payload"],
+		p: ButtonPressEvent["payload"],
 	) => {
 		await dismissThread(threadId);
 		const bot = botOf(threadId);

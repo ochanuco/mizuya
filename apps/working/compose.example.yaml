@@ -17,8 +17,6 @@ services:
         "<Mac から届くアドレス>:6768",
       ]
     ports:
-      # gateway からは host.docker.internal:8180 で届く。受付は docker0 のゲートウェイにだけ公開し、LAN には出さない
-      - 172.17.0.1:8180:8080
       # Mac から席の状態を受ける口（MAC_STATE_TOKEN を設定したときだけ待ち受ける）。Mac から届く LAN の口に公開する
       - <LAN のアドレス>:8190:8090
       # orca serve は pairing 済みの端末しか受け付けない。Mac から届く口に公開する
