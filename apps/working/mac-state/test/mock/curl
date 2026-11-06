@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# send.sh のテスト用。標準入力のヘッダーと、--data-binary @file の本文を残す。
+set -euo pipefail
+printf 'curl %s\n' "$*" >>"$STATE/calls"
+cat >"$STATE/headers"
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--data-binary) cp "${2#@}" "$STATE/body" ;;
+	esac
+	shift
+done
+[ ! -e "$STATE/curl-fail" ] || exit 22

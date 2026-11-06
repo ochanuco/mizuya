@@ -1,0 +1,38 @@
+# コピーして使う。.env.working は commit しない（1Password などから注入する）。
+# 必要な変数は apps/working/README.md の「環境変数」を参照。
+# gateway とは別の compose project にする。gateway を更新しても Working の作業を止めないため。
+services:
+  yunomi-working:
+    # main の tag ではなく、動作確認済みの sha-<short> か digest に固定する
+    image: ghcr.io/ochanuco/yunomi-working:sha-0000000
+    restart: unless-stopped
+    env_file: .env.working
+    command:
+      [
+        "orca-ide",
+        "serve",
+        "--port",
+        "6768",
+        "--pairing-address",
+        "<Mac から届くアドレス>:6768",
+      ]
+    ports:
+      # gateway からは host.docker.internal:8180 で届く。受付は docker0 のゲートウェイにだけ公開し、LAN には出さない
+      - 172.17.0.1:8180:8080
+      # Mac から席の状態を受ける口（MAC_STATE_TOKEN を設定したときだけ待ち受ける）。Mac から届く LAN の口に公開する
+      - <LAN のアドレス>:8190:8090
+      # orca serve は pairing 済みの端末しか受け付けない。Mac から届く口に公開する
+      - 6768:6768
+    volumes:
+      - claude:/home/worker/.claude
+      - codex:/home/worker/.codex
+      - orca:/home/worker/.config
+      - state:/home/worker/state
+      - work:/home/worker/work
+
+volumes:
+  claude:
+  codex:
+  orca:
+  state:
+  work:

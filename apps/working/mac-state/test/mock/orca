@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# send.sh のテスト用。$STATE/orca-down があれば Orca が止まっている扱いにする。
+set -euo pipefail
+printf 'orca %s\n' "$*" >>"$STATE/calls"
+case "$1 $2" in
+"status --json")
+	[ ! -e "$STATE/orca-down" ] || exit 1
+	echo '{"ok":true,"result":{"runtime":{"reachable":true}}}'
+	;;
+"worktree ps") cat "$STATE/ps.json" ;;
+*)
+	echo "mock orca: unexpected $*" >&2
+	exit 1
+	;;
+esac

@@ -2,4 +2,27 @@
   $schema: 'https://docs.renovatebot.com/renovate-schema.json',
   // 共通設定と自動マージは ochanuco/.github の preset（README を参照）
   extends: ['github>ochanuco/.github', 'github>ochanuco/.github:automerge'],
+  customManagers: [
+    {
+      // Working の image に入れる人格の版。yunomi の main のコミット SHA を追う
+      customType: 'regex',
+      managerFilePatterns: ['/^apps/working/Dockerfile$/'],
+      matchStrings: [
+        '# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+) currentValue=(?<currentValue>\\S+)\\nARG YUNOMI_REF=(?<currentDigest>[0-9a-f]{40})',
+      ],
+    },
+  ],
+  packageRules: [
+    {
+      // 人格を変えたら週次を待たずに Working へ届ける。git-refs は公開日時を持たないので待ち日数を外す。
+      // 本番の人格なので自動マージはせず、人がレビューする
+      matchManagers: ['custom.regex'],
+      matchDepNames: ['https://github.com/ochanuco/yunomi'],
+      groupName: 'yunomi persona',
+      groupSlug: 'yunomi-persona',
+      schedule: ['at any time'],
+      minimumReleaseAge: null,
+      automerge: false,
+    },
+  ],
 }

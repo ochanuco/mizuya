@@ -1,0 +1,54 @@
+{
+	"hooks": {
+		"PreToolUse": [
+			{
+				"matcher": "*",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "/usr/local/bin/node /opt/yunomi-guard/hook.ts",
+						"timeout": 30
+					}
+				]
+			}
+		],
+		"SessionStart": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "/usr/local/bin/node /opt/yunomi-repo-map/hook.ts",
+						"timeout": 30
+					}
+				]
+			}
+		],
+		"PermissionDenied": [
+			{
+				"matcher": "*",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "/usr/local/bin/node /opt/yunomi-guard/hook.ts",
+						"timeout": 30
+					}
+				]
+			}
+		]
+	},
+	"env": {
+		"ENABLE_TOOL_SEARCH": "false"
+	},
+	"autoMode": {
+		"allow": [
+			"$defaults",
+			"Solo-Maintained Repo Merge: The user (GitHub login ochanuco) is the sole maintainer of every repository under the `ochanuco/` owner; no other human reviewer exists, so a missing approval there is not a review gap. Merging a PR in an `ochanuco/*` repository (`gh pr merge` with --merge/--squash/--rebase, optionally --delete-branch or --auto) is ordinary and is not Merge Without Review, provided the user asked for the merge in this session or the PR is one the agent opened this session for a task the user asked to land. `--admin` bypass of required checks is not covered by this exception."
+		]
+	},
+	"allowManagedHooksOnly": true,
+	"allowManagedPermissionRulesOnly": true,
+	"disableAllHooks": false,
+	"permissions": {
+		"disableBypassPermissionsMode": "disable"
+	}
+}

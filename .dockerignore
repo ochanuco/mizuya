@@ -1,0 +1,11 @@
+**/node_modules
+**/.turbo
+**/dist
+**/.wrangler
+**/.cloudflare
+.git
+.github
+.local
+.env*
+**/.dev.vars*
+**/*.test.ts

@@ -1,3 +1,8 @@
+packages:
+  - apps/*
+  - apps/working/handoff
+  - apps/working/mac-state
+
 allowBuilds:
   esbuild: true
   workerd: true

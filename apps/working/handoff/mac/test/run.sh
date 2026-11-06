@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# pickup.sh を、gh・orca・git をモックに差し替えて確かめる。
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+pickup="$here/../pickup.sh"
+failures=0
+STATE=""
+
+setup() {
+	STATE="$(mktemp -d)"
+	export STATE
+	: >"$STATE/calls"
+	cat >"$STATE/repos.json" <<'EOF'
+{"ok":true,"result":{"repos":[
+  {"id":"repo-a","path":"/src/alpha","gitRemoteIdentity":{"canonicalKey":"github.com/ochanuco/alpha"}}
+]}}
+EOF
+	echo '{"ok":true,"result":{"worktrees":[]}}' >"$STATE/worktrees.json"
+	echo '[]' >"$STATE/issues.json"
+}
+
+add_issue() {
+	local repo="$1" number="$2" branch_line="$3" labels="${4:-[\"working-handoff\"]}"
+	jq --arg repo "$repo" --argjson n "$number" --arg line "$branch_line" --argjson labels "$labels" '
+		. += [{
+			number: $n,
+			url: "https://github.com/\($repo)/issues/\($n)",
+			repository: {nameWithOwner: $repo},
+			labels: ($labels | map({name: .})),
+			body: "## 対象\n\n- 対象リポジトリ: `\($repo)`\n\($line)\n\n## 何をしたか\n\nなにか"
+		}]' "$STATE/issues.json" >"$STATE/issues.json.tmp"
+	mv "$STATE/issues.json.tmp" "$STATE/issues.json"
+}
+
+pickup() {
+	PATH="$here/mock:$PATH" "${PICKUP_BASH:-bash}" "$pickup" "$@" 2>"$STATE/log"
+}
+
+calls() { grep -c -F -- "$1" "$STATE/calls" || true; }
+
+expect() {
+	local name="$1" want="$2" got="$3"
+	if [ "$want" != "$got" ]; then
+		echo "FAIL $name: want [$want] got [$got]"
+		echo "--- calls"
+		cat "$STATE/calls"
+		echo "--- log"
+		cat "$STATE/log"
+		failures=$((failures + 1))
+	fi
+}
+
+t_orca_down() {
+	setup
+	add_issue ochanuco/alpha 1 '- 作業ブランチ: `dev/x`'
+	touch "$STATE/orca-down"
+	pickup
+	expect "orca down: gh を呼ばない" 0 "$(calls 'gh ')"
+	expect "orca down: log" 1 "$(grep -c 'Orca が起動していない' "$STATE/log")"
+}
+
+t_pick() {
+	setup
+	add_issue ochanuco/alpha 7 '- 作業ブランチ: `dev/feature-a`'
+	pickup
+	expect "pick: worktree create" 1 "$(calls 'orca worktree create --repo id:repo-a --name handoff-7 --base-branch origin/dev/feature-a --branch dev/feature-a --issue 7 --agent claude --prompt 申し送り issue https://github.com/ochanuco/alpha/issues/7 を読んで続きをやって')"
+	expect "pick: fetch" 1 "$(calls 'git -C /src/alpha fetch --quiet origin dev/feature-a')"
+	expect "pick: label" 1 "$(calls 'gh issue edit 7 --repo ochanuco/alpha --add-label working-handoff-picked')"
+	expect "pick: comment" 1 "$(calls 'gh issue comment 7 --repo ochanuco/alpha')"
+}
+
+t_idempotent() {
+	setup
+	add_issue ochanuco/alpha 7 '- 作業ブランチ: `dev/feature-a`'
+	pickup
+	pickup
+	expect "idempotent: create は 1 回" 1 "$(calls 'orca worktree create')"
+	expect "idempotent: label は 1 回" 1 "$(calls 'gh issue edit')"
+}
+
+t_already_picked() {
+	setup
+	add_issue ochanuco/alpha 3 '- 作業ブランチ: `dev/y`' '["working-handoff","working-handoff-picked"]'
+	pickup
+	expect "picked: create しない" 0 "$(calls 'orca worktree create')"
+	expect "picked: edit しない" 0 "$(calls 'gh issue edit')"
+}
+
+t_worktree_exists() {
+	setup
+	add_issue ochanuco/alpha 5 '- 作業ブランチ: `dev/z`'
+	echo '{"ok":true,"result":{"worktrees":[{"path":"/tmp/old","branch":"refs/heads/other","linkedIssue":5}]}}' \
+		>"$STATE/worktrees.json"
+	pickup
+	expect "exists: create しない" 0 "$(calls 'orca worktree create')"
+	expect "exists: 印は付ける" 1 "$(calls 'gh issue edit 5 --repo ochanuco/alpha --add-label working-handoff-picked')"
+}
+
+t_repo_missing() {
+	setup
+	add_issue ochanuco/beta 9 '- 作業ブランチ: `dev/b`'
+	add_issue ochanuco/alpha 2 '- 作業ブランチ: `dev/a`'
+	pickup
+	expect "missing: beta は作らない" 0 "$(calls 'orca worktree create --repo id:repo-a --name handoff-9')"
+	expect "missing: beta に印を付けない" 0 "$(calls 'gh issue edit 9')"
+	expect "missing: log" 1 "$(grep -c 'ochanuco/beta#9: Orca に ochanuco/beta が登録されていない' "$STATE/log")"
+	expect "missing: alpha は続けて作る" 1 "$(calls 'orca worktree create --repo id:repo-a --name handoff-2')"
+}
+
+t_bad_branch() {
+	setup
+	add_issue ochanuco/alpha 4 '- 作業ブランチ: `--upload-pack=evil`'
+	add_issue ochanuco/alpha 6 '作業ブランチの行が無い'
+	pickup
+	expect "bad branch: create しない" 0 "$(calls 'orca worktree create')"
+	expect "bad branch: fetch しない" 0 "$(calls 'git ')"
+	expect "bad branch: log" 2 "$(grep -c '作業ブランチの行が読めない' "$STATE/log")"
+}
+
+t_dry_run() {
+	setup
+	add_issue ochanuco/alpha 8 '- 作業ブランチ: `dev/d`'
+	pickup --dry-run
+	expect "dry-run: create しない" 0 "$(calls 'orca worktree create')"
+	expect "dry-run: fetch しない" 0 "$(calls 'git ')"
+	expect "dry-run: 書き込まない" 0 "$(grep -c -E 'gh (issue|label)' "$STATE/calls")"
+	expect "dry-run: 読み取りはする" 1 "$(calls 'gh search issues')"
+	expect "dry-run: create を表示" 1 "$(grep -c 'dry-run: orca worktree create' "$STATE/log")"
+	expect "dry-run: label を表示" 1 "$(grep -c 'dry-run: gh issue edit 8' "$STATE/log")"
+}
+
+for t in t_orca_down t_pick t_idempotent t_already_picked t_worktree_exists t_repo_missing t_bad_branch t_dry_run; do
+	"$t"
+	rm -rf "$STATE"
+done
+
+if [ "$failures" -gt 0 ]; then
+	echo "$failures failure(s)"
+	exit 1
+fi
+echo "ok"
