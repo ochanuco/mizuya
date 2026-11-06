@@ -164,7 +164,7 @@ describe("POST /discord/interactions", () => {
 		expect(edit.embeds[0]?.fields.at(-1)?.value).toBe(
 			`承認（Discord で <@${APPROVER_ID}>）`,
 		);
-		expect(edit.content).toBeUndefined();
+		expect(edit.content).toBe(`<@${APPROVER_ID}> 承認しました`);
 		expect(edit.allowed_mentions).toEqual({ parse: [] });
 	});
 
@@ -179,6 +179,8 @@ describe("POST /discord/interactions", () => {
 		});
 		const edit = calls[2]?.body as EditBody;
 		expect(edit.embeds[0]?.title).toBe(`却下: ${REPO}`);
+		expect(edit.content).toBe(`<@${APPROVER_ID}> 却下しました`);
+		expect(edit.allowed_mentions).toEqual({ parse: [] });
 		expect(edit.embeds[0]?.fields.at(-1)?.value).toBe(
 			`却下（Discord で <@${APPROVER_ID}>）`,
 		);
@@ -224,6 +226,8 @@ describe("POST /discord/interactions", () => {
 		await settled();
 		const edit = calls[2]?.body as EditBody;
 		expect(edit.components).toEqual(pendingMessage("target").components);
+		// 失敗では本文を変えない
+		expect(edit.content).toBeUndefined();
 		expect(edit.embeds[0]?.fields.at(-1)).toEqual({
 			name: "直近のエラー",
 			value: "承認に失敗: GitHub 403: Resource not accessible",

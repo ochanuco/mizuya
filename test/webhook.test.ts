@@ -203,8 +203,8 @@ describe("POST /github/webhook", () => {
 		const body = edits[0]?.body as PostedBody;
 		expect(body.components).toEqual([]);
 		expect(body.embeds[0]?.title).toBe(`承認: ${REPO}`);
-		// 決着の書き換えでは本文を送らず、承認者に再び通知しない
-		expect(body.content).toBeUndefined();
+		// 本文を結果に変えるが、メンションは残したまま承認者に再び通知しない
+		expect(body.content).toBe(`<@${APPROVER_ID}> 承認しました`);
 		expect(body.allowed_mentions).toEqual({ parse: [] });
 		expect(body.embeds[0]?.fields.at(-1)).toEqual({
 			name: "結果",
@@ -214,16 +214,18 @@ describe("POST /github/webhook", () => {
 	});
 
 	it.each([
-		["success", "承認", "承認（GitHub）"],
-		["failure", "却下", "却下（GitHub）"],
-		["cancelled", "取り消し", "取り消し（run の取り消し）"],
+		["success", "承認", "承認（GitHub）", "承認しました"],
+		["failure", "却下", "却下（GitHub）", "却下しました"],
+		["cancelled", "取り消し", "取り消し（run の取り消し）", "取り消されました"],
 	])(
 		"待っていた job が %s で終わったら、タイトルを「%s」にして「%s」と書く",
-		async (conclusion, label, text) => {
+		async (conclusion, label, text, content) => {
 			const calls = services({ messages: [pendingMessage("target")] });
 			await webhook(workflowJobPayload("completed", { conclusion }));
 			const body = calls.find((c) => c.method === "PATCH")?.body as PostedBody;
 			expect(body.embeds[0]?.title).toBe(`${label}: ${REPO}`);
+			expect(body.content).toBe(`<@${APPROVER_ID}> ${content}`);
+			expect(body.allowed_mentions).toEqual({ parse: [] });
 			expect(body.embeds[0]?.fields.at(-1)?.value).toBe(text);
 		},
 	);

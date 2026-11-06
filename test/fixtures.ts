@@ -50,6 +50,7 @@ export function pendingMessage(
 ) {
 	return {
 		id,
+		content: "<@100000000000000001> 承認待ちがあります",
 		embeds: [
 			{
 				title: `承認待ち: ${repo}`,
