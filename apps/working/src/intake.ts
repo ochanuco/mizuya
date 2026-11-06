@@ -18,7 +18,7 @@ import {
 	withNote,
 } from "./attachments.ts";
 import type { Summarizer } from "./claude-cli.ts";
-import type { Attachment, DiscordApi } from "./discord-rest.ts";
+import type { Attachment, DiscordApi, PostedMessage } from "./discord-rest.ts";
 import { DISMISS_BUTTON, dismissedText, isDismissButton } from "./dismiss.ts";
 import { seatNameOf } from "./guard/env.ts";
 import type { Ledger, Pending } from "./guard/ledger.ts";
@@ -60,11 +60,12 @@ import {
 	type WorkStatus,
 } from "./work-status.ts";
 
-/** 席を受け持つパートナーの bot と、その席に渡す前置き。 */
+/** 席を受け持つパートナーの話し手と、その席に渡す前置き。 */
 export type SeatPartner = {
-	/** 返事・タグ・リアクション・状態の欄・入力中の表示をこの bot で書く。 */
+	/** 返事・タグ・リアクション・状態の欄・入力中の表示をこの話し手で書く。 */
 	discord: DiscordApi;
-	botUserId: string;
+	/** 話し手が名乗る名前。どの席の発言かをこの名前で見分ける。 */
+	name: string;
 	/** 新しい席に最初に渡す前置き（人格、仕事のしかた、引き継ぎの指示）。 */
 	preamble: string;
 };
@@ -92,9 +93,14 @@ export type IntakeDeps = {
 	) => Promise<void>;
 	/** 新しい席に最初に渡す前置き（人格、仕事のしかた、引き継ぎの指示）。 */
 	preamble: string;
+	/** mizuya の bot のユーザー。メンションされたら Yukarin 宛てとみなす。 */
 	botUserId: string;
-	/** Akarin の bot。あれば Akarin 宛ての依頼に Codex CLI の席を作る。無ければすべて Yukarin が受ける。 */
+	/** Yukarin の話し手が名乗る名前。 */
+	yukarinName: string;
+	/** Akarin の席。あれば Akarin 宛ての依頼に Codex CLI の席を作る。無ければすべて Yukarin が受ける。 */
 	akarin?: SeatPartner | null;
+	/** 依頼の宛先の席を決める role。メンションされた role の席に渡す。 */
+	roleIds: { yukarin: string | null; akarin: string | null };
 	/** この人たちの発言だけで作業する。 */
 	ownerUserIds: ReadonlySet<string>;
 	workTextChannelId: string;
@@ -236,7 +242,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 
 	const yukarin: SeatPartner = {
 		discord: deps.discord,
-		botUserId: deps.botUserId,
+		name: deps.yukarinName,
 		preamble: deps.preamble,
 	};
 	/** 投稿の担当。Akarin の bot が無ければ、Akarin の投稿も Yukarin が受ける。 */
@@ -246,7 +252,15 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			: "yukarin";
 	const speaker = (partner: PartnerId): SeatPartner =>
 		partner === "akarin" && deps.akarin ? deps.akarin : yukarin;
-	/** 投稿に書き込む bot。読むだけの呼び出しは Yukarin の bot のままにする。 */
+	/** どの席の話し手が書いたメッセージか。webhook で席の名前を名乗ったものだけを数える。 */
+	const spokenBy = (m: PostedMessage): PartnerId | null => {
+		if (!m.isWebhook) return null;
+		if (deps.akarin && m.authorName === deps.akarin.name) return "akarin";
+		return m.authorName === yukarin.name ? "yukarin" : null;
+	};
+	const mentionsRole = (p: Payload, roleId: string | null) =>
+		roleId !== null && (p.mention_roles ?? []).includes(roleId);
+	/** 投稿に書き込む話し手。読むだけの呼び出しは Yukarin の話し手のままにする（読むのはどちらも mizuya の bot）。 */
 	const botOf = (threadId: string) => speaker(partnerOf(threadId)).discord;
 
 	const typingTimers = new Map<string, () => void>();
@@ -483,19 +497,26 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		return ch.value.parentId;
 	};
 
-	/** 仕事チャンネルの依頼の宛先。Akarin へのメンションがあれば Akarin、無ければ Yukarin 宛てかを見る。 */
+	/**
+	 * 仕事チャンネルの依頼の宛先。Akarin の role へのメンションがあれば Akarin、Yukarin の role か mizuya の bot へのメンションがあれば Yukarin。
+	 * メンションが無ければ、返信した先のメッセージを書いた席にする。
+	 */
 	const addresseeOf = async (p: Payload): Promise<PartnerId | null> => {
-		const akarin = deps.akarin;
-		if (akarin && p.mentions.includes(akarin.botUserId)) return "akarin";
-		if (p.mentions.includes(deps.botUserId)) return "yukarin";
+		if (deps.akarin && mentionsRole(p, deps.roleIds.akarin)) return "akarin";
+		if (
+			mentionsRole(p, deps.roleIds.yukarin) ||
+			p.mentions.includes(deps.botUserId)
+		) {
+			return "yukarin";
+		}
 		if (!p.reply_to_message_id) return null;
 		const replied = await deps.discord.getMessage(
 			p.channel_id,
 			p.reply_to_message_id,
 		);
 		if (!replied.ok) return null;
-		if (akarin && replied.value.authorId === akarin.botUserId) return "akarin";
-		return replied.value.authorId === deps.botUserId ? "yukarin" : null;
+		const by = spokenBy(replied.value);
+		return by === "akarin" && !deps.akarin ? "yukarin" : by;
 	};
 
 	const alive = () => seats.all().filter((s) => ALIVE.has(s.status));
@@ -639,7 +660,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			now: now(),
 			title,
 			history: history.ok ? history.value : [],
-			botUserId: speaker(partnerOf(threadId)).botUserId,
+			isSelf: (m) => spokenBy(m) === partnerOf(threadId),
 		});
 	};
 
@@ -1128,7 +1149,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	const startFromForumPost = async (p: Payload) => {
 		const threadId = p.channel_id;
 		const partner: PartnerId =
-			deps.akarin && p.mentions.includes(deps.akarin.botUserId)
+			deps.akarin && mentionsRole(p, deps.roleIds.akarin)
 				? "akarin"
 				: "yukarin";
 		await deps.seats.assign(threadId, partner);
@@ -1376,11 +1397,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	return {
 		handle: async (envelope) => {
 			const p = envelope.payload;
-			if (
-				p.author.id === deps.botUserId ||
-				p.author.id === deps.akarin?.botUserId
-			)
-				return;
+			if (p.author.id === deps.botUserId) return;
 			// 持ち主以外の人やほかの bot の発言で席を動かさない
 			if (p.author.is_bot || !deps.ownerUserIds.has(p.author.id)) {
 				log.debug("message from non-owner ignored", {

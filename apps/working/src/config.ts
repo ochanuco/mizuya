@@ -14,7 +14,14 @@ const timeOfDay = v.pipe(v.string(), v.regex(/^([01]\d|2[0-3]):[0-5]\d$/));
 
 const envSchema = v.object({
 	DISCORD_TOKEN: nonEmpty,
-	AKARIN_DISCORD_TOKEN: v.optional(nonEmpty),
+	YUKARIN_ROLE_ID: v.optional(nonEmpty),
+	AKARIN_ROLE_ID: v.optional(nonEmpty),
+	YUKARIN_AVATAR_URL: v.optional(v.pipe(v.string(), v.url())),
+	AKARIN_AVATAR_URL: v.optional(v.pipe(v.string(), v.url())),
+	MIZUYA_INBOX_URL: v.optional(v.pipe(v.string(), v.url())),
+	MIZUYA_INBOX_TOKEN: v.optional(nonEmpty),
+	MIZUYA_ACCESS_CLIENT_ID: v.optional(nonEmpty),
+	MIZUYA_ACCESS_CLIENT_SECRET: v.optional(nonEmpty),
 	CODEX_HOME: v.optional(nonEmpty),
 	WORKING_TOKEN: nonEmpty,
 	WORK_TEXT_CHANNEL_ID: nonEmpty,
@@ -55,12 +62,22 @@ const envSchema = v.object({
 });
 
 export type WorkingConfig = {
+	/** mizuya の bot トークン。Gateway で仕事チャンネルを読み、REST で読み書きし、席ごとに名乗る webhook を作る。 */
 	discordToken: string;
-	/** Akarin の bot トークン。無ければ Akarin の席を作らず、すべて Yukarin が受ける。 */
-	akarinDiscordToken: string | null;
+	/** 依頼の宛先の席を決める role。無ければその role では選べない。 */
+	roleIds: { yukarin: string | null; akarin: string | null };
+	/** 席の話し手の画像。無ければ webhook の既定の画像になる。 */
+	avatarUrls: { yukarin: string | null; akarin: string | null };
+	/** mizuya の Worker の受け箱。4 つそろったときだけつなぎ、ボタンを受け取る。 */
+	inbox: {
+		url: string;
+		token: string;
+		clientId: string;
+		clientSecret: string;
+	} | null;
 	/** Codex CLI の設定とログイン情報の置き場所。席の元のリポジトリの信頼をここの config.toml に書く。 */
 	codexHome: string;
-	/** gateway と共有するトークン。Authorization: Bearer で受ける。 */
+	/** yunomi の gateway と共有するトークン。Authorization: Bearer で受ける。 */
 	sharedToken: string;
 	workTextChannelId: string;
 	workForumChannelId: string;
@@ -143,7 +160,26 @@ export const loadConfig = (
 	};
 	return ok({
 		discordToken: e.DISCORD_TOKEN,
-		akarinDiscordToken: e.AKARIN_DISCORD_TOKEN ?? null,
+		roleIds: {
+			yukarin: e.YUKARIN_ROLE_ID ?? null,
+			akarin: e.AKARIN_ROLE_ID ?? null,
+		},
+		avatarUrls: {
+			yukarin: e.YUKARIN_AVATAR_URL ?? null,
+			akarin: e.AKARIN_AVATAR_URL ?? null,
+		},
+		inbox:
+			e.MIZUYA_INBOX_URL &&
+			e.MIZUYA_INBOX_TOKEN &&
+			e.MIZUYA_ACCESS_CLIENT_ID &&
+			e.MIZUYA_ACCESS_CLIENT_SECRET
+				? {
+						url: e.MIZUYA_INBOX_URL,
+						token: e.MIZUYA_INBOX_TOKEN,
+						clientId: e.MIZUYA_ACCESS_CLIENT_ID,
+						clientSecret: e.MIZUYA_ACCESS_CLIENT_SECRET,
+					}
+				: null,
 		codexHome: e.CODEX_HOME ?? `${home}/.codex`,
 		sharedToken: e.WORKING_TOKEN,
 		workTextChannelId: e.WORK_TEXT_CHANNEL_ID,

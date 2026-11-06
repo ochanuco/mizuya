@@ -16,7 +16,9 @@ describe("loadConfig", () => {
 			ok: true,
 			value: {
 				discordToken: "t",
-				akarinDiscordToken: null,
+				roleIds: { yukarin: null, akarin: null },
+				avatarUrls: { yukarin: null, akarin: null },
+				inbox: null,
 				codexHome: "/home/w/.codex",
 				sharedToken: "shared",
 				workTextChannelId: "100",
@@ -70,9 +72,36 @@ describe("loadConfig", () => {
 		expect(loadConfig({ ...base, ACTIVITY_LOG_TIME: "8:00" }).ok).toBe(false);
 	});
 
-	it("Akarin の bot トークンがあれば読む", () => {
-		const r = loadConfig({ ...base, AKARIN_DISCORD_TOKEN: "ak" });
-		expect(r.ok && r.value.akarinDiscordToken).toBe("ak");
+	it("席の role と画像を読む", () => {
+		const r = loadConfig({
+			...base,
+			YUKARIN_ROLE_ID: "501",
+			AKARIN_ROLE_ID: "502",
+			AKARIN_AVATAR_URL: "https://example.com/akarin.png",
+		});
+		expect(r.ok && r.value.roleIds).toEqual({ yukarin: "501", akarin: "502" });
+		expect(r.ok && r.value.avatarUrls).toEqual({
+			yukarin: null,
+			akarin: "https://example.com/akarin.png",
+		});
+	});
+
+	it("受け箱は 4 つそろったときだけ読む", () => {
+		const inbox = {
+			MIZUYA_INBOX_URL: "wss://mizuya.example.com/working/inbox",
+			MIZUYA_INBOX_TOKEN: "t",
+			MIZUYA_ACCESS_CLIENT_ID: "id",
+			MIZUYA_ACCESS_CLIENT_SECRET: "secret",
+		};
+		const r = loadConfig({ ...base, ...inbox });
+		expect(r.ok && r.value.inbox).toEqual({
+			url: "wss://mizuya.example.com/working/inbox",
+			token: "t",
+			clientId: "id",
+			clientSecret: "secret",
+		});
+		const partial = loadConfig({ ...base, ...inbox, MIZUYA_INBOX_TOKEN: "" });
+		expect(partial.ok && partial.value.inbox).toBeNull();
 	});
 
 	it("数値の設定を読み、空文字は未設定として扱う", () => {

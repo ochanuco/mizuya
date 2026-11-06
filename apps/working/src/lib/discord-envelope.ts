@@ -1,4 +1,4 @@
-// 正本は yunomi の packages/protocol（discord.ts と core の envelope.ts）。段階 2 で Gateway の振り分けが mizuya に入れば消す。
+// 正本は yunomi の packages/protocol（discord.ts と core の envelope.ts）。yunomi の Gateway が仕事カテゴリを振り分けなくなれば消す。
 import * as v from "valibot";
 
 export type Envelope<TType extends string = string, TPayload = unknown> = {
@@ -42,6 +42,8 @@ export const discordMessageCreatedPayloadSchema = v.object({
 	}),
 	content: v.string(),
 	mentions: v.array(snowflake),
+	// メンションされた role。Working が自分で Gateway から読んだときだけ持つ
+	mention_roles: v.optional(v.array(snowflake)),
 	// 作者がいま入っている VC（Gateway から見えるもの）。入っていなければ null、古い Gateway は省略
 	author_voice_channel_id: v.nullish(snowflake),
 	reply_to_message_id: v.nullish(snowflake),

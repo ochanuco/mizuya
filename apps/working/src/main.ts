@@ -20,6 +20,7 @@ import { trustCodexProject } from "./codex-trust.ts";
 import { loadConfig } from "./config.ts";
 import { createDiscordRest } from "./discord-rest.ts";
 import { spawnExec } from "./exec.ts";
+import { startWorkGateway } from "./gateway.ts";
 import {
 	createGithubEventsClient,
 	runGithubEvents,
@@ -27,6 +28,7 @@ import {
 } from "./github-events.ts";
 import { guardDirOf } from "./guard/env.ts";
 import { createLedger } from "./guard/ledger.ts";
+import { startInbox } from "./inbox.ts";
 import { agentOf, createIntake, type SeatPartner } from "./intake.ts";
 import { createLogger } from "./logger.ts";
 import { createMacStateServer, openMacStateStore } from "./mac-state.ts";
@@ -38,6 +40,7 @@ import { buildSeatPreamble } from "./prompts.ts";
 import { startRepoMapSync } from "./repo-map/sync.ts";
 import { openSeatStore } from "./seat-store.ts";
 import { createWorkingServer } from "./server.ts";
+import { createSpeaker, createWebhookDirectory } from "./speaker.ts";
 import { finishStandup, startStandup } from "./standup.ts";
 import { gatherStandupMaterials } from "./standup-materials.ts";
 import { parseQuietHours, startStandupTimer } from "./standup-timer.ts";
@@ -48,6 +51,10 @@ import {
 	startUsagePolling,
 	usageByPartner,
 } from "./usage.ts";
+import { startWorkActivity } from "./work-activity.ts";
+
+/** 席の話し手が webhook で名乗る名前。どの席の発言かもこの名前で見分ける。 */
+const SPEAKER_NAME = { yukarin: "ゆかりん", akarin: "あかりん" } as const;
 
 const config = loadConfig(process.env);
 if (!config.ok) {
@@ -106,41 +113,38 @@ if (cfg.memory) {
 	});
 }
 
-const discord = createDiscordRest({ token: cfg.discordToken, logger });
-const me = await discord.me();
+// 読み書きは mizuya の bot で行い、席の発言は webhook で席の名前と画像を名乗る
+const rest = createDiscordRest({ token: cfg.discordToken, logger });
+const me = await rest.me();
 if (!me.ok) {
 	logger.error("discord login failed", { error: me.error.type });
 	process.exit(1);
 }
-
-// Akarin の bot に入れなければ Akarin の席を作らず、Akarin 宛ての依頼も Yukarin が受ける
-const akarin: SeatPartner | null = await (async () => {
-	if (!cfg.akarinDiscordToken) {
-		logger.info("akarin seats disabled", { reason: "AKARIN_DISCORD_TOKEN" });
-		return null;
-	}
-	const akarinDiscord = createDiscordRest({
-		token: cfg.akarinDiscordToken,
-		logger,
+const applicationId = await rest.applicationId();
+if (!applicationId.ok) {
+	logger.error("discord application unreadable", {
+		error: applicationId.error.type,
 	});
-	const akarinMe = await akarinDiscord.me();
-	if (!akarinMe.ok) {
-		logger.error("akarin discord login failed; akarin seats disabled", {
-			error: akarinMe.error.type,
-		});
-		return null;
-	}
-	return {
-		discord: akarinDiscord,
-		botUserId: akarinMe.value.id,
-		preamble: buildSeatPreamble({
-			persona: await personaOf(["akarin"]),
-			handoffPrompt,
-			issueTemplate,
-			partnerName: "Akarin",
-		}),
-	};
-})();
+	process.exit(1);
+}
+const hooks = createWebhookDirectory(rest, applicationId.value);
+const discord = createSpeaker(rest, hooks, {
+	name: SPEAKER_NAME.yukarin,
+	avatarUrl: cfg.avatarUrls.yukarin,
+});
+const akarin: SeatPartner = {
+	discord: createSpeaker(rest, hooks, {
+		name: SPEAKER_NAME.akarin,
+		avatarUrl: cfg.avatarUrls.akarin,
+	}),
+	name: SPEAKER_NAME.akarin,
+	preamble: buildSeatPreamble({
+		persona: await personaOf(["akarin"]),
+		handoffPrompt,
+		issueTemplate,
+		partnerName: "Akarin",
+	}),
+};
 
 const env = childEnv(process.env, cfg.stateDir);
 const summarize = createSummarizer({
@@ -193,7 +197,7 @@ if (!prepared.ok) {
 }
 await seats.setOrca(prepared.value);
 logger.info("orca prepared", { run_id: prepared.value.runId });
-if (akarin) {
+{
 	const added = await trustCodexProject(
 		join(cfg.codexHome, "config.toml"),
 		await realpath(cfg.seatsRepo),
@@ -265,7 +269,9 @@ const intake = createIntake({
 	},
 	preamble,
 	botUserId: me.value.id,
+	yukarinName: SPEAKER_NAME.yukarin,
 	akarin,
+	roleIds: cfg.roleIds,
 	workTextChannelId: cfg.workTextChannelId,
 	workForumChannelId: cfg.workForumChannelId,
 	ownerUserIds: cfg.ownerUserIds,
@@ -319,14 +325,10 @@ const usage = startUsagePolling({
 		claude: createClaudeUsageReader({
 			credentialsPath: claudeCredentialsPathOf(process.env),
 		}),
-		...(akarin
-			? {
-					codex: createCodexUsageReader({
-						bin: "codex",
-						env: { ...env, CODEX_HOME: cfg.codexHome },
-					}),
-				}
-			: {}),
+		codex: createCodexUsageReader({
+			bin: "codex",
+			env: { ...env, CODEX_HOME: cfg.codexHome },
+		}),
 	},
 	logger,
 });
@@ -359,8 +361,55 @@ server.listen(cfg.port, () => {
 	logger.info("working intake ready", {
 		port: cfg.port,
 		bot_user_id: me.value.id,
-		akarin_bot_user_id: akarin?.botUserId ?? null,
 	});
+});
+
+const gateway = await startWorkGateway({
+	token: cfg.discordToken,
+	textChannelId: cfg.workTextChannelId,
+	forumChannelId: cfg.workForumChannelId,
+	accept: (envelope) => {
+		void intake.handle(envelope).catch((e: unknown) => {
+			logger.error("intake crashed", {
+				event_id: envelope.event_id,
+				error: String(e),
+			});
+		});
+	},
+	logger,
+});
+
+if (!cfg.inbox) {
+	logger.warn("mizuya inbox disabled; buttons are not received", {
+		reason:
+			"MIZUYA_INBOX_URL / MIZUYA_INBOX_TOKEN / MIZUYA_ACCESS_CLIENT_ID / MIZUYA_ACCESS_CLIENT_SECRET",
+	});
+}
+const inbox = cfg.inbox
+	? startInbox({
+			connection: cfg.inbox,
+			handlers: {
+				press: (envelope) => {
+					void intake.press(envelope).catch((e: unknown) => {
+						logger.error("intake crashed", {
+							event_id: envelope.event_id,
+							error: String(e),
+						});
+					});
+				},
+			},
+			logger,
+		})
+	: null;
+
+const stopWorkActivity = startWorkActivity({
+	snapshot: () => ({
+		partners: intake.summary().partners,
+		usage: usageByPartner(usage.current(), agentOf),
+	}),
+	setActivity: gateway.setActivity,
+	setBio: gateway.setBio,
+	logger,
 });
 
 const macStateServer = cfg.macState
@@ -504,6 +553,9 @@ const shutdown = (signal: string) => {
 	githubEventPoller?.stop();
 	macStateServer?.close();
 	server.close();
+	inbox?.stop();
+	stopWorkActivity();
+	void gateway.stop();
 	process.exit(0);
 };
 process.on("SIGTERM", () => shutdown("SIGTERM"));

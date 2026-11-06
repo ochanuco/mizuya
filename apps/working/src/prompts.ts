@@ -170,11 +170,11 @@ export const historyPrompt = (input: {
 	now: Date;
 	title: string | null;
 	history: readonly PostedMessage[];
-	botUserId: string;
+	/** この席自身が書いたメッセージか。 */
+	isSelf: (m: PostedMessage) => boolean;
 }) => {
 	const lines = input.history.map(
-		(m) =>
-			`[${m.authorId === input.botUserId ? "あなた" : m.authorName}] ${m.content}`,
+		(m) => `[${input.isSelf(m) ? "あなた" : m.authorName}] ${m.content}`,
 	);
 	return `${clock(input.now)}
 この投稿のこれまでのやりとりを読み、最後の発言に答えて続きをする。前の席の作業場所は残っていないので、要るものは clone し直す。
