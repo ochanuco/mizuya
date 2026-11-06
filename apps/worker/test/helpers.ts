@@ -15,9 +15,39 @@ export const OTHER_USER_ID = "100000000000000002";
 export const CHANNEL_ID = "200000000000000001";
 export const APPLICATION_ID = "300000000000000001";
 
+export type InboxPut = { kind: string; body: unknown; dedupe: string | null };
+
+/** 受け箱の Durable Object の代わり。置かれた行を記録し、dedupe が同じなら置かない */
+export function fakeInbox(): {
+	namespace: Bindings["WORKING_INBOX"];
+	puts: InboxPut[];
+	connects: Request[];
+} {
+	const puts: InboxPut[] = [];
+	const connects: Request[] = [];
+	const stub = {
+		put: async (kind: string, body: unknown, dedupe: string | null = null) => {
+			if (dedupe !== null && puts.some((p) => p.dedupe === dedupe))
+				return false;
+			puts.push({ kind, body, dedupe });
+			return true;
+		},
+		fetch: async (request: Request) => {
+			connects.push(request);
+			return new Response("connected");
+		},
+	};
+	const namespace = {
+		idFromName: (name: string) => name,
+		get: () => stub,
+	} as unknown as Bindings["WORKING_INBOX"];
+	return { namespace, puts, connects };
+}
+
 export async function makeEnv(): Promise<{
 	env: Bindings;
 	discordKey: CryptoKeyPair;
+	inbox: ReturnType<typeof fakeInbox>;
 }> {
 	const discordKey = (await crypto.subtle.generateKey(
 		{ name: "Ed25519" },
@@ -25,9 +55,13 @@ export async function makeEnv(): Promise<{
 		["sign", "verify"],
 	)) as CryptoKeyPair;
 	const publicKey = await crypto.subtle.exportKey("raw", discordKey.publicKey);
+	const inbox = fakeInbox();
 	return {
 		discordKey,
+		inbox,
 		env: {
+			WORKING_INBOX: inbox.namespace,
+			WORKING_INBOX_TOKEN: "test-inbox-token",
 			GITHUB_WEBHOOK_SECRET: "test-webhook-secret",
 			GITHUB_APPROVER_TOKEN: "test-github-token",
 			DISCORD_PUBLIC_KEY: toHex(publicKey as ArrayBuffer),

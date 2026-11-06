@@ -4,7 +4,7 @@ import {
 	MessageSchema,
 	sendEphemeralFollowup,
 } from "./discord.ts";
-import type { Bindings, WaitUntil } from "./env.ts";
+import { type Bindings, inboxOf, type WaitUntil } from "./env.ts";
 import { listPendingDeployments, reviewPendingDeployments } from "./github.ts";
 import {
 	type Decision,
@@ -25,13 +25,25 @@ const ResponseType = {
 } as const;
 const EPHEMERAL = 1 << 6;
 
-const UserSchema = v.object({ id: v.string() });
+const UserSchema = v.object({
+	id: v.string(),
+	username: v.optional(v.string()),
+	global_name: v.nullish(v.string()),
+	bot: v.optional(v.boolean()),
+});
+
+/** Working が出したボタンの custom_id の頭。これで始まるボタンは Working の受け箱に回す */
+export const WORKING_BUTTON_PREFIX = "working:";
 
 const InteractionSchema = v.object({
 	type: v.number(),
 	application_id: v.string(),
 	token: v.string(),
-	member: v.nullish(v.object({ user: UserSchema })),
+	guild_id: v.optional(v.string()),
+	channel_id: v.optional(v.string()),
+	member: v.nullish(
+		v.object({ user: UserSchema, nick: v.nullish(v.string()) }),
+	),
 	user: v.nullish(UserSchema),
 	data: v.nullish(v.object({ custom_id: v.optional(v.string()) })),
 	message: v.nullish(MessageSchema),
@@ -74,6 +86,11 @@ export async function handleDiscordInteraction(
 	}
 	if (interaction.type !== InteractionType.MESSAGE_COMPONENT) {
 		return ephemeral("mizuya はこの操作に対応していません。");
+	}
+
+	const customId = interaction.data?.custom_id;
+	if (customId?.startsWith(WORKING_BUTTON_PREFIX)) {
+		return forwardToWorking(interaction, customId, env, waitUntil);
 	}
 
 	const decision = interaction.data?.custom_id
@@ -178,4 +195,46 @@ async function decide(
 	);
 	if (!res.ok) return fail(`GitHub ${res.error.status}: ${res.error.message}`);
 	return { type: state, by: `Discord で <@${userId}>` };
+}
+
+/**
+ * Working のボタンは受け箱に置き、Working が受け取って処理する。押した人が持ち主かどうかは Working が決める。
+ * 受け箱に置くのを待たずに応答し、Working が止まっていても Discord には失敗と見せない。
+ */
+function forwardToWorking(
+	interaction: Interaction,
+	customId: string,
+	env: Bindings,
+	waitUntil: WaitUntil,
+): Response {
+	const member = interaction.member;
+	const user = member?.user ?? interaction.user;
+	if (
+		!user ||
+		!interaction.guild_id ||
+		!interaction.channel_id ||
+		!interaction.message
+	) {
+		return ephemeral("サーバーのメッセージのボタンだけを受け付けます。");
+	}
+	const button = {
+		guild_id: interaction.guild_id,
+		channel_id: interaction.channel_id,
+		message_id: interaction.message.id,
+		custom_id: customId,
+		user: {
+			id: user.id,
+			display_name:
+				member?.nick ?? user.global_name ?? user.username ?? user.id,
+			is_bot: user.bot ?? false,
+		},
+	};
+	waitUntil(
+		inboxOf(env)
+			.put("button", button)
+			.catch((error: unknown) => {
+				console.error("inbox: ボタンを置けない", error);
+			}),
+	);
+	return json({ type: ResponseType.DEFERRED_UPDATE_MESSAGE });
 }

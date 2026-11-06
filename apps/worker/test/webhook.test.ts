@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	failedRun,
 	JOB_ID,
 	pendingMessage,
 	REPO,
 	RUN_ID,
+	review,
 	workflowJobPayload,
 } from "./fixtures.ts";
 import {
@@ -34,20 +36,22 @@ async function webhook(
 	payload: unknown,
 	event = "workflow_job",
 	signature?: string,
+	delivery = "delivery-1",
 ) {
-	const { env } = await makeEnv();
+	const { env, inbox } = await makeEnv();
 	const body = typeof payload === "string" ? payload : JSON.stringify(payload);
 	const request = new Request("https://mizuya.example.com/github/webhook", {
 		method: "POST",
 		headers: {
 			"content-type": "application/json",
 			"x-github-event": event,
+			"x-github-delivery": delivery,
 			"x-hub-signature-256":
 				signature ?? (await githubSignature(env.GITHUB_WEBHOOK_SECRET, body)),
 		},
 		body,
 	});
-	return callWorker(request, env);
+	return { inbox, ...(await callWorker(request, env)) };
 }
 
 /** GitHub の pending_deployments と Discord のメッセージ一覧・投稿・編集をまとめてモックする */
@@ -249,5 +253,54 @@ describe("POST /github/webhook", () => {
 		await webhook(workflowJobPayload("in_progress"));
 		expect(calls.map((c) => c.method)).toEqual(["GET", "GET", "PATCH"]);
 		expect(calls[2]?.url).toBe(`${MESSAGES_URL}/old`);
+	});
+
+	describe("席を動かす出来事", () => {
+		it("受け箱に delivery ごとに置き、承認の処理は通らない", async () => {
+			const calls = mockFetch(() => undefined);
+			const { response, inbox } = await webhook(failedRun(), "workflow_run");
+			expect(response.status).toBe(202);
+			expect(calls).toHaveLength(0);
+			expect(inbox.puts).toEqual([
+				{
+					kind: "github",
+					dedupe: "github:delivery-1",
+					body: {
+						kind: "ci_failed",
+						repo: "o/r",
+						prs: [12],
+						name: "ci",
+						branch: "dev/x",
+						conclusion: "failure",
+						url: "https://github.com/o/r/actions/runs/1",
+						actor: "someone",
+					},
+				},
+			]);
+		});
+
+		it("レビューも置く", async () => {
+			const { inbox } = await webhook(review, "pull_request_review");
+			expect(inbox.puts[0]?.body).toMatchObject({ kind: "review", pr: 3 });
+		});
+
+		it("席を動かさない出来事は置かずに 204", async () => {
+			const { response, inbox } = await webhook(
+				failedRun("success"),
+				"workflow_run",
+			);
+			expect(response.status).toBe(204);
+			expect(inbox.puts).toEqual([]);
+		});
+
+		it("署名が合わなければ置かない", async () => {
+			const { response, inbox } = await webhook(
+				failedRun(),
+				"workflow_run",
+				"sha256=00",
+			);
+			expect(response.status).toBe(401);
+			expect(inbox.puts).toEqual([]);
+		});
 	});
 });

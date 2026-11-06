@@ -63,3 +63,21 @@ export async function verifyDiscordSignature(
 		return false;
 	}
 }
+
+/** 共有の token を比べる。長さも中身も比べる時間に出ないよう、両方の SHA-256 を最後まで比べる */
+export async function sameSecret(
+	given: string,
+	expected: string,
+): Promise<boolean> {
+	const [a, b] = await Promise.all(
+		[given, expected].map(
+			async (s) =>
+				new Uint8Array(
+					await crypto.subtle.digest("SHA-256", encoder.encode(s)),
+				),
+		),
+	);
+	let diff = 0;
+	for (let i = 0; i < 32; i++) diff |= (a?.[i] ?? 0) ^ (b?.[i] ?? 0);
+	return diff === 0;
+}

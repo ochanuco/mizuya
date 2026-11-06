@@ -3,7 +3,7 @@
 	"name": "mizuya",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-10-01",
-	// 入口は Discord と GitHub からの署名つきリクエストだけなので、独自ドメインに絞る
+	// 入口は Discord と GitHub からの署名つきリクエストと、Access を通った Working の接続だけなので、独自ドメインに絞る
 	"workers_dev": false,
 	"preview_urls": false,
 	"routes": [
@@ -12,6 +12,10 @@
 			"custom_domain": true
 		}
 	],
+	"durable_objects": {
+		"bindings": [{ "name": "WORKING_INBOX", "class_name": "WorkingInbox" }]
+	},
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkingInbox"] }],
 	"observability": {
 		"enabled": true
 	}

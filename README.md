@@ -4,10 +4,10 @@
 
 機能は 2 つあり、それぞれ `apps/` の下に置く。
 
-| 場所           | 中身                                                                                                                                                                                                               |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `apps/worker`  | GitHub Actions のデプロイ承認。Environment の required reviewers で止まった run を Discord に知らせ、ボタンで承認・却下できるようにする Cloudflare Worker。この README の以下の節はこれの説明                      |
-| `apps/working` | Working（仕事）。Discord の仕事フォーラムの依頼を Orca の席で Claude CLI と Codex CLI に作業させる、docker01 のコンテナ。記憶と人格は yunomi のものを使う。説明は [apps/working/README.md](apps/working/README.md) |
+| 場所           | 中身                                                                                                                                                                                                                                                                 |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/worker`  | GitHub Actions のデプロイ承認。Environment の required reviewers で止まった run を Discord に知らせ、ボタンで承認・却下できるようにする Cloudflare Worker。Working 向けのボタンと GitHub の出来事を受け箱に置いて Working に渡す。この README の以下の節はこれの説明 |
+| `apps/working` | Working（仕事）。Discord の仕事フォーラムの依頼を Orca の席で Claude CLI と Codex CLI に作業させる、docker01 のコンテナ。記憶と人格は yunomi のものを使う。説明は [apps/working/README.md](apps/working/README.md)                                                   |
 
 ## 動き
 
@@ -16,17 +16,26 @@
 3. ボタンを押すと、Discord が `POST /discord/interactions` を呼ぶ。押した人が承認者でなければ本人にだけ見える返事で断る。承認者なら deferred update で応答し、メッセージの run の URL と Environment 欄から対象を読み、同じ run の `pending_deployments` から Environment の ID を取って承認・却下を送る。決着したらタイトルを「承認」「却下」「取り消し」に、本文を「承認しました」「却下しました」「取り消されました」に変え、誰が決めたかを書いてボタンを消す。書き換えでは承認者に再び通知しない。失敗したらエラーを書き、押し直せるようボタンを残す。承認待ちがもう無ければ、押した人にだけそう伝える。
 4. GitHub の画面で承認・却下された場合は、待っていた job の `workflow_job` が `in_progress`（承認）か `completed`（却下は `failure`、run の取り消しは `cancelled`）で来る。承認用チャンネルを直近 500 件までさかのぼり、ボタンの残るメッセージを run の URL と job で探して決着済みに書き換える。対応表は持たない。
 
-| エンドポイント               | 用途                                                      |
-| ---------------------------- | --------------------------------------------------------- |
-| `POST /github/webhook`       | `X-Hub-Signature-256` を検証し、`workflow_job` を処理する |
-| `POST /discord/interactions` | Ed25519 署名を検証し、PING とボタンを処理する             |
-| `GET /health`                | 疎通確認                                                  |
+| エンドポイント               | 用途                                                                                                 |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `POST /github/webhook`       | `X-Hub-Signature-256` を検証し、`workflow_job` を処理する。席を動かす出来事は Working の受け箱に置く |
+| `POST /discord/interactions` | Ed25519 署名を検証し、PING とボタンを処理する。Working のボタンは Working の受け箱に置く             |
+| `GET /working/inbox`         | Working が受け箱に WebSocket でつなぐ口。Access の service token と `WORKING_INBOX_TOKEN` で確かめる |
+| `GET /health`                | 疎通確認                                                                                             |
+
+## Working の受け箱
+
+Working（docker01）は公開していないので、Worker が受けた仕事向けの出来事は Durable Object `WorkingInbox` に置き、Working が外向きの WebSocket でつないで受け取る。Working は受け取った行を ack し、ack された行だけを消す。つながっていない間に置かれた行は、次につないだときに渡す。承認の処理は受け箱を通らないので、Working が止まっていても承認はできる。
+
+- ボタン: custom_id が `working:` で始まるボタンは、deferred update で応答してから、押された場所・custom_id・押した人を置く。押した人が持ち主かどうかは Working が決める。interaction の token は 15 分で切れるので、それより古いボタンは渡さない。
+- GitHub の出来事: `workflow_run` と `check_suite`（Actions 以外）の失敗、`pull_request_review` の submitted、`issue_comment` の created を、席の材料になる値だけに絞って置く（`src/work-events.ts`）。`X-GitHub-Delivery` で再送を一つにまとめる。6 時間より古いものは渡さない（Working の見回りが拾う）。
+- 渡せないまま 1 日たった行は、Durable Object の alarm が消す。
 
 ## 構成
 
-- Cloudflare Worker `mizuya`。chabatake が管理する独自ドメインだけで受け、`workers.dev` は閉じている。常時接続は持たない（Discord は HTTP interactions）。
-- ストレージは使わない。
-- `apps/worker/src/` の `index.ts` が経路の振り分け、`webhook.ts` が GitHub の webhook、`interactions.ts` が Discord のボタン、`review.ts` がメッセージの組み立てと、メッセージから対象を読む処理、`signature.ts` が署名検証、`github.ts` と `discord.ts` が外部 API。
+- Cloudflare Worker `mizuya`。chabatake が管理する独自ドメインだけで受け、`workers.dev` は閉じている。Discord は HTTP interactions で受ける。常時接続は、Working が受け箱につなぐ WebSocket だけ。
+- ストレージは Working の受け箱（Durable Object `WorkingInbox` の SQLite）だけ。
+- `apps/worker/src/` の `index.ts` が経路の振り分け、`webhook.ts` が GitHub の webhook、`interactions.ts` が Discord のボタン、`review.ts` がメッセージの組み立てと、メッセージから対象を読む処理、`signature.ts` が署名検証、`work-events.ts` が GitHub の出来事の絞り込み、`inbox.ts` と `inbox-object.ts` と `inbox-route.ts` が Working の受け箱、`github.ts` と `discord.ts` が外部 API。
 
 ## 開発
 
@@ -50,15 +59,16 @@ main への push で `apps/worker` などが変わると、GitHub Actions の `d
 
 Worker の secret はすべて 1Password の vault `gh-deploy` に置き、デプロイのたびに反映する。
 
-| 名前                          | 1Password の参照                                      | 中身                                                                                        |
-| ----------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `CLOUDFLARE_API_TOKEN`        | `gh-deploy/cloudflare-workers/credential`             | デプロイ用（Worker には入れない）                                                           |
-| `GITHUB_WEBHOOK_SECRET`       | `gh-deploy/mizuya-worker/github_webhook_secret`       | webhook の署名鍵。各 repo の webhook と同じ値                                               |
-| `GITHUB_APPROVER_TOKEN`       | `gh-deploy/mizuya-worker/github_approver_token`       | required reviewer 本人の fine-grained PAT。対象 repo の Deployments: write と Actions: read |
-| `DISCORD_PUBLIC_KEY`          | `gh-deploy/mizuya-worker/discord_public_key`          | Discord application の Public Key                                                           |
-| `DISCORD_BOT_TOKEN`           | `gh-deploy/mizuya-worker/discord_bot_token`           | mizuya bot の token                                                                         |
-| `DISCORD_APPROVER_USER_ID`    | `gh-deploy/mizuya-worker/discord_approver_user_id`    | ボタンを押してよい Discord の user ID                                                       |
-| `DISCORD_APPROVAL_CHANNEL_ID` | `gh-deploy/mizuya-worker/discord_approval_channel_id` | 承認用チャンネルの ID                                                                       |
+| 名前                          | 1Password の参照                                      | 中身                                                                                                                              |
+| ----------------------------- | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `CLOUDFLARE_API_TOKEN`        | `gh-deploy/cloudflare-workers/credential`             | デプロイ用（Worker には入れない）                                                                                                 |
+| `GITHUB_WEBHOOK_SECRET`       | `gh-deploy/mizuya-worker/github_webhook_secret`       | webhook の署名鍵。各 repo の webhook と同じ値                                                                                     |
+| `GITHUB_APPROVER_TOKEN`       | `gh-deploy/mizuya-worker/github_approver_token`       | required reviewer 本人の fine-grained PAT。対象 repo の Deployments: write と Actions: read                                       |
+| `DISCORD_PUBLIC_KEY`          | `gh-deploy/mizuya-worker/discord_public_key`          | Discord application の Public Key                                                                                                 |
+| `DISCORD_BOT_TOKEN`           | `gh-deploy/mizuya-worker/discord_bot_token`           | mizuya bot の token                                                                                                               |
+| `DISCORD_APPROVER_USER_ID`    | `gh-deploy/mizuya-worker/discord_approver_user_id`    | ボタンを押してよい Discord の user ID                                                                                             |
+| `DISCORD_APPROVAL_CHANNEL_ID` | `gh-deploy/mizuya-worker/discord_approval_channel_id` | 承認用チャンネルの ID                                                                                                             |
+| `WORKING_INBOX_TOKEN`         | `gh-deploy/mizuya-worker/working_inbox_token`         | Working が受け箱につなぐときの token。Working の `MIZUYA_INBOX_TOKEN` と同じ値。Worker に一度も入れていなければ受け箱の口を閉じる |
 
 ## 人がやるセットアップ
 

@@ -1,6 +1,6 @@
 import * as v from "valibot";
 import { createMessage, editMessage, findMessages } from "./discord.ts";
-import type { Bindings } from "./env.ts";
+import { type Bindings, inboxOf } from "./env.ts";
 import { listPendingDeployments } from "./github.ts";
 import {
 	jobIdOf,
@@ -12,6 +12,7 @@ import {
 	targetOf,
 } from "./review.ts";
 import { verifyGithubSignature } from "./signature.ts";
+import { toWorkEvent, WORK_EVENT_NAMES } from "./work-events.ts";
 
 const WorkflowJobSchema = v.object({
 	action: v.string(),
@@ -52,6 +53,14 @@ export async function handleGithubWebhook(
 
 	const event = request.headers.get("x-github-event");
 	if (event === "ping") return new Response("pong");
+	if (event !== null && WORK_EVENT_NAMES.has(event)) {
+		return putWorkEvent(
+			event,
+			body,
+			request.headers.get("x-github-delivery"),
+			env,
+		);
+	}
 	if (event !== "workflow_job") return new Response(null, { status: 204 });
 
 	const parsed = v.safeParse(WorkflowJobSchema, parseJson(body));
@@ -181,4 +190,19 @@ async function settleFromGithub(
 		if (!res.ok) return discordError(res.error);
 	}
 	return new Response(`settled ${matches.value.length}`);
+}
+
+/** 席を動かす出来事だけを受け箱に置く。承認の処理とは別で、Working が止まっていても承認には響かない */
+async function putWorkEvent(
+	event: string,
+	body: string,
+	delivery: string | null,
+	env: Bindings,
+): Promise<Response> {
+	if (!delivery) return new Response("missing delivery", { status: 400 });
+	const work = toWorkEvent(event, parseJson(body));
+	if (work === null) return new Response(null, { status: 204 });
+	// 配信のやり直しは同じ X-GitHub-Delivery で来るので、一つにまとめる
+	const put = await inboxOf(env).put("github", work, `github:${delivery}`);
+	return new Response(put ? "queued" : "duplicate", { status: 202 });
 }
