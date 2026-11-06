@@ -33,7 +33,7 @@ export const memoryApprovals = (): ApprovalStore & {
 	};
 };
 
-export const tempDir = (prefix = "yunomi-working-") =>
+export const tempDir = (prefix = "mizuya-working-") =>
 	mkdtempSync(join(tmpdir(), prefix));
 
 export const tempLedger = (dir = tempDir()) => createLedger(dir);

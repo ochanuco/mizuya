@@ -9,8 +9,8 @@ import type { Operation } from "./operation.ts";
  * 席は orca serve が起動するので、席ごとの値（投稿や許可）は環境変数ではなく席の場所とファイルで渡す。
  */
 export const GUARD_ENV = {
-	stateDir: "YUNOMI_STATE_DIR",
-	seatsDir: "YUNOMI_SEATS_DIR",
+	stateDir: "MIZUYA_STATE_DIR",
+	seatsDir: "MIZUYA_SEATS_DIR",
 } as const;
 
 /** 席の worktree の名前。投稿の ID をそのまま入れ、hook は名前から投稿を引く。 */
@@ -95,7 +95,7 @@ export const guardRunFromEnv = (
 				stateDir,
 				"/etc/claude-code",
 				"/etc/codex",
-				"/opt/yunomi-guard",
+				"/opt/mizuya-guard",
 				"/proc",
 			],
 			claudeProjectsDir: `${claudeDir}/projects`,

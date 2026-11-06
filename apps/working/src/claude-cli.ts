@@ -28,7 +28,7 @@ export const childEnv = (
 		if (val !== undefined) out[key] = val;
 	}
 	// yunomi-memory は接続情報をここから読む
-	out.YUNOMI_STATE_DIR = stateDir;
+	out.MIZUYA_STATE_DIR = stateDir;
 	return out;
 };
 

@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>local.yunomi.working-handoff</string>
+	<string>local.mizuya.working-handoff</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>/bin/bash</string>

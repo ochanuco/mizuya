@@ -2,9 +2,9 @@
 # 必要な変数は apps/working/README.md の「環境変数」を参照。
 # gateway とは別の compose project にする。gateway を更新しても Working の作業を止めないため。
 services:
-  yunomi-working:
+  mizuya-working:
     # main の tag ではなく、動作確認済みの sha-<short> か digest に固定する
-    image: ghcr.io/ochanuco/yunomi-working:sha-0000000
+    image: ghcr.io/ochanuco/mizuya-working:sha-0000000
     restart: unless-stopped
     env_file: .env.working
     command:

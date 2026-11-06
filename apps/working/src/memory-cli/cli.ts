@@ -21,7 +21,7 @@ const PARTNER = /^[a-z]+$/;
 
 /**
  * 席の中で呼ばれたら、その席の投稿の ID。見張りの新着をその投稿に書くのに使う。
- * 席の作業場所は YUNOMI_SEATS_DIR の下の seat-<投稿の ID>（src/guard/env.ts の seatOf と同じ形）。
+ * 席の作業場所は MIZUYA_SEATS_DIR の下の seat-<投稿の ID>（src/guard/env.ts の seatOf と同じ形）。
  */
 export const seatThreadOf = (
 	seatsDir: string | undefined,
@@ -70,7 +70,7 @@ const readCredentials = (
 	env: Record<string, string | undefined>,
 ): MemoryCredentials | null => {
 	const stateDir =
-		env.YUNOMI_STATE_DIR ?? `${env.HOME ?? "/home/worker"}/state`;
+		env.MIZUYA_STATE_DIR ?? `${env.HOME ?? "/home/worker"}/state`;
 	try {
 		const c = JSON.parse(
 			readFileSync(credentialsPathOf(stateDir), "utf8"),
@@ -277,7 +277,7 @@ export const runMemoryCli = async (
 									? {
 											discord_user_id: creds.discord_user_id,
 											watch,
-											...threadField(env.YUNOMI_SEATS_DIR, cwd),
+											...threadField(env.MIZUYA_SEATS_DIR, cwd),
 										}
 									: command === "watch-stop"
 										? {

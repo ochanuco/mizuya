@@ -123,7 +123,7 @@ export type ChimeraOptions = {
 };
 
 /** chimera の手前の Cloudflare は User-Agent の無い要求を弾く。 */
-export const CHIMERA_USER_AGENT = "yunomi-working/1.0";
+export const CHIMERA_USER_AGENT = "mizuya-working/1.0";
 
 export const createChimeraImages = (opts: ChimeraOptions): ChimeraImages => {
 	const doFetch = opts.fetch ?? fetch;
