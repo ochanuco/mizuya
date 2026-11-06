@@ -37,7 +37,7 @@ pnpm run build        # wrangler deploy --dry-run
 
 main への push で GitHub Actions の `deploy` workflow が出す（ochanuco/.github の `deploy-plan.yml` と `deploy.yml`）。前回の記録がない・ロールバックのときだけ Environment `production-approval` の承認で止まる。手動実行（入力 `ref` は main か main 上の SHA）はロールバック用。
 
-認証情報は Environment `production` の secret `OP_SA_DEPLOY`（1Password の service account）で、`.github/deploy/production.env.op` の参照を `op run` が解決する。`scripts/deploy.sh` が secret を Worker に反映して `wrangler deploy` し、`/health` を確かめる。
+認証情報は Environment `production` の secret `OP_SA_DEPLOY`（1Password の service account）で、`.github/deploy/production.env.op` の参照を `op run` が解決する。`scripts/deploy.sh` が secret がすべてそろっていることを確かめ、Worker に反映して `wrangler deploy` し、`/health` を確かめる。
 
 ## secret
 

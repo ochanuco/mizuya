@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 使い方: scripts/deploy.sh production
 # CLOUDFLARE_API_TOKEN と Worker の secret は呼び出し側（deploy workflow の op run）が環境変数で渡す。
-# secret は設定されているものだけ反映し、argv に載せないよう --secrets-file で渡す。
+# secret は毎回すべて反映する。argv に載せないよう --secrets-file で渡す。
 set -euo pipefail
 
 if [ "${1:-}" != "production" ]; then
@@ -21,8 +21,15 @@ secrets=(
   DISCORD_APPROVAL_CHANNEL_ID
 )
 
-if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
-  echo "error: CLOUDFLARE_API_TOKEN が未設定" >&2
+# /health は secret が無くても応答するので、欠けたまま出すと署名検証が壊れても気づけない。足りないものを一度に示して止める
+missing=()
+for name in CLOUDFLARE_API_TOKEN "${secrets[@]}"; do
+  if [ -z "${!name:-}" ]; then
+    missing+=("$name")
+  fi
+done
+if [ ${#missing[@]} -gt 0 ]; then
+  echo "error: 未設定: ${missing[*]}（.github/deploy/production.env.op の参照先を確かめる）" >&2
   exit 1
 fi
 
@@ -30,19 +37,10 @@ secrets_file=$(mktemp)
 trap 'rm -f "$secrets_file"' EXIT
 chmod 600 "$secrets_file"
 for name in "${secrets[@]}"; do
-  if [ -n "${!name:-}" ]; then
-    printf '%s=%s\n' "$name" "${!name}" >> "$secrets_file"
-  else
-    # 前回のデプロイで反映済みのことがあるので止めない
-    echo "warning: $name が未設定。Worker secret に無ければ動かない" >&2
-  fi
+  printf '%s=%s\n' "$name" "${!name}" >> "$secrets_file"
 done
 
-deploy_args=()
-if [ -s "$secrets_file" ]; then
-  deploy_args+=(--secrets-file "$secrets_file")
-fi
-pnpm exec wrangler deploy "${deploy_args[@]+"${deploy_args[@]}"}"
+pnpm exec wrangler deploy --secrets-file "$secrets_file"
 
 for attempt in $(seq 1 10); do
   if curl -fsS --max-time 10 "https://$host/health" > /dev/null; then
