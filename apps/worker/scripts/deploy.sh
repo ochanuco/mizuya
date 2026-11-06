@@ -33,6 +33,11 @@ if [ ${#missing[@]} -gt 0 ]; then
   exit 1
 fi
 
+# 受け箱の token は無くても出せる。無ければ Worker が受け箱の口を閉じる
+if [ -n "${WORKING_INBOX_TOKEN:-}" ]; then
+  secrets+=(WORKING_INBOX_TOKEN)
+fi
+
 secrets_file=$(mktemp)
 trap 'rm -f "$secrets_file"' EXIT
 chmod 600 "$secrets_file"

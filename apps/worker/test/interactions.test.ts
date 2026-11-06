@@ -24,10 +24,11 @@ async function interaction(
 	options: { tamper?: boolean } = {},
 ): Promise<{
 	env: Bindings;
+	inbox: Awaited<ReturnType<typeof makeEnv>>["inbox"];
 	response: Response;
 	settled: () => Promise<void>;
 }> {
-	const { env, discordKey } = await makeEnv();
+	const { env, discordKey, inbox } = await makeEnv();
 	const body = JSON.stringify(payload);
 	const timestamp = String(Math.floor(Date.now() / 1000));
 	const signature = await discordSignature(
@@ -47,7 +48,7 @@ async function interaction(
 			body: options.tamper ? `${body} ` : body,
 		},
 	);
-	return { env, ...(await callWorker(request, env)) };
+	return { env, inbox, ...(await callWorker(request, env)) };
 }
 
 function buttonPress(customId: string, userId = APPROVER_ID) {
@@ -247,5 +248,65 @@ describe("POST /discord/interactions", () => {
 			data: { flags: 64 },
 		});
 		expect(calls).toHaveLength(0);
+	});
+
+	describe("Working のボタン", () => {
+		function workingPress(customId: string) {
+			return {
+				type: 3,
+				application_id: APPLICATION_ID,
+				token: "interaction-token",
+				guild_id: "400000000000000001",
+				channel_id: "400000000000000002",
+				member: {
+					user: { id: OTHER_USER_ID, username: "someone", global_name: "誰か" },
+					nick: null,
+				},
+				data: { custom_id: customId, component_type: 2 },
+				message: { id: "400000000000000003" },
+			};
+		}
+
+		it("deferred update を返し、受け箱に置く。承認の処理は通らない", async () => {
+			const calls = mockFetch(() => undefined);
+			const { response, settled, inbox } = await interaction(
+				workingPress("working:approval:grant"),
+			);
+			expect(await response.json()).toEqual({ type: 6 });
+			await settled();
+			expect(calls).toHaveLength(0);
+			expect(inbox.puts).toEqual([
+				{
+					kind: "button",
+					dedupe: null,
+					body: {
+						guild_id: "400000000000000001",
+						channel_id: "400000000000000002",
+						message_id: "400000000000000003",
+						custom_id: "working:approval:grant",
+						user: { id: OTHER_USER_ID, display_name: "誰か", is_bot: false },
+					},
+				},
+			]);
+		});
+
+		it("サーバーの外のボタンは断る", async () => {
+			const press = { ...workingPress("working:thread:dismiss") } as Record<
+				string,
+				unknown
+			>;
+			delete press.guild_id;
+			const { response, inbox } = await interaction(press);
+			expect(((await response.json()) as { type: number }).type).toBe(4);
+			expect(inbox.puts).toEqual([]);
+		});
+
+		it("頭が working: でないボタンは受け箱に置かない", async () => {
+			const { response, inbox } = await interaction(
+				workingPress("approval:grant"),
+			);
+			expect(((await response.json()) as { type: number }).type).toBe(4);
+			expect(inbox.puts).toEqual([]);
+		});
 	});
 });

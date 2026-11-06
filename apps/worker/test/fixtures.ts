@@ -78,3 +78,28 @@ export function pendingMessage(
 		],
 	};
 }
+
+export const failedRun = (conclusion = "failure") => ({
+	action: "completed",
+	workflow_run: {
+		conclusion,
+		name: "ci",
+		head_branch: "dev/x",
+		html_url: "https://github.com/o/r/actions/runs/1",
+		pull_requests: [{ number: 12 }],
+		triggering_actor: { login: "someone" },
+	},
+	repository: { full_name: "o/r" },
+});
+
+export const review = {
+	action: "submitted",
+	review: {
+		state: "changes_requested",
+		body: "ここを直して",
+		html_url: "https://github.com/o/r/pull/3#pullrequestreview-1",
+		user: { login: "reviewer", type: "User" },
+	},
+	pull_request: { number: 3, title: "直す" },
+	repository: { full_name: "o/r" },
+};
