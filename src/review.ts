@@ -141,7 +141,8 @@ function withField(embed: Embed, name: string, value: string): Embed {
  * 失敗はボタンを残し、押し直すか GitHub の画面で決着できるようにする
  */
 export function settledMessage(
-	original: Pick<Message, "embeds" | "components">,
+	original: Pick<Message, "embeds" | "components"> &
+		Partial<Pick<Message, "content">>,
 	outcome: Outcome,
 ): MessageBody {
 	const [first, ...rest] = original.embeds;
@@ -159,11 +160,18 @@ export function settledMessage(
 	}
 	const name = base.title?.replace(PENDING_TITLE, "") ?? "";
 	const settled = {
-		approved: { label: "承認", color: COLOR_APPROVED },
-		rejected: { label: "却下", color: COLOR_REJECTED },
-		cancelled: { label: "取り消し", color: COLOR_CANCELLED },
+		approved: { label: "承認", text: "承認しました", color: COLOR_APPROVED },
+		rejected: { label: "却下", text: "却下しました", color: COLOR_REJECTED },
+		cancelled: {
+			label: "取り消し",
+			text: "取り消されました",
+			color: COLOR_CANCELLED,
+		},
 	}[outcome.type];
+	// 投稿時のメンションは残す。allowed_mentions が空なので、書き換えても再び通知しない
+	const mention = original.content?.match(/^<@\d+>/)?.[0];
 	return {
+		content: mention ? `${mention} ${settled.text}` : settled.text,
 		embeds: [
 			{
 				...withField(base, RESULT_FIELD, `${settled.label}（${outcome.by}）`),

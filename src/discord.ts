@@ -31,6 +31,7 @@ export const EmbedSchema = v.looseObject({
 
 export const MessageSchema = v.object({
 	id: v.string(),
+	content: v.optional(v.string(), ""),
 	embeds: v.optional(v.array(EmbedSchema), []),
 	components: v.optional(v.array(ComponentSchema), []),
 });
