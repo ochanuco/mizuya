@@ -4,9 +4,9 @@
 
 機能は 2 つあり、それぞれ `apps/` の下に置く。
 
-| 場所 | 中身 |
-| --- | --- |
-| `apps/worker` | GitHub Actions のデプロイ承認。Environment の required reviewers で止まった run を Discord に知らせ、ボタンで承認・却下できるようにする Cloudflare Worker。この README の以下の節はこれの説明 |
+| 場所           | 中身                                                                                                                                                                                                               |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `apps/worker`  | GitHub Actions のデプロイ承認。Environment の required reviewers で止まった run を Discord に知らせ、ボタンで承認・却下できるようにする Cloudflare Worker。この README の以下の節はこれの説明                      |
 | `apps/working` | Working（仕事）。Discord の仕事フォーラムの依頼を Orca の席で Claude CLI と Codex CLI に作業させる、docker01 のコンテナ。記憶と人格は yunomi のものを使う。説明は [apps/working/README.md](apps/working/README.md) |
 
 ## 動き
