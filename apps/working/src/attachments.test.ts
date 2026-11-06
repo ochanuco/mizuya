@@ -2,7 +2,6 @@ import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
-	CHIMERA_USER_AGENT,
 	createAttachmentCollector,
 	createChimeraImages,
 	readSeatFile,
@@ -134,7 +133,7 @@ describe("createChimeraImages", () => {
 		expect(init?.headers).toEqual({
 			"CF-Access-Client-Id": "cid",
 			"CF-Access-Client-Secret": "csecret",
-			"User-Agent": CHIMERA_USER_AGENT,
+			"User-Agent": "mizuya-working/1.0",
 		});
 		expect(init?.redirect).toBe("manual");
 	});
