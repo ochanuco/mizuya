@@ -15,6 +15,10 @@ export type InboxItem = {
 	body: unknown;
 };
 
+/** Working が接続を保つために送る文字列と、Durable Object が起きずに返す文字列。 */
+export const INBOX_PING = "ping";
+export const INBOX_PONG = "pong";
+
 /** Worker から Working に送る形。 */
 export type InboxPush = { type: "item" } & InboxItem;
 

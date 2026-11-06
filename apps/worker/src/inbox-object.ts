@@ -2,6 +2,8 @@ import { DurableObject } from "cloudflare:workers";
 import type { Bindings } from "./env.ts";
 import {
 	createInbox,
+	INBOX_PING,
+	INBOX_PONG,
 	type Inbox,
 	type InboxKind,
 	type InboxPush,
@@ -17,6 +19,10 @@ export class WorkingInbox extends DurableObject<Bindings> {
 	constructor(ctx: DurableObjectState, env: Bindings) {
 		super(ctx, env);
 		this.inbox = createInbox(ctx.storage.sql);
+		// 途中の経路が黙った接続を切らないよう、Working は間隔ごとに ping を送る。起こさずに応えるので待っている間は課金されない
+		ctx.setWebSocketAutoResponse(
+			new WebSocketRequestResponsePair(INBOX_PING, INBOX_PONG),
+		);
 	}
 
 	/** Working の接続を受け、溜まっている行を渡す。 */
