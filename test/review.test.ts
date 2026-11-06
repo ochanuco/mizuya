@@ -1,27 +1,49 @@
 import { describe, expect, it } from "vitest";
-import { decodeCustomId, encodeCustomId } from "../src/review.ts";
+import { requestedMessage, targetOf } from "../src/review.ts";
+import { pendingMessage, REPO, RUN_ID } from "./fixtures.ts";
 
-describe("custom_id", () => {
-	it("repo・run・Environment を往復できる", () => {
-		const target = { repo: "example/app", runId: 42, environment: "prod:eu" };
-		const id = encodeCustomId("reject", target);
-		expect(decodeCustomId(id)).toEqual({ decision: "reject", target });
-	});
-
-	it("100 文字を超えるなら Environment を省き、すべての Environment を指す", () => {
-		const target = {
-			repo: "example/app",
-			runId: 42,
-			environment: "x".repeat(100),
+describe("targetOf", () => {
+	it("投稿したメッセージから repo・run・Environment を読む", () => {
+		const longEnvironment = `env:${"x".repeat(200)}`;
+		const posted = requestedMessage({
+			repo: "example-organization/a-repository-with-a-very-long-name",
+			repoUrl: "https://github.com/example/app",
+			runId: 98765432101,
+			runUrl:
+				"https://github.com/example-organization/a-repository-with-a-very-long-name/actions/runs/98765432101",
+			workflow: "deploy",
+			ref: "main",
+			sha: "0123456789abcdef0123456789abcdef01234567",
+			environment: longEnvironment,
+			requestor: null,
+		});
+		const message = {
+			embeds: posted.embeds,
+			components: posted.components as never,
 		};
-		const id = encodeCustomId("approve", target);
-		expect(id.length).toBeLessThanOrEqual(100);
-		expect(decodeCustomId(id)?.target.environment).toBeNull();
+		expect(targetOf(message)).toEqual({
+			repo: "example-organization/a-repository-with-a-very-long-name",
+			runId: 98765432101,
+			environment: longEnvironment,
+		});
+		for (const row of posted.components as {
+			components: { custom_id: string }[];
+		}[]) {
+			for (const button of row.components) {
+				expect(button.custom_id.length).toBeLessThanOrEqual(100);
+			}
+		}
 	});
 
-	it("mizuya 以外の custom_id は読まない", () => {
-		expect(decodeCustomId("other:approve:example/app:1:prod")).toBeNull();
-		expect(decodeCustomId("mizuya:merge:example/app:1:prod")).toBeNull();
-		expect(decodeCustomId("mizuya:approve:example/app:abc:prod")).toBeNull();
+	it("Environment が * でも、その名前のまま扱う", () => {
+		expect(targetOf(pendingMessage("m", { environment: "*" }))).toEqual({
+			repo: REPO,
+			runId: RUN_ID,
+			environment: "*",
+		});
+	});
+
+	it("ボタンが無い（決着済み）メッセージは対象にしない", () => {
+		expect(targetOf({ ...pendingMessage("m"), components: [] })).toBeNull();
 	});
 });

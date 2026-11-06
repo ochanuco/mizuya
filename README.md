@@ -7,9 +7,9 @@
 ## 動き
 
 1. Environment の承認待ちが起きると、GitHub が `deployment_review`（`requested`）の webhook を `POST /github/webhook` に送る。
-2. mizuya は承認用チャンネルに、repo・workflow・ref と SHA・Environment・run へのリンクと「承認」「却下」ボタンの付いたメッセージを投稿する。
-3. ボタンを押すと、Discord が `POST /discord/interactions` を呼ぶ。押した人が承認者でなければ本人にだけ見える返事で断る。承認者なら deferred update で応答し、同じ run の `pending_deployments` から Environment の ID を取って承認・却下を送る。結果（誰が決めたか、失敗ならエラー）をメッセージに書き、ボタンを消す。
-4. GitHub の画面で承認・却下された場合は `approved` / `rejected` の webhook が来るので、承認用チャンネルの直近 100 件からボタンの `custom_id`（repo・run・Environment を含む）で該当メッセージを探し、決着済みに書き換える。対応表は持たない。
+2. mizuya は承認用チャンネルに、repo・workflow・ref と SHA・Environment・run へのリンクと「承認」「却下」ボタンの付いたメッセージを投稿する。同じ承認待ちのメッセージが未決着で残っていれば投稿しない。
+3. ボタンを押すと、Discord が `POST /discord/interactions` を呼ぶ。押した人が承認者でなければ本人にだけ見える返事で断る。承認者なら deferred update で応答し、メッセージの run の URL と Environment 欄から対象を読み、同じ run の `pending_deployments` から Environment の ID を取って承認・却下を送る。決着したら誰が決めたかを書いてボタンを消す。失敗したらエラーを書き、押し直せるようボタンを残す。承認待ちがもう無ければ、押した人にだけそう伝える。
+4. GitHub の画面で承認・却下された場合は `approved` / `rejected` の webhook が来るので、承認用チャンネルを直近 500 件までさかのぼり、ボタンの残るメッセージを run の URL と Environment で探して決着済みに書き換える。対応表は持たない。
 
 | エンドポイント               | 用途                                                           |
 | ---------------------------- | -------------------------------------------------------------- |
@@ -21,7 +21,7 @@
 
 - Cloudflare Worker `mizuya`。独自ドメイン `mizuya.chanu.co` だけで受け、`workers.dev` は閉じている。常時接続は持たない（Discord は HTTP interactions）。
 - ストレージは使わない。
-- `src/index.ts` が経路の振り分け、`src/webhook.ts` が GitHub の webhook、`src/interactions.ts` が Discord のボタン、`src/review.ts` がメッセージの組み立てと `custom_id`、`src/signature.ts` が署名検証、`src/github.ts` と `src/discord.ts` が外部 API。
+- `src/index.ts` が経路の振り分け、`src/webhook.ts` が GitHub の webhook、`src/interactions.ts` が Discord のボタン、`src/review.ts` がメッセージの組み立てと、メッセージから対象を読む処理、`src/signature.ts` が署名検証、`src/github.ts` と `src/discord.ts` が外部 API。
 
 ## 開発
 
@@ -57,7 +57,7 @@ Worker の secret はすべて 1Password の vault `gh-deploy` に置き、デ�
 
 1. Discord Developer Portal で application「mizuya」を作り、bot を有効にして token を発行する。General Information の Public Key と合わせて 1Password に登録する。
 2. Interactions Endpoint URL に `https://mizuya.chanu.co/discord/interactions` を設定する。Discord は保存時に PING を送るので、Worker のデプロイ後に行う。
-3. サーバーに承認用チャンネルを作り、mizuya bot を招待して、そのチャンネルで View Channel・Send Messages・Embed Links・Read Message History を許す。Read Message History は GitHub 側で決着したときにメッセージを探すのに使う。
+3. サーバーに承認用チャンネルを作り、mizuya bot を招待して、そのチャンネルで View Channel・Send Messages・Embed Links・Read Message History を許す。Read Message History は、二重投稿の確認と GitHub 側で決着したメッセージを探すのに使う。
 4. GitHub で fine-grained PAT を発行する（required reviewer 本人のアカウント。対象 repo の Deployments: write と Actions: read）。
 5. 上の secret をすべて 1Password に登録する。
 

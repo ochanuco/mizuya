@@ -1,9 +1,21 @@
 import * as v from "valibot";
-import { editInteractionOriginal, MessageSchema } from "./discord.ts";
+import {
+	editInteractionOriginal,
+	MessageSchema,
+	sendEphemeralFollowup,
+} from "./discord.ts";
 import type { Bindings, WaitUntil } from "./env.ts";
 import { listPendingDeployments, reviewPendingDeployments } from "./github.ts";
-import { decodeCustomId, type Outcome, settledMessage } from "./review.ts";
+import {
+	type Decision,
+	decisionOf,
+	type Outcome,
+	type ReviewTarget,
+	settledMessage,
+	targetOf,
+} from "./review.ts";
 import { verifyDiscordSignature } from "./signature.ts";
+import { parseJson } from "./webhook.ts";
 
 const InteractionType = { PING: 1, MESSAGE_COMPONENT: 3 } as const;
 const ResponseType = {
@@ -52,7 +64,7 @@ export async function handleDiscordInteraction(
 	);
 	if (!valid) return new Response("invalid request signature", { status: 401 });
 
-	const parsed = v.safeParse(InteractionSchema, JSON.parse(body));
+	const parsed = v.safeParse(InteractionSchema, parseJson(body));
 	if (!parsed.success)
 		return new Response("unexpected payload", { status: 400 });
 	const interaction = parsed.output;
@@ -64,10 +76,11 @@ export async function handleDiscordInteraction(
 		return ephemeral("mizuya はこの操作に対応していません。");
 	}
 
-	const decoded = interaction.data?.custom_id
-		? decodeCustomId(interaction.data.custom_id)
+	const decision = interaction.data?.custom_id
+		? decisionOf(interaction.data.custom_id)
 		: null;
-	if (!decoded || !interaction.message) {
+	const target = interaction.message ? targetOf(interaction.message) : null;
+	if (!decision || !target || !interaction.message) {
 		return ephemeral("mizuya のボタンではありません。");
 	}
 
@@ -77,17 +90,23 @@ export async function handleDiscordInteraction(
 	}
 
 	// Discord は 3 秒で応答を求めるので、先に deferred update を返し、GitHub への反映は後で行う
-	waitUntil(review(interaction, decoded, userId, env));
+	waitUntil(
+		review(interaction, interaction.message, decision, target, userId, env),
+	);
 	return json({ type: ResponseType.DEFERRED_UPDATE_MESSAGE });
 }
 
+type Pending = { type: "not_pending" };
+
 async function review(
 	interaction: Interaction,
-	{ decision, target }: NonNullable<ReturnType<typeof decodeCustomId>>,
+	message: NonNullable<Interaction["message"]>,
+	decision: Decision,
+	target: ReviewTarget,
 	userId: string,
 	env: Bindings,
 ): Promise<void> {
-	// 例外でも決着を書き込み、ボタンを押せるまま放置しない
+	// 例外でも結果を書き込み、何も起きなかったように見せない
 	const outcome = await decide(decision, target, userId, env).catch(
 		(error: unknown): Outcome => ({
 			type: "failed",
@@ -95,7 +114,18 @@ async function review(
 			message: error instanceof Error ? error.message : String(error),
 		}),
 	);
-	const message = interaction.message ?? { embeds: [] };
+
+	// 承認待ちが無いのは、先に押した操作か GitHub の画面で決着した後。その決着の書き込みを上書きしないよう、押した人にだけ伝える
+	if (outcome.type === "not_pending") {
+		const res = await sendEphemeralFollowup(
+			interaction.application_id,
+			interaction.token,
+			"承認待ちが見つかりません（すでに決着したか、run が終わっています）。",
+		);
+		if (!res.ok) console.error("discord: 返事の送信に失敗", res.error);
+		return;
+	}
+
 	const res = await editInteractionOriginal(
 		interaction.application_id,
 		interaction.token,
@@ -105,11 +135,11 @@ async function review(
 }
 
 async function decide(
-	decision: "approve" | "reject",
-	target: { repo: string; runId: number; environment: string | null },
+	decision: Decision,
+	target: ReviewTarget,
 	userId: string,
 	env: Bindings,
-): Promise<Outcome> {
+): Promise<Outcome | Pending> {
 	const fail = (message: string): Outcome => ({
 		type: "failed",
 		decision,
@@ -124,17 +154,16 @@ async function decide(
 	if (!pending.ok) {
 		return fail(`GitHub ${pending.error.status}: ${pending.error.message}`);
 	}
-	const environmentIds = pending.value
-		.filter(
-			(d) =>
-				d.current_user_can_approve &&
-				(target.environment === null ||
-					d.environment.name === target.environment),
-		)
+	const matching = pending.value.filter(
+		(d) => d.environment.name === target.environment,
+	);
+	if (matching.length === 0) return { type: "not_pending" };
+	const environmentIds = matching
+		.filter((d) => d.current_user_can_approve)
 		.map((d) => d.environment.id);
 	if (environmentIds.length === 0) {
 		return fail(
-			"承認待ちが見つからない（GitHub で処理済みか、run が終わっている）",
+			"GITHUB_APPROVER_TOKEN の持ち主はこの Environment を承認できない",
 		);
 	}
 

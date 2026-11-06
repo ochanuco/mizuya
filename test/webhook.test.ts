@@ -57,11 +57,13 @@ describe("POST /github/webhook", () => {
 	});
 
 	it("requested で承認用チャンネルにボタン付きのメッセージを投稿する", async () => {
-		const calls = mockFetch(() => Response.json({ id: "m1" }));
+		const calls = mockFetch((call) =>
+			call.method === "GET" ? Response.json([]) : Response.json({ id: "m1" }),
+		);
 		const { response } = await webhook(requestedPayload());
 		expect(response.status).toBe(200);
-		expect(calls).toHaveLength(1);
-		const [call] = calls;
+		expect(calls.map((c) => c.method)).toEqual(["GET", "POST"]);
+		const call = calls[1];
 		expect(call?.method).toBe("POST");
 		expect(call?.url).toBe(
 			`https://discord.com/api/v10/channels/${CHANNEL_ID}/messages`,
@@ -83,6 +85,10 @@ describe("POST /github/webhook", () => {
 		expect(embed?.url).toBe(
 			`https://github.com/${REPO}/actions/runs/${RUN_ID}`,
 		);
+		expect(body.components[0]?.components).toEqual([
+			expect.objectContaining({ label: "承認", custom_id: "mizuya:approve" }),
+			expect.objectContaining({ label: "却下", custom_id: "mizuya:reject" }),
+		]);
 		const fields = Object.fromEntries(
 			embed?.fields.map((f) => [f.name, f.value]) ?? [],
 		);
@@ -91,16 +97,59 @@ describe("POST /github/webhook", () => {
 		expect(fields.ref).toBe(
 			`main @ [0123456](https://github.com/${REPO}/commit/0123456789abcdef0123456789abcdef01234567)`,
 		);
-		expect(body.components[0]?.components).toEqual([
-			expect.objectContaining({
-				label: "承認",
-				custom_id: `mizuya:approve:${REPO}:${RUN_ID}:production-approval`,
+	});
+
+	it("同じ承認待ちのメッセージが未決着で残っていれば、二重に投稿しない", async () => {
+		const calls = mockFetch((call) =>
+			call.method === "GET"
+				? Response.json([pendingMessage("existing")])
+				: Response.json({ id: "m1" }),
+		);
+		const { response } = await webhook(requestedPayload());
+		expect(response.status).toBe(200);
+		expect(calls.map((c) => c.method)).toEqual(["GET"]);
+	});
+
+	it("100 件より前のメッセージもさかのぼって探す", async () => {
+		const filler = Array.from({ length: 100 }, (_, i) => ({
+			id: `filler-${i}`,
+			embeds: [],
+			components: [],
+		}));
+		const calls = mockFetch((call) => {
+			if (call.method === "GET") {
+				return Response.json(
+					call.url.includes("before=filler-99")
+						? [pendingMessage("old")]
+						: filler,
+				);
+			}
+			return Response.json({});
+		});
+		await webhook(reviewedPayload("approved"));
+		expect(calls.map((c) => c.method)).toEqual(["GET", "GET", "PATCH"]);
+		expect(calls[2]?.url).toMatch(/\/messages\/old$/);
+	});
+
+	it("署名が正しくても JSON でなければ 400", async () => {
+		const { env } = await makeEnv();
+		mockFetch(() => undefined);
+		const body = "not json";
+		const { response } = await callWorker(
+			new Request("https://mizuya.example.com/github/webhook", {
+				method: "POST",
+				headers: {
+					"x-github-event": "deployment_review",
+					"x-hub-signature-256": await githubSignature(
+						env.GITHUB_WEBHOOK_SECRET,
+						body,
+					),
+				},
+				body,
 			}),
-			expect.objectContaining({
-				label: "却下",
-				custom_id: `mizuya:reject:${REPO}:${RUN_ID}:production-approval`,
-			}),
-		]);
+			env,
+		);
+		expect(response.status).toBe(400);
 	});
 
 	it("Discord への投稿に失敗したら 502 を返す", async () => {
@@ -115,7 +164,9 @@ describe("POST /github/webhook", () => {
 				return Response.json([
 					{ id: "unrelated", embeds: [], components: [] },
 					pendingMessage("target"),
-					pendingMessage("other-env", "staging"),
+					pendingMessage("other-env", { environment: "staging" }),
+					pendingMessage("other-repo", { repo: "example/other" }),
+					pendingMessage("other-run", { runId: RUN_ID + 1 }),
 				]);
 			}
 			return Response.json({});

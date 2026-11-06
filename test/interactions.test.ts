@@ -29,7 +29,7 @@ async function interaction(
 }> {
 	const { env, discordKey } = await makeEnv();
 	const body = JSON.stringify(payload);
-	const timestamp = "1700000000";
+	const timestamp = String(Math.floor(Date.now() / 1000));
 	const signature = await discordSignature(
 		discordKey.privateKey,
 		timestamp,
@@ -44,7 +44,7 @@ async function interaction(
 				"x-signature-ed25519": signature,
 				"x-signature-timestamp": timestamp,
 			},
-			body: options.tamper ? body.replace("1", "2") : body,
+			body: options.tamper ? `${body} ` : body,
 		},
 	);
 	return { env, ...(await callWorker(request, env)) };
@@ -61,8 +61,9 @@ function buttonPress(customId: string, userId = APPROVER_ID) {
 	};
 }
 
-const approve = `mizuya:approve:${REPO}:${RUN_ID}:production-approval`;
-const reject = `mizuya:reject:${REPO}:${RUN_ID}:production-approval`;
+const approve = "mizuya:approve";
+const reject = "mizuya:reject";
+const FOLLOWUP_URL = `https://discord.com/api/v10/webhooks/${APPLICATION_ID}/interaction-token`;
 
 function githubAndDiscord(
 	pending: unknown = [
@@ -83,6 +84,7 @@ function githubAndDiscord(
 		}
 		if (call.url === PENDING_URL && call.method === "POST") return review;
 		if (call.url === ORIGINAL_URL) return Response.json({});
+		if (call.url === FOLLOWUP_URL) return Response.json({});
 		return undefined;
 	});
 }
@@ -172,17 +174,38 @@ describe("POST /discord/interactions", () => {
 		);
 	});
 
-	it("承認待ちが残っていなければ、GitHub に送らずエラーを反映してボタンを消す", async () => {
-		const calls = githubAndDiscord([]);
+	it("承認待ちが残っていなければ、GitHub に送らず押した人にだけ伝え、メッセージは書き換えない", async () => {
+		const calls = githubAndDiscord([
+			{
+				environment: { id: 22, name: "staging" },
+				current_user_can_approve: true,
+			},
+		]);
+		const { settled } = await interaction(buttonPress(approve));
+		await settled();
+		expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+			`GET ${PENDING_URL}`,
+			`POST ${FOLLOWUP_URL}`,
+		]);
+		expect(calls[1]?.body).toMatchObject({ flags: 64 });
+	});
+
+	it("承認できない Environment なら GitHub に送らず、エラーを書いてボタンを残す", async () => {
+		const calls = githubAndDiscord([
+			{
+				environment: { id: 11, name: "production-approval" },
+				current_user_can_approve: false,
+			},
+		]);
 		const { settled } = await interaction(buttonPress(approve));
 		await settled();
 		expect(calls.map((c) => c.method)).toEqual(["GET", "PATCH"]);
 		const edit = calls[1]?.body as EditBody;
-		expect(edit.components).toEqual([]);
-		expect(edit.embeds[0]?.fields.at(-1)?.value).toMatch(/^承認に失敗: /);
+		expect(edit.components).toEqual(pendingMessage("target").components);
+		expect(edit.embeds[0]?.fields.at(-1)?.name).toBe("直近のエラー");
 	});
 
-	it("GitHub API が失敗したら、ステータスとメッセージを反映する", async () => {
+	it("GitHub API が失敗したら、ステータスとメッセージを書き、押し直せるようボタンを残す", async () => {
 		const calls = githubAndDiscord(
 			undefined,
 			Response.json({ message: "Resource not accessible" }, { status: 403 }),
@@ -190,9 +213,25 @@ describe("POST /discord/interactions", () => {
 		const { settled } = await interaction(buttonPress(approve));
 		await settled();
 		const edit = calls[2]?.body as EditBody;
-		expect(edit.components).toEqual([]);
-		expect(edit.embeds[0]?.fields.at(-1)?.value).toBe(
-			"承認に失敗: GitHub 403: Resource not accessible",
-		);
+		expect(edit.components).toEqual(pendingMessage("target").components);
+		expect(edit.embeds[0]?.fields.at(-1)).toEqual({
+			name: "直近のエラー",
+			value: "承認に失敗: GitHub 403: Resource not accessible",
+			inline: false,
+		});
+	});
+
+	it("mizuya の承認待ちでないメッセージのボタンは断る", async () => {
+		const calls = githubAndDiscord();
+		const press = buttonPress(approve);
+		const { response } = await interaction({
+			...press,
+			message: { ...press.message, embeds: [] },
+		});
+		expect(await response.json()).toMatchObject({
+			type: 4,
+			data: { flags: 64 },
+		});
+		expect(calls).toHaveLength(0);
 	});
 });

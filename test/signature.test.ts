@@ -34,6 +34,7 @@ describe("verifyGithubSignature", () => {
 describe("verifyDiscordSignature", () => {
 	const body = '{"type":1}';
 	const timestamp = "1700000000";
+	const now = 1700000010;
 
 	it("正しい署名を受け入れる", async () => {
 		const { env, discordKey } = await makeEnv();
@@ -44,6 +45,7 @@ describe("verifyDiscordSignature", () => {
 				body,
 				sig,
 				timestamp,
+				now,
 			),
 		).toBe(true);
 	});
@@ -57,6 +59,7 @@ describe("verifyDiscordSignature", () => {
 				body,
 				sig,
 				"1700000001",
+				now,
 			),
 		).toBe(false);
 	});
@@ -75,6 +78,21 @@ describe("verifyDiscordSignature", () => {
 				body,
 				sig,
 				timestamp,
+				now,
+			),
+		).toBe(false);
+	});
+
+	it("5 分より古い timestamp は、署名が正しくても拒む", async () => {
+		const { env, discordKey } = await makeEnv();
+		const sig = await discordSignature(discordKey.privateKey, timestamp, body);
+		expect(
+			await verifyDiscordSignature(
+				env.DISCORD_PUBLIC_KEY,
+				body,
+				sig,
+				timestamp,
+				Number(timestamp) + 301,
 			),
 		).toBe(false);
 	});
@@ -87,6 +105,7 @@ describe("verifyDiscordSignature", () => {
 				body,
 				null,
 				timestamp,
+				now,
 			),
 		).toBe(false);
 		expect(
@@ -95,6 +114,7 @@ describe("verifyDiscordSignature", () => {
 				body,
 				"abcd",
 				timestamp,
+				now,
 			),
 		).toBe(false);
 	});

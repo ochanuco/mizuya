@@ -46,30 +46,31 @@ export function reviewedPayload(action: "approved" | "rejected") {
 
 export function pendingMessage(
 	id: string,
-	environment = "production-approval",
+	{
+		environment = "production-approval",
+		repo = REPO,
+		runId = RUN_ID,
+	}: { environment?: string; repo?: string; runId?: number } = {},
 ) {
 	return {
 		id,
 		embeds: [
 			{
-				title: `承認待ち: ${REPO}`,
-				url: workflowRun.html_url,
+				title: `承認待ち: ${repo}`,
+				url: `https://github.com/${repo}/actions/runs/${runId}`,
 				color: 0xf1c40f,
-				fields: [{ name: "Environment", value: environment, inline: true }],
+				fields: [
+					{ name: "workflow", value: "deploy", inline: true },
+					{ name: "Environment", value: environment, inline: true },
+				],
 			},
 		],
 		components: [
 			{
 				type: 1,
 				components: [
-					{
-						type: 2,
-						custom_id: `mizuya:approve:${REPO}:${RUN_ID}:${environment}`,
-					},
-					{
-						type: 2,
-						custom_id: `mizuya:reject:${REPO}:${RUN_ID}:${environment}`,
-					},
+					{ type: 2, style: 3, label: "承認", custom_id: "mizuya:approve" },
+					{ type: 2, style: 4, label: "却下", custom_id: "mizuya:reject" },
 				],
 			},
 		],

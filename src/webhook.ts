@@ -1,7 +1,13 @@
 import * as v from "valibot";
-import { createMessage, editMessage, listRecentMessages } from "./discord.ts";
+import { createMessage, editMessage, findMessages } from "./discord.ts";
 import type { Bindings } from "./env.ts";
-import { requestedMessage, settledMessage, targetsOf } from "./review.ts";
+import {
+	type ReviewTarget,
+	requestedMessage,
+	sameTarget,
+	settledMessage,
+	targetOf,
+} from "./review.ts";
 import { verifyGithubSignature } from "./signature.ts";
 
 const UserSchema = v.object({ login: v.string() });
@@ -43,7 +49,7 @@ export async function handleGithubWebhook(
 	if (event === "ping") return new Response("pong");
 	if (event !== "deployment_review") return new Response(null, { status: 204 });
 
-	const parsed = v.safeParse(DeploymentReviewSchema, JSON.parse(body));
+	const parsed = v.safeParse(DeploymentReviewSchema, parseJson(body));
 	if (!parsed.success) {
 		return new Response("unexpected payload", { status: 400 });
 	}
@@ -61,6 +67,25 @@ export async function handleGithubWebhook(
 	}
 }
 
+export function parseJson(body: string): unknown {
+	try {
+		return JSON.parse(body);
+	} catch {
+		return undefined;
+	}
+}
+
+function pendingMessages(env: Bindings, matches: (t: ReviewTarget) => boolean) {
+	return findMessages(
+		env.DISCORD_BOT_TOKEN,
+		env.DISCORD_APPROVAL_CHANNEL_ID,
+		(message) => {
+			const target = targetOf(message);
+			return target !== null && matches(target);
+		},
+	);
+}
+
 async function postRequested(
 	review: DeploymentReview,
 	env: Bindings,
@@ -68,6 +93,20 @@ async function postRequested(
 	const environment =
 		review.environment ?? review.workflow_job_run?.environment;
 	if (!environment) return new Response("environment missing", { status: 400 });
+
+	// 配信のやり直しで同じ承認待ちのボタンが二つ並ばないよう、未決着のものがあれば投稿しない
+	const target = {
+		repo: review.repository.full_name,
+		runId: review.workflow_run.id,
+		environment,
+	};
+	const existing = await pendingMessages(env, (t) => sameTarget(t, target));
+	if (!existing.ok) {
+		console.error("discord: メッセージ一覧の取得に失敗", existing.error);
+		return new Response("discord error", { status: 502 });
+	}
+	if (existing.value.length > 0) return new Response("already posted");
+
 	const res = await createMessage(
 		env.DISCORD_BOT_TOKEN,
 		env.DISCORD_APPROVAL_CHANNEL_ID,
@@ -104,23 +143,17 @@ async function settleFromGithub(
 	const repo = review.repository.full_name;
 	const runId = review.workflow_run.id;
 
-	// 対応表を持たず、承認用チャンネルの最近のメッセージからボタンの custom_id で探す
-	const recent = await listRecentMessages(
-		env.DISCORD_BOT_TOKEN,
-		env.DISCORD_APPROVAL_CHANNEL_ID,
+	// 対応表を持たず、承認用チャンネルのボタンが残るメッセージを run の URL と Environment で探す
+	const recent = await pendingMessages(
+		env,
+		(t) =>
+			t.repo === repo && t.runId === runId && environments.has(t.environment),
 	);
 	if (!recent.ok) {
 		console.error("discord: メッセージ一覧の取得に失敗", recent.error);
 		return new Response("discord error", { status: 502 });
 	}
-	const matches = recent.value.filter((message) =>
-		targetsOf(message).some(
-			(t) =>
-				t.repo === repo &&
-				t.runId === runId &&
-				(t.environment === null || environments.has(t.environment)),
-		),
-	);
+	const matches = recent.value;
 
 	const by = `GitHub で ${review.approver?.login ?? "不明"}`;
 	const outcome =

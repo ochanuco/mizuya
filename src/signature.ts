@@ -28,14 +28,19 @@ export async function verifyGithubSignature(
 	return crypto.subtle.verify("HMAC", key, signature, encoder.encode(body));
 }
 
+// 署名は timestamp を含むので、古い timestamp を拒めば盗んだリクエストの再送を防げる
+const MAX_SKEW_SECONDS = 300;
+
 /** Discord の interaction の Ed25519 署名（timestamp + body）を検証する */
 export async function verifyDiscordSignature(
 	publicKeyHex: string,
 	body: string,
 	signatureHex: string | null,
 	timestamp: string | null,
+	nowSeconds: number = Date.now() / 1000,
 ): Promise<boolean> {
-	if (!signatureHex || !timestamp) return false;
+	if (!signatureHex || !timestamp || !/^\d+$/.test(timestamp)) return false;
+	if (Math.abs(nowSeconds - Number(timestamp)) > MAX_SKEW_SECONDS) return false;
 	const publicKey = hexToBytes(publicKeyHex);
 	const signature = hexToBytes(signatureHex);
 	if (publicKey?.length !== 32) return false;

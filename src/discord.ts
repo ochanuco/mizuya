@@ -3,11 +3,14 @@ import * as v from "valibot";
 const API = "https://discord.com/api/v10";
 const USER_AGENT = "DiscordBot (https://github.com/ochanuco/mizuya, 0.0.0)";
 
-export const ComponentSchema = v.object({
+// ボタンを残したまま書き換えるときに元の定義をそのまま送り返すので、知らないキーも捨てない
+export const ComponentSchema = v.looseObject({
 	type: v.number(),
 	custom_id: v.optional(v.string()),
 	components: v.optional(
-		v.array(v.object({ type: v.number(), custom_id: v.optional(v.string()) })),
+		v.array(
+			v.looseObject({ type: v.number(), custom_id: v.optional(v.string()) }),
+		),
 	),
 });
 
@@ -98,28 +101,62 @@ export async function editMessage(
 	);
 }
 
-export async function listRecentMessages(
+// 1 回の取得は 100 件まで。承認待ちが長く放置されても届くよう、さかのぼって探す
+const SEARCH_PAGES = 5;
+
+/** 新しい順にメッセージをさかのぼり、predicate に合うものをすべて返す */
+export async function findMessages(
 	botToken: string,
 	channelId: string,
+	predicate: (message: Message) => boolean,
 ): Promise<Result<Message[]>> {
-	const res = await call(
-		`/channels/${channelId}/messages?limit=100`,
-		{ method: "GET" },
-		botToken,
-	);
-	if (!res.ok) return res;
-	const parsed = v.safeParse(v.array(MessageSchema), res.value);
-	if (!parsed.success) {
-		return {
-			ok: false,
-			error: {
-				type: "discord_error",
-				status: 200,
-				message: "メッセージ一覧の応答が想定と違う",
-			},
-		};
+	const found: Message[] = [];
+	let before: string | null = null;
+	for (let page = 0; page < SEARCH_PAGES; page++) {
+		const query = before ? `limit=100&before=${before}` : "limit=100";
+		const res = await call(
+			`/channels/${channelId}/messages?${query}`,
+			{ method: "GET" },
+			botToken,
+		);
+		if (!res.ok) return res;
+		const parsed = v.safeParse(v.array(MessageSchema), res.value);
+		if (!parsed.success) {
+			return {
+				ok: false,
+				error: {
+					type: "discord_error",
+					status: 200,
+					message: "メッセージ一覧の応答が想定と違う",
+				},
+			};
+		}
+		found.push(...parsed.output.filter(predicate));
+		const last = parsed.output.at(-1);
+		if (parsed.output.length < 100 || !last) break;
+		before = last.id;
 	}
-	return { ok: true, value: parsed.output };
+	return { ok: true, value: found };
+}
+
+/** 押した人にだけ見える返事を、deferred の後から送る */
+export async function sendEphemeralFollowup(
+	applicationId: string,
+	interactionToken: string,
+	content: string,
+): Promise<Result<unknown>> {
+	return call(
+		`/webhooks/${applicationId}/${interactionToken}`,
+		{
+			method: "POST",
+			body: JSON.stringify({
+				content,
+				flags: 1 << 6,
+				allowed_mentions: { parse: [] },
+			}),
+		},
+		null,
+	);
 }
 
 /** deferred update のあとに、ボタンが付いていた元のメッセージを書き換える。interaction token で認証するので bot token は要らない */
