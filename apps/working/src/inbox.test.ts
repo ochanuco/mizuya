@@ -91,6 +91,17 @@ describe("受け箱の行", () => {
 		expect(request.commands[0]?.payload.content).toBe("依頼");
 		const unreadable = dispatch(command({ agent: "gemini" }));
 		expect(unreadable).toMatchObject({ ack: "i2", commands: [] });
+		// 相手が選べないモデルや、コマンドに入りうる文字列は渡さない
+		for (const body of [
+			{ agent: "claude", model: "terra" },
+			{ agent: "codex", model: "opus" },
+			{ model: "sonnet; rm -rf ~" },
+		]) {
+			expect(dispatch(command(body))).toMatchObject({
+				ack: "i2",
+				commands: [],
+			});
+		}
 	});
 
 	it("pong と読めないメッセージは ack しない", () => {

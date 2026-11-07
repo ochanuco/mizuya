@@ -4,10 +4,10 @@
 
 機能は 2 つあり、それぞれ `apps/` の下に置く。
 
-| 場所           | 中身                                                                                                                                                                                                                                                                 |
-| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 場所           | 中身                                                                                                                                                                                                                                                                                 |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `apps/worker`  | GitHub Actions のデプロイ承認。Environment の required reviewers で止まった run を Discord に知らせ、ボタンで承認・却下できるようにする Cloudflare Worker。Working 向けのボタン、`/ai` コマンドと GitHub の出来事を受け箱に置いて Working に渡す。この README の以下の節はこれの説明 |
-| `apps/working` | Working（仕事）。Discord の仕事フォーラムの依頼を Orca の席で Claude CLI と Codex CLI に作業させる、docker01 のコンテナ。記憶と人格は yunomi のものを使う。説明は [apps/working/README.md](apps/working/README.md)                                                   |
+| `apps/working` | Working（仕事）。Discord の仕事フォーラムの依頼を Orca の席で Claude CLI と Codex CLI に作業させる、docker01 のコンテナ。記憶と人格は yunomi のものを使う。説明は [apps/working/README.md](apps/working/README.md)                                                                   |
 
 ## 動き
 
@@ -16,12 +16,12 @@
 3. ボタンを押すと、Discord が `POST /discord/interactions` を呼ぶ。押した人が承認者でなければ本人にだけ見える返事で断る。承認者なら deferred update で応答し、メッセージの run の URL と Environment 欄から対象を読み、同じ run の `pending_deployments` から Environment の ID を取って承認・却下を送る。決着したらタイトルを「承認」「却下」「取り消し」に、本文を「承認しました」「却下しました」「取り消されました」に変え、誰が決めたかを書いてボタンを消す。書き換えでは承認者に再び通知しない。失敗したらエラーを書き、押し直せるようボタンを残す。承認待ちがもう無ければ、押した人にだけそう伝える。
 4. GitHub の画面で承認・却下された場合は、待っていた job の `workflow_job` が `in_progress`（承認）か `completed`（却下は `failure`、run の取り消しは `cancelled`）で来る。承認用チャンネルを直近 500 件までさかのぼり、ボタンの残るメッセージを run の URL と job で探して決着済みに書き換える。対応表は持たない。
 
-| エンドポイント               | 用途                                                                                                 |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `POST /github/webhook`       | `X-Hub-Signature-256` を検証し、`workflow_job` を処理する。席を動かす出来事は Working の受け箱に置く |
+| エンドポイント               | 用途                                                                                                                     |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `POST /github/webhook`       | `X-Hub-Signature-256` を検証し、`workflow_job` を処理する。席を動かす出来事は Working の受け箱に置く                     |
 | `POST /discord/interactions` | Ed25519 署名を検証し、PING・ボタン・`/ai` コマンドと依頼の modal を処理する。Working 向けのものは Working の受け箱に置く |
-| `GET /working/inbox`         | Working が受け箱に WebSocket でつなぐ口。Access の service token と `WORKING_INBOX_TOKEN` で確かめる |
-| `GET /health`                | 疎通確認                                                                                             |
+| `GET /working/inbox`         | Working が受け箱に WebSocket でつなぐ口。Access の service token と `WORKING_INBOX_TOKEN` で確かめる                     |
+| `GET /health`                | 疎通確認                                                                                                                 |
 
 ## Working の受け箱
 

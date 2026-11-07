@@ -6,6 +6,7 @@ import {
 	githubWorkEventSchema,
 } from "./github-events.ts";
 import type { Logger } from "./logger.ts";
+import { SEAT_MODELS } from "./seat-model.ts";
 import { WORKING_BUTTON_PREFIX } from "./system.ts";
 
 /**
@@ -41,9 +42,18 @@ const commandSchema = v.object({
 	channel_id: snowflake,
 	user: buttonSchema.entries.user,
 	agent: v.picklist(["claude", "codex"]),
-	model: v.pipe(v.string(), v.nonEmpty()),
+	model: v.string(),
 	content: v.optional(v.string()),
 });
+
+/** モデルは席の起動コマンドと端末への /model に入るので、相手ごとに選べるものだけを通す。 */
+const knownCommandSchema = v.pipe(
+	commandSchema,
+	v.check(
+		(c) => SEAT_MODELS[c.agent].includes(c.model),
+		"相手が選べないモデル",
+	),
+);
 
 const itemSchema = v.object({
 	type: v.literal("item"),
@@ -100,7 +110,7 @@ export const dispatchInboxMessage = (
 		return id;
 	}
 	if (kind === "command") {
-		const command = v.safeParse(commandSchema, body);
+		const command = v.safeParse(knownCommandSchema, body);
 		if (!command.success) {
 			logger.warn("inbox command unreadable", { id });
 			return id;
