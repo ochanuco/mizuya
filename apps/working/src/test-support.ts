@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { vi } from "vitest";
 import type { ApprovalRequest, ApprovalStore } from "./approval-store.ts";
-import type { ButtonPressEvent, WorkMessageEvent } from "./discord-events.ts";
+import type {
+	ButtonPressEvent,
+	CommandEvent,
+	WorkMessageEvent,
+} from "./discord-events.ts";
 import type { ChannelInfo, DiscordApi, PostedMessage } from "./discord-rest.ts";
 import { createLedger } from "./guard/ledger.ts";
 import {
@@ -46,6 +50,12 @@ export const TAGS = [
 	{ id: "tag-watching", name: "見張り中" },
 	{ id: "tag-done", name: "完了" },
 	{ id: "tag-other", name: "その他" },
+	{ id: "tag-opus", name: "Opus" },
+	{ id: "tag-sonnet", name: "Sonnet" },
+	{ id: "tag-haiku", name: "Haiku" },
+	{ id: "tag-terra", name: "Terra" },
+	{ id: "tag-sol", name: "Sol" },
+	{ id: "tag-luna", name: "Luna" },
 ];
 
 /** Discord REST のモック。投稿・送信・タグを手元に残す。 */
@@ -97,6 +107,8 @@ export const fakeDiscord = () => {
 	/** 書き換える前提で送ったメッセージの、いまの本文。 */
 	const edited = new Map<string, { channelId: string; content: string }>();
 	const typing: string[] = [];
+	/** `/ai` の interaction token ごとの、本人にだけ見える返事のいまの本文。 */
+	const interactionReplies = new Map<string, string>();
 	let nextThread = 1;
 	let nextMessage = 1;
 	const api: DiscordApi = {
@@ -200,6 +212,10 @@ export const fakeDiscord = () => {
 				return ok(undefined);
 			},
 		),
+		editInteractionReply: async (_applicationId, token, content) => {
+			interactionReplies.set(token, content);
+			return ok(undefined);
+		},
 		typing: async (channelId) => {
 			typing.push(channelId);
 			return ok(undefined);
@@ -249,6 +265,7 @@ export const fakeDiscord = () => {
 		addThread,
 		tagsOf,
 		sentTo,
+		interactionReplies,
 	};
 };
 
@@ -287,6 +304,10 @@ export const fakeOrca = (seatsDir = "/seats") => {
 				});
 			}
 			return ok(handle(input.path));
+		}),
+		switchModel: vi.fn(async (input) => {
+			calls.push({ op: "switchModel", args: input });
+			return ok(undefined);
 		}),
 		send: vi.fn(async (input) => {
 			calls.push({ op: "send", args: input });
@@ -368,6 +389,29 @@ export const say = (
 		mentions: [],
 		reply_to_message_id: opts.replyTo ?? null,
 	});
+
+/** 持ち主が打った `/ai`。request は投稿の外の modal から、model は投稿の中から。 */
+export const aiCommand = (input: {
+	type: "request" | "model";
+	agent: "claude" | "codex";
+	model: string;
+	channelId?: string;
+	content?: string;
+	userId?: string;
+}): CommandEvent => ({
+	event_id: `e${++seq}`,
+	payload: {
+		type: input.type,
+		application_id: "app",
+		token: `itok${seq}`,
+		guild_id: "g",
+		channel_id: input.channelId ?? TEXT,
+		user: { id: input.userId ?? OWNER, display_name: "ちゃぬ", is_bot: false },
+		agent: input.agent,
+		model: input.model,
+		content: input.content ?? null,
+	},
+});
 
 /** 投稿のメッセージに付いたボタンを持ち主が押す。 */
 export const press = (

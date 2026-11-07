@@ -58,6 +58,10 @@ export type Seat = {
 	/** 投稿に出している状態と、その状態になった時刻。経過時間を数える。 */
 	label: SeatLabel | null;
 	labelSince: Date | null;
+	/** 席の CLI をいま動かしているモデル。null は CLI の既定のモデル。 */
+	model: string | null;
+	/** 作業中に頼まれたモデルの切り替え。手が止まったら切り替え、投稿に頼んだ人の名前で残す。 */
+	modelChange: { by: string } | null;
 };
 
 export type MessageRef = { channelId: string; messageId: string };
@@ -95,6 +99,8 @@ const seatSchema = v.object({
 	panel_at: v.optional(dateSchema, null),
 	label: v.optional(v.nullable(v.picklist(["受付", ...WORK_STATUSES])), null),
 	label_since: v.optional(dateSchema, null),
+	model: v.optional(v.nullable(v.string()), null),
+	model_change: v.optional(v.nullable(v.object({ by: v.string() })), null),
 });
 
 const fileSchema = v.object({
@@ -102,6 +108,7 @@ const fileSchema = v.object({
 	reception: v.nullable(v.string()),
 	seats: v.record(v.string(), seatSchema),
 	partners: v.optional(v.record(v.string(), v.picklist(PARTNER_IDS)), {}),
+	models: v.optional(v.record(v.string(), v.string()), {}),
 });
 
 export type SeatStore = {
@@ -115,6 +122,9 @@ export type SeatStore = {
 	/** 投稿の担当。席を閉じたあとも残し、同じ投稿にまた書かれたら同じ担当が受ける。 */
 	partnerOf: (threadId: string) => PartnerId | null;
 	assign: (threadId: string, partner: PartnerId) => Promise<void>;
+	/** 投稿で選ばれたモデル。席を閉じたあとも残し、同じ投稿で席を開き直すときも同じモデルで動かす。 */
+	modelOf: (threadId: string) => string | null;
+	setModel: (threadId: string, model: string) => Promise<void>;
 };
 
 export const newSeat = (threadId: string, standup = false): Seat => ({
@@ -140,6 +150,8 @@ export const newSeat = (threadId: string, standup = false): Seat => ({
 	panelAt: null,
 	label: null,
 	labelSince: null,
+	model: null,
+	modelChange: null,
 });
 
 /**
@@ -151,6 +163,7 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 	const path = join(dir, "seats.json");
 	const seats = new Map<string, Seat>();
 	const partners = new Map<string, PartnerId>();
+	const models = new Map<string, string>();
 	let orca: { runId: string | null; reception: string | null } = {
 		runId: null,
 		reception: null,
@@ -171,6 +184,9 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 		orca = { runId: parsed.output.run_id, reception: parsed.output.reception };
 		for (const [id, p] of Object.entries(parsed.output.partners)) {
 			partners.set(id, p);
+		}
+		for (const [id, m] of Object.entries(parsed.output.models)) {
+			models.set(id, m);
 		}
 		for (const [id, s] of Object.entries(parsed.output.seats)) {
 			seats.set(id, {
@@ -201,6 +217,8 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 				panelAt: s.panel_at,
 				label: s.label,
 				labelSince: s.label_since,
+				model: s.model,
+				modelChange: s.model_change,
 			});
 		}
 	}
@@ -240,10 +258,13 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 						panel_at: s.panelAt?.getTime() ?? null,
 						label: s.label,
 						label_since: s.labelSince?.getTime() ?? null,
+						model: s.model,
+						model_change: s.modelChange,
 					},
 				]),
 			),
 			partners: Object.fromEntries(partners),
+			models: Object.fromEntries(models),
 		};
 		// 書きかけで落ちても前の内容が残るよう、別名に書いてから置き換える
 		writing = writing.then(async () => {
@@ -276,6 +297,12 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 		assign: (id, partner) => {
 			if (partners.get(id) === partner) return Promise.resolve();
 			partners.set(id, partner);
+			return flush();
+		},
+		modelOf: (id) => models.get(id) ?? null,
+		setModel: (id, model) => {
+			if (models.get(id) === model) return Promise.resolve();
+			models.set(id, model);
 			return flush();
 		},
 	};

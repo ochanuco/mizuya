@@ -125,22 +125,27 @@ const quote = (text: string, limit: number) => {
 		.join("\n");
 };
 
+/** link は仕事チャンネルの元のメッセージ。`/ai` の依頼はチャンネルに残らないので null。 */
 export const forumPostBody = (input: {
 	authorName: string;
 	content: string;
-	link: string;
+	link: string | null;
 }) =>
-	`${input.authorName} さんからの依頼\n\n${quote(input.content, 1500)}\n\n元のメッセージ: ${input.link}`;
+	`${input.authorName} さんからの依頼\n\n${quote(input.content, 1500)}${input.link ? `\n\n元のメッセージ: ${input.link}` : ""}`;
 
 export const requestPrompt = (input: {
 	now: Date;
 	authorName: string;
 	content: string;
-	link: string;
+	link: string | null;
 }) =>
 	`${clock(input.now)}
-${input.authorName} さんから仕事チャンネルで依頼があり、この投稿を立てた。この投稿で作業して返事をする。
-元のメッセージ: ${input.link}
+${
+	input.link
+		? `${input.authorName} さんから仕事チャンネルで依頼があり、この投稿を立てた。この投稿で作業して返事をする。
+元のメッセージ: ${input.link}`
+		: `${input.authorName} さんから依頼があり、この投稿を立てた。この投稿で作業して返事をする。`
+}
 
 依頼:
 ${input.content}`;

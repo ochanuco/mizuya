@@ -275,4 +275,22 @@ describe("createDiscordRest", () => {
 		const body = JSON.parse(String(fetch.mock.calls[0]?.[1]?.body));
 		expect(body.content).toHaveLength(2000);
 	});
+
+	it("interaction の本人にだけ見える返事は、interaction token の @original を書き換える", async () => {
+		const fetch = vi.fn(
+			async (_url: string | URL | Request, _init?: RequestInit) => json({}),
+		);
+		const api = createDiscordRest({ token: "tok", fetch });
+		const r = await api.editInteractionReply("app1", "itok", "立てました");
+		expect(r.ok).toBe(true);
+		const [url, init] = fetch.mock.calls[0] ?? [];
+		expect(url).toBe(
+			"https://discord.com/api/v10/webhooks/app1/itok/messages/@original",
+		);
+		expect(init?.method).toBe("PATCH");
+		expect(JSON.parse(String(init?.body))).toEqual({
+			content: "立てました",
+			allowed_mentions: { parse: [] },
+		});
+	});
 });

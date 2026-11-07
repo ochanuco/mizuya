@@ -17,7 +17,11 @@ import {
 	withNote,
 } from "./attachments.ts";
 import type { Summarizer } from "./claude-cli.ts";
-import type { ButtonPressEvent, WorkMessageEvent } from "./discord-events.ts";
+import type {
+	ButtonPressEvent,
+	CommandEvent,
+	WorkMessageEvent,
+} from "./discord-events.ts";
 import type { Attachment, DiscordApi, PostedMessage } from "./discord-rest.ts";
 import { dismissedText, isDismissButton } from "./dismiss.ts";
 import { seatNameOf } from "./guard/env.ts";
@@ -40,6 +44,15 @@ import {
 	seatSpec,
 	wakeNote,
 } from "./prompts.ts";
+import {
+	MODEL_TAGS,
+	modelChangedText,
+	modelLabel,
+	modelName,
+	otherPartnerText,
+	partnerName,
+	replaceModelTag,
+} from "./seat-model.ts";
 import { PANEL_REFRESH_MS, panelText, REACTION_OF } from "./seat-panel.ts";
 import {
 	type MessageRef,
@@ -206,6 +219,8 @@ export type Intake = {
 	handle: (envelope: WorkMessageEvent) => Promise<void>;
 	/** 投稿のボタンが押された。許可の依頼のボタンだけを扱う。 */
 	press: (envelope: ButtonPressEvent) => Promise<void>;
+	/** `/ai` の依頼で投稿を立てるか、投稿の席のモデルを変える。 */
+	command: (envelope: CommandEvent) => Promise<void>;
 	/** 席から届いたメッセージ（質問、完了の報告、止まった知らせ）を投稿に運ぶ。 */
 	onSeatMessage: (msg: SeatMessage) => Promise<void>;
 	/** 朝会か見回りの席を作る。席の名前にする ID を返す。 */
@@ -237,6 +252,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	const queue = createKeyedQueue();
 	const parentOf = new Map<string, string | null>();
 	let tagIds: Map<WorkStatus, string> | null = null;
+	let modelTagIds: Map<string, string> | null = null;
 	const every = deps.every ?? defaultEvery;
 
 	const yukarin: SeatPartner = {
@@ -346,6 +362,24 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		}
 		// タグは後からフォーラムに足せるので、欠けている間は覚えずに次も引き直す
 		if (found.size === WORK_STATUSES.length) tagIds = found;
+		return found;
+	};
+
+	/** モデルのタグ名 → ID。状態のタグと同じく、欠けている間は覚えずに次も引き直す。 */
+	const modelTags = async (): Promise<Map<string, string>> => {
+		if (modelTagIds) return modelTagIds;
+		const forum = await deps.discord.getChannel(deps.workForumChannelId);
+		if (!forum.ok) {
+			log.warn("forum tags unavailable", { error: forum.error.type });
+			return new Map();
+		}
+		const found = new Map<string, string>();
+		for (const name of MODEL_TAGS) {
+			const tag = forum.value.availableTags.find((t) => t.name === name);
+			if (tag) found.set(name, tag.id);
+			else log.warn("forum tag missing", { tag: name });
+		}
+		if (found.size === MODEL_TAGS.length) modelTagIds = found;
 		return found;
 	};
 
@@ -504,6 +538,45 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		if (!r.ok) {
 			log.warn("set tags failed", { thread_id: threadId, error: r.error.type });
 		}
+	};
+
+	const setModelTag = async (threadId: string, model: string) => {
+		const tags = await modelTags();
+		const thread = await deps.discord.getChannel(threadId);
+		if (!thread.ok) {
+			log.warn("thread lookup failed", { thread_id: threadId });
+			return;
+		}
+		const next = replaceModelTag(thread.value.appliedTagIds, tags, model);
+		const same =
+			next.length === thread.value.appliedTagIds.length &&
+			next.every((id) => thread.value.appliedTagIds.includes(id));
+		if (same) return;
+		const r = await botOf(threadId).setTags(threadId, next);
+		if (!r.ok) {
+			log.warn("set tags failed", { thread_id: threadId, error: r.error.type });
+		}
+	};
+
+	/** モデルを変えたことを投稿に 1 行残し、モデルのタグを差し替える。 */
+	const announceModel = async (
+		threadId: string,
+		by: string,
+		from: string | null,
+		to: string,
+	) => {
+		const sent = await deps.system.send(
+			threadId,
+			modelChangedText(by, from, to),
+		);
+		if (!sent.ok) {
+			log.warn("model change post failed", {
+				thread_id: threadId,
+				error: sent.error.type,
+			});
+		}
+		await setModelTag(threadId, to);
+		log.info("seat model changed", { thread_id: threadId, from, to });
 	};
 
 	const titleOf = async (threadId: string): Promise<string | null> => {
@@ -718,18 +791,21 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		const text = seat.pending.join("\n\n---\n\n");
 		const partner = partnerOf(threadId);
 		const agent = agentOf(partner);
+		const model = deps.seats.modelOf(threadId);
 		const r = seat.path
 			? await deps.orca.resumeSeat({
 					path: seat.path,
 					title,
 					spec: text,
 					agent,
+					model,
 				})
 			: await deps.orca.startSeat({
 					name: seatNameOf(threadId),
 					title,
 					spec: seatSpec(speaker(partner).preamble, text),
 					agent,
+					model,
 				});
 		if (!r.ok && r.error.type === "SeatWorktreeMissing" && !seat.standup) {
 			// 前の会話は worktree ごと失われたので、席を忘れてやりとりを読ませた新しい席で始める。
@@ -746,6 +822,8 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 					panelAt: seat.panelAt,
 					label: seat.label,
 					labelSince: seat.labelSince,
+					model: seat.model,
+					modelChange: seat.modelChange,
 				},
 				await historyText(threadId),
 			);
@@ -783,7 +861,13 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			queuedAt: null,
 			background: false,
 			lastStatus: null,
+			model,
+			modelChange: null,
 		});
+		// 作業中に頼まれた切り替えは、起こし直したこの起動で効いた
+		if (seat.modelChange && model !== null && model !== seat.model) {
+			await announceModel(threadId, seat.modelChange.by, seat.model, model);
+		}
 		log.info("seat working", {
 			thread_id: threadId,
 			dispatch_id: r.value.dispatchId,
@@ -964,6 +1048,59 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		await setStatus(threadId, "作業中");
 	};
 
+	/**
+	 * 手を止めた席に、作業中に頼まれたモデルの切り替えを効かせる。
+	 * Claude は端末に /model を送って会話のまま切り替える。Codex は動いたまま切り替えられないので止め、
+	 * 次の返事で `codex resume --last -m` で起こす。切り替えられなければ、次に手が止まったときにやり直す。
+	 */
+	const applyModelChange = async (threadId: string) => {
+		const seat = seats.get(threadId);
+		if (seat?.modelChange == null) return;
+		const to = deps.seats.modelOf(threadId);
+		if (to === null || to === seat.model) {
+			await seats.set({ ...seat, modelChange: null });
+			return;
+		}
+		let next: Seat;
+		if (agentOf(partnerOf(threadId)) === "claude" && seat.terminal) {
+			const r = await deps.orca.switchModel({
+				terminal: seat.terminal,
+				model: to,
+			});
+			if (!r.ok) {
+				log.error("seat model switch failed", {
+					thread_id: threadId,
+					reason: r.error.reason,
+				});
+				return;
+			}
+			next = { ...seat, model: to, modelChange: null };
+		} else {
+			const stopped = await deps.orca.stopSeat(seat);
+			if (!stopped.ok) {
+				log.error("seat model switch failed", {
+					thread_id: threadId,
+					reason: stopped.error.reason,
+				});
+				return;
+			}
+			// 前の会話は残っているので、次の返事で選ばれたモデルのまま起こす
+			next = {
+				...seat,
+				status: "sleeping",
+				terminal: null,
+				questionId: null,
+				expectStop: false,
+				background: false,
+				model: to,
+				modelChange: null,
+			};
+		}
+		await seats.set(next);
+		await announceModel(threadId, seat.modelChange.by, seat.model, to);
+		if (next.status === "sleeping") dequeue();
+	};
+
 	const onQuestion = async (seat: Seat, msg: SeatMessage) => {
 		const threadId = seat.threadId;
 		if (seat.standup) {
@@ -976,6 +1113,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		await postWithApproval(threadId, reply.body, blocked, reply.files, true);
 		await seats.set(toWaiting(seat, { id: msg.id, text: reply.body }));
 		await setStatus(threadId, "決めてほしい");
+		await applyModelChange(threadId);
 		log.info("seat asked", { thread_id: threadId, blocked: blocked.length });
 	};
 
@@ -1002,6 +1140,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			await postWithApproval(threadId, reply.body, blocked, reply.files, true);
 			await seats.set({ ...toWaiting(seat, null), expectStop: false });
 			await setStatus(threadId, "決めてほしい");
+			await applyModelChange(threadId);
 			log.info("seat waiting", {
 				thread_id: threadId,
 				blocked: blocked.length,
@@ -1026,6 +1165,11 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			title,
 		);
 		await closeSeat(seat);
+		// 席は閉じたが、選ばれたモデルは投稿に残り、次に開く席がそれで動く
+		const chosen = deps.seats.modelOf(threadId);
+		if (seat.modelChange && chosen !== null && chosen !== seat.model) {
+			await announceModel(threadId, seat.modelChange.by, seat.model, chosen);
+		}
 		log.info("seat done", { thread_id: threadId, status: taken.status });
 	};
 
@@ -1117,6 +1261,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		);
 		await seats.set(toWaiting(seat, null));
 		await setStatus(threadId, "決めてほしい");
+		await applyModelChange(threadId);
 		log.info("seat stopped", {
 			thread_id: threadId,
 			stop_reason: msg.stopReason,
@@ -1185,6 +1330,133 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				}),
 			);
 		});
+	};
+
+	type CommandPayload = CommandEvent["payload"];
+	type Reply = (text: string) => Promise<void>;
+
+	/** `/ai` の依頼から投稿を立てる。依頼はチャンネルに残らないので、受付の絵文字と元のメッセージへのリンクは無い。 */
+	const startFromCommand = async (
+		p: CommandPayload,
+		content: string,
+		reply: Reply,
+	) => {
+		const partner: PartnerId = p.agent === "codex" ? "akarin" : "yukarin";
+		if (partner === "akarin" && !deps.akarin) {
+			await reply(`${partnerName(partner)}の席はいま開いていません。`);
+			return;
+		}
+		const bot = speaker(partner).discord;
+		const summary = await deps.summarize(content);
+		const title = summary.ok ? summary.value : fallbackTitle(content);
+		const [status, models] = await Promise.all([statusTags(), modelTags()]);
+		const tagIds = [
+			status.get("作業中"),
+			models.get(modelName(p.model)),
+		].filter((id): id is string => id !== undefined);
+		const post = await bot.createForumPost(deps.workForumChannelId, {
+			name: title,
+			content: forumPostBody({
+				authorName: `<@${p.user.id}>`,
+				content,
+				link: null,
+			}),
+			tagIds,
+			notify: [p.user.id],
+		});
+		if (!post.ok) {
+			log.error("forum post failed", { error: post.error.type });
+			await reply(
+				"フォーラムに投稿を立てられませんでした。少し置いてから、もう一度お願いします。",
+			);
+			return;
+		}
+		const { threadId } = post.value;
+		await deps.seats.assign(threadId, partner);
+		await deps.seats.setModel(threadId, p.model);
+		parentOf.set(threadId, deps.workForumChannelId);
+		log.info("forum post created", {
+			thread_id: threadId,
+			partner,
+			model: p.model,
+		});
+		await reply(
+			`フォーラムに立てました → ${messageLink(p.guild_id, threadId)}`,
+		);
+		await queue.run(threadId, async () => {
+			if (seats.get(threadId) !== null) return;
+			await openSeat(
+				newSeat(threadId),
+				requestPrompt({
+					now: now(),
+					authorName: p.user.display_name,
+					content,
+					link: null,
+				}),
+			);
+		});
+	};
+
+	/** 担当と違う相手の `/ai` を投稿の中で打たれた。 */
+	const onOtherPartnerCommand = async (
+		threadId: string,
+		_p: CommandPayload,
+		reply: Reply,
+	) => {
+		const partner = partnerOf(threadId);
+		await reply(otherPartnerText(partner, agentOf(partner)));
+	};
+
+	/**
+	 * 投稿の席のモデルを変える。選んだモデルは投稿に残し、次に席を起動・再開するときも渡す。
+	 * 席が手を止めていればすぐ切り替え、作業中なら手が止まったときに切り替える。
+	 */
+	const changeModel = async (
+		threadId: string,
+		p: CommandPayload,
+		reply: Reply,
+	) => {
+		if (agentOf(partnerOf(threadId)) !== p.agent) {
+			await onOtherPartnerCommand(threadId, p, reply);
+			return;
+		}
+		const chosen = deps.seats.modelOf(threadId);
+		const seat = seats.get(threadId);
+		const label = modelLabel(p.model);
+		await deps.seats.setModel(threadId, p.model);
+		if (seat === null || !ALIVE.has(seat.status)) {
+			if (chosen === p.model) {
+				await reply(`すでに ${label} にしています。`);
+				return;
+			}
+			// 席が動いていなければ、次に起動するときに選んだモデルで動く
+			await announceModel(
+				threadId,
+				p.user.display_name,
+				chosen ?? seat?.model ?? null,
+				p.model,
+			);
+			await reply(`${label} に切り替えました。`);
+			return;
+		}
+		if (seat.model === p.model) {
+			// 作業中に頼んだ切り替えを、元のモデルに戻して取り消した
+			if (seat.modelChange) await seats.set({ ...seat, modelChange: null });
+			await reply(`すでに ${label} で動いています。`);
+			return;
+		}
+		await seats.set({ ...seat, modelChange: { by: p.user.display_name } });
+		if (seat.status === "working") {
+			await reply(`今の手が止まったら ${label} に切り替えます。`);
+			return;
+		}
+		await applyModelChange(threadId);
+		const after = seats.get(threadId);
+		await reply(
+			after?.modelChange
+				? `${label} に切り替えられませんでした。次に手が止まったときにもう一度切り替えます。`
+				: `${label} に切り替えました。`,
+		);
 	};
 
 	const startFromForumPost = async (p: Payload) => {
@@ -1494,6 +1766,43 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				return;
 			}
 			await queue.run(threadId, () => pressed(threadId, p, answer));
+		},
+		command: async (envelope) => {
+			const p = envelope.payload;
+			const reply: Reply = async (text) => {
+				const r = await deps.system.editInteractionReply(
+					p.application_id,
+					p.token,
+					text,
+				);
+				if (!r.ok) {
+					log.warn("command reply failed", {
+						type: p.type,
+						error: r.error.type,
+					});
+				}
+			};
+			if (p.user.is_bot || !deps.ownerUserIds.has(p.user.id)) {
+				log.info("command from non-owner ignored", { user_id: p.user.id });
+				await reply("このコマンドは持ち主だけが使えます。");
+				return;
+			}
+			if (p.type === "request") {
+				if (!p.content?.trim()) {
+					await reply("依頼が空でした。");
+					return;
+				}
+				await startFromCommand(p, p.content, reply);
+				return;
+			}
+			const threadId = p.channel_id;
+			if ((await parentIdOf(threadId)) !== deps.workForumChannelId) {
+				await reply(
+					"モデルは仕事フォーラムの投稿の中で変えられます。投稿の外で打つと依頼を書けます。",
+				);
+				return;
+			}
+			await queue.run(threadId, () => changeModel(threadId, p, reply));
 		},
 		onSeatMessage: async (msg) => {
 			const seat = seatOfMessage(msg);

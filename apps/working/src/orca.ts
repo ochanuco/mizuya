@@ -55,6 +55,8 @@ export type Orca = {
 		title: string;
 		spec: string;
 		agent: SeatAgent;
+		/** 席で動かすモデル。null なら CLI の既定のモデル。 */
+		model?: string | null;
 	}) => Promise<Result<SeatHandle, OrcaError>>;
 	/** 止めた席の Claude を前の会話のまま起こし、spec を渡す。 */
 	resumeSeat: (input: {
@@ -62,7 +64,13 @@ export type Orca = {
 		title: string;
 		spec: string;
 		agent: SeatAgent;
+		model?: string | null;
 	}) => Promise<Result<SeatHandle, OrcaError>>;
+	/** 手を止めている Claude の席のモデルを、会話を保ったまま切り替える。 */
+	switchModel: (input: {
+		terminal: string;
+		model: string;
+	}) => Promise<Result<void, OrcaError>>;
 	/** 席に続きを渡す。作業中ならターンの終わりに、終わった席なら続きの Dispatch として届く。 */
 	send: (input: {
 		dispatchId: string;
@@ -208,13 +216,23 @@ const SEAT_CLAUDE = "claude --permission-mode auto";
  */
 const SEAT_CODEX_FLAGS =
 	"-a never -s danger-full-access -c check_for_update_on_startup=false -c shell_environment_policy.set.YUNOMI_PARTNER=akarin";
-/** 起動と、止めた席を前の会話のまま起こすコマンド。Codex の resume --last は作業ディレクトリ（席の worktree）の最新の会話を選ぶ。 */
-const SEAT_COMMANDS: Record<SeatAgent, { start: string; resume: string }> = {
-	claude: { start: SEAT_CLAUDE, resume: `${SEAT_CLAUDE} --continue` },
-	codex: {
-		start: `codex ${SEAT_CODEX_FLAGS}`,
-		resume: `codex resume --last ${SEAT_CODEX_FLAGS}`,
-	},
+/**
+ * 起動と、止めた席を前の会話のまま起こすコマンド。Codex の resume --last は作業ディレクトリ（席の worktree）の最新の会話を選ぶ。
+ * 再開にも同じモデルを渡さないと、CLI の既定のモデルに戻る。
+ */
+export const seatCommand = (
+	agent: SeatAgent,
+	kind: "start" | "resume",
+	model: string | null,
+): string => {
+	if (agent === "claude") {
+		const withModel = model ? `${SEAT_CLAUDE} --model ${model}` : SEAT_CLAUDE;
+		return kind === "start" ? withModel : `${withModel} --continue`;
+	}
+	const head = kind === "start" ? "codex" : "codex resume --last";
+	return model
+		? `${head} -m ${model} ${SEAT_CODEX_FLAGS}`
+		: `${head} ${SEAT_CODEX_FLAGS}`;
 };
 /** 席の Claude を起動してから spec を渡すまで待つ時間。手元では 10 秒でコネクタが読み込まれていた。 */
 const MCP_WARMUP_MS = 15_000;
@@ -474,7 +492,7 @@ export const createOrcaCli = (opts: OrcaCliOptions): Orca => {
 			runId = run.value.runId;
 			return ok({ runId, reception });
 		},
-		startSeat: async ({ name, title, spec, agent }) => {
+		startSeat: async ({ name, title, spec, agent, model = null }) => {
 			// 前に閉じそこねた同じ名前の worktree があると作れない
 			const stale = join(opts.seatsDir, name);
 			if (
@@ -512,9 +530,15 @@ export const createOrcaCli = (opts: OrcaCliOptions): Orca => {
 			);
 			if (!created.ok) return created;
 			const path = created.value.worktree.path;
-			return launchAgent(path, title, spec, agent, SEAT_COMMANDS[agent].start);
+			return launchAgent(
+				path,
+				title,
+				spec,
+				agent,
+				seatCommand(agent, "start", model),
+			);
 		},
-		resumeSeat: async ({ path, title, spec, agent }) => {
+		resumeSeat: async ({ path, title, spec, agent, model = null }) => {
 			const exists = await stat(path).then(
 				() => true,
 				() => false,
@@ -527,7 +551,28 @@ export const createOrcaCli = (opts: OrcaCliOptions): Orca => {
 				});
 			}
 			// 前の会話のまま起こす
-			return launchAgent(path, title, spec, agent, SEAT_COMMANDS[agent].resume);
+			return launchAgent(
+				path,
+				title,
+				spec,
+				agent,
+				seatCommand(agent, "resume", model),
+			);
+		},
+		switchModel: async ({ terminal, model }) => {
+			const r = await call(
+				[
+					"terminal",
+					"send",
+					"--terminal",
+					terminal,
+					"--text",
+					`/model ${model}`,
+					"--enter",
+				],
+				ignore,
+			);
+			return r.ok ? ok(undefined) : r;
 		},
 		send: async ({ dispatchId, subject, body }) => {
 			const r = await call(
