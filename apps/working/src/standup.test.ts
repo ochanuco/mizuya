@@ -10,6 +10,7 @@ import {
 	parseDecisions,
 	startStandup,
 	startWatch,
+	type WatchTarget,
 } from "./standup.ts";
 import {
 	ciOf,
@@ -106,7 +107,7 @@ const setup = () => {
 };
 
 describe("startStandup", () => {
-	it("材料を JST の書式にして、前置きを付けた spec で朝会の席を作る", async () => {
+	it("材料を JST の書式にした spec で朝会の席を作る", async () => {
 		const t = setup();
 		const start = vi.fn(async (_spec: string) => "standup-1");
 		await startStandup({
@@ -114,11 +115,9 @@ describe("startStandup", () => {
 			kind: "standup",
 			store: memoryStore(),
 			gather: async () => materials(),
-			preamble: "【前置き】",
 			start,
 		});
 		const spec = start.mock.calls[0]?.[0] ?? "";
-		expect(spec.startsWith("【前置き】")).toBe(true);
 		expect(spec).toContain("朝会をする");
 		expect(spec).toContain("2026-12-01 09:00 JST");
 		expect(spec).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:/);
@@ -137,7 +136,6 @@ describe("startStandup", () => {
 			kind: "standup",
 			store: memoryStore(),
 			gather: async () => ({ ...materials(), goals: [goal] }),
-			preamble: "",
 			start,
 		});
 		const [spec] = start.mock.calls[0] ?? [];
@@ -156,7 +154,6 @@ describe("startStandup", () => {
 					expires_at: new Date("2026-11-08T00:00:00Z"),
 					expires_soon: true,
 				}),
-			preamble: "",
 			start: async () => "standup-1",
 		});
 		expect(t.discord.posts[0]?.name).toContain("ログイン");
@@ -179,7 +176,6 @@ describe("startStandup の見回り", () => {
 					{ expires_at: new Date("2026-11-06T00:00:00Z"), expires_soon: true },
 					github,
 				),
-			preamble: "",
 			start,
 		}).then((id) => ({ id, start }));
 
@@ -212,7 +208,6 @@ describe("startStandup の見回り", () => {
 					{ expires_at: new Date("2026-11-06T00:00:00Z"), expires_soon: true },
 					{ failing_prs: [failingPr(1), failingPr(2)] },
 				),
-			preamble: "",
 			start,
 		});
 		const [spec, kind] = start.mock.calls[0] ?? [];
@@ -242,7 +237,6 @@ describe("startStandup の見回り", () => {
 			kind: "patrol",
 			store,
 			gather: async () => ({ ...materials(), goals: [goal] }),
-			preamble: "",
 			start,
 		});
 		const [spec] = start.mock.calls[0] ?? [];
@@ -279,7 +273,6 @@ describe("startStandup の見回り", () => {
 					memory: { facts: [], watches: [watch("w1", true)] },
 					watches: [watch("w1", true), watch("w2", false)],
 				}),
-				preamble: "",
 				start,
 			});
 			const [spec] = start.mock.calls[0] ?? [];
@@ -297,7 +290,7 @@ describe("startStandup の見回り", () => {
 
 	it("見張りの新着は、その見張りを頼まれた投稿に書く", async () => {
 		const t = setup();
-		const deps = { ...t.deps, watchThreads: new Map<string, string>() };
+		const deps = { ...t.deps, watchThreads: new Map<string, WatchTarget>() };
 		const store = memoryStore();
 		await patrol(store, {});
 		const start = vi.fn(async (_spec: string, _kind: string) => "patrol-1");
@@ -309,7 +302,6 @@ describe("startStandup の見回り", () => {
 				...materials(),
 				watches: [watch("w1", true, "777"), watch("w3", true)],
 			}),
-			preamble: "",
 			start,
 		});
 		const [spec] = start.mock.calls[0] ?? [];
@@ -337,7 +329,6 @@ describe("startStandup の見回り", () => {
 			kind: "patrol",
 			store,
 			gather: async () => ({ ...materials(), watches: [watch("w2", false)] }),
-			preamble: "",
 			start,
 		});
 		expect(id).toBeNull();
@@ -847,7 +838,7 @@ describe("startWatch", () => {
 
 	it("due でなくても、その見張り 1 件だけを渡して見張りの席を立てる", async () => {
 		const t = setup();
-		const deps = { ...t.deps, watchThreads: new Map<string, string>() };
+		const deps = { ...t.deps, watchThreads: new Map<string, WatchTarget>() };
 		const read = vi.fn(async (_partner: string) => [
 			watch("w1"),
 			watch("w2", "777"),
@@ -858,7 +849,6 @@ describe("startWatch", () => {
 			partner: "akarin",
 			watchId: "w2",
 			read,
-			preamble: "",
 			start,
 		});
 		expect(id).toBe("watch-1");
@@ -868,7 +858,67 @@ describe("startWatch", () => {
 		expect(spec).toContain('"id":"w2"');
 		expect(spec).not.toContain('"id":"w1"');
 		expect(spec).not.toContain("notify_thread_id");
-		expect(deps.watchThreads.get("w2")).toBe("777");
+		expect(deps.watchThreads.get("w2")).toEqual({
+			threadId: "777",
+			partner: "akarin",
+		});
+	});
+
+	it("見張りの席は持ち主のパートナーが受け持つ", async () => {
+		const start = vi.fn(
+			async (_spec: string, _kind: string, _partner: string) => "watch-1",
+		);
+		await startWatch({
+			deps: setup().deps,
+			partner: "akarin",
+			watchId: "w1",
+			read: async () => [watch("w1")],
+			start,
+		});
+		expect(start.mock.calls[0]?.[2]).toBe("akarin");
+	});
+
+	it("見張りの新着と決めてほしいことは、持ち主の bot で書き、投稿の担当にする", async () => {
+		const t = setup();
+		const akarin = fakeDiscord();
+		const assigned: [string, string][] = [];
+		const deps = {
+			...t.deps,
+			speakers: { akarin: akarin.api },
+			assign: async (threadId: string, partner: string) => {
+				assigned.push([threadId, partner]);
+			},
+			watchThreads: new Map<string, WatchTarget>(),
+		};
+		await startWatch({
+			deps,
+			partner: "akarin",
+			watchId: "w2",
+			read: async () => [watch("w2", "777")],
+			start: async () => "watch-1",
+		});
+		await finishStandup(
+			deps,
+			'```json\n{"decisions": [{"title": "件1", "body": "本文1"}], "notices": [{"watch_id": "w2", "text": "A 店に出ていました"}, "B 店に出ていました"]}\n```',
+			[],
+			"watch",
+			"akarin",
+		);
+		expect(akarin.sentTo("777")).toEqual(["A 店に出ていました"]);
+		expect(akarin.sentTo(TEXT)).toEqual(["B 店に出ていました"]);
+		expect(t.discord.sentTo("777")).toEqual([]);
+		expect(akarin.posts).toHaveLength(1);
+		expect(t.discord.posts).toEqual([]);
+		expect(assigned.map(([, p]) => p)).toEqual(["akarin"]);
+	});
+
+	it("持ち主の bot が無ければ Yukarin の bot で書き、担当は決めない", async () => {
+		const t = setup();
+		const assign = vi.fn(async () => {});
+		const deps = { ...t.deps, assign };
+		await finishStandup(deps, decisionsReply(1), [], "watch", "akarin");
+		expect(t.discord.posts).toHaveLength(1);
+		expect(assign).not.toHaveBeenCalled();
 	});
 
 	it("記憶に無い見張りと、記憶を読めなかった回は席を立てない", async () => {
@@ -883,7 +933,6 @@ describe("startWatch", () => {
 					partner: "yukarin",
 					watchId: "w9",
 					read,
-					preamble: "",
 					start,
 				}),
 			).toBeNull();

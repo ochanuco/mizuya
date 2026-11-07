@@ -45,7 +45,12 @@ import {
 import { createSeatStatusServer } from "./seat-status.ts";
 import { openSeatStore } from "./seat-store.ts";
 import { createHealthServer } from "./server.ts";
-import { finishStandup, startStandup, startWatch } from "./standup.ts";
+import {
+	finishStandup,
+	startStandup,
+	startWatch,
+	type WatchTarget,
+} from "./standup.ts";
 import {
 	gatherStandupMaterials,
 	readWatches,
@@ -205,7 +210,9 @@ const standupDeps = {
 	workForumChannelId: cfg.workForumChannelId,
 	workTextChannelId: cfg.workTextChannelId,
 	recordActivity: activityLog.record,
-	watchThreads: new Map<string, string>(),
+	speakers: akarin ? { akarin: akarin.discord } : {},
+	assign: seats.assign,
+	watchThreads: new Map<string, WatchTarget>(),
 	logger,
 };
 
@@ -295,8 +302,8 @@ const intake = createIntake({
 		}
 	},
 	recordActivity: activityLog.record,
-	standupDone: async (text, blocked, kind) => {
-		await finishStandup(standupDeps, text, blocked, kind);
+	standupDone: async (text, blocked, kind, partner) => {
+		await finishStandup(standupDeps, text, blocked, kind, partner);
 	},
 	preamble,
 	botUserId: yukarinMe.value.id,
@@ -454,7 +461,6 @@ const runHeartbeat = (kind: HeartbeatKind) =>
 				});
 				return schedulerConfig ? withoutWatches(materials) : materials;
 			},
-			preamble,
 			start: intake.startStandup,
 		});
 	});
@@ -478,7 +484,6 @@ const runScheduled = async (r: RunRequest) => {
 			partner: r.partner,
 			watchId: r.watchId,
 			read: (partner) => readWatches(memoryDeps, partner),
-			preamble,
 			start: intake.startStandup,
 		}),
 	);
@@ -587,7 +592,6 @@ const githubEvents = cfg.standup.enabled
 						await runGithubEvents(
 							{
 								store: patrolStore,
-								preamble,
 								selfLogin,
 								start: intake.startStandup,
 								logger,

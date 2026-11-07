@@ -109,6 +109,7 @@ export type IntakeDeps = {
 		text: string,
 		blocked: readonly Pending[],
 		kind: RunKind,
+		partner: PartnerId,
 	) => Promise<void>;
 	/** 新しい席に最初に渡す前置き（人格、仕事のしかた、引き継ぎの指示）。 */
 	preamble: string;
@@ -230,8 +231,12 @@ export type Intake = {
 	command: (envelope: CommandEvent) => Promise<void>;
 	/** 席から届いたメッセージ（質問、完了の報告、止まった知らせ）を投稿に運ぶ。 */
 	onSeatMessage: (msg: SeatMessage) => Promise<void>;
-	/** 朝会か見回りの席を作る。席の名前にする ID を返す。 */
-	startStandup: (spec: string, kind?: RunKind) => Promise<string>;
+	/** 朝会か見回りの席を作る。見張りの席は持ち主のパートナーが受け持つ。席の名前にする ID を返す。 */
+	startStandup: (
+		spec: string,
+		kind?: RunKind,
+		partner?: PartnerId,
+	) => Promise<string>;
 	/** 決めてほしいまま時間がたった席の Claude を止める。 */
 	sleepIdle: () => Promise<void>;
 	/** 起動時に、対応表と Orca の席を突き合わせる。 */
@@ -1129,7 +1134,12 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		expireGrant(threadId);
 		const blocked = uniquePending(deps.ledger.takePending(threadId));
 		if (seat.standup) {
-			await deps.standupDone(msg.body, blocked, runKindOf(seat));
+			await deps.standupDone(
+				msg.body,
+				blocked,
+				runKindOf(seat),
+				partnerOf(threadId),
+			);
 			await closeSeat(seat);
 			return;
 		}
@@ -1254,7 +1264,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		expireGrant(threadId);
 		const blocked = uniquePending(deps.ledger.takePending(threadId));
 		if (seat.standup) {
-			await deps.standupDone("", blocked, runKindOf(seat));
+			await deps.standupDone("", blocked, runKindOf(seat), partnerOf(threadId));
 			await closeSeat(seat);
 			return;
 		}
@@ -1831,8 +1841,9 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			if (msg.type === "question" || msg.type === "worker_done")
 				deps.seatReplied?.();
 		},
-		startStandup: async (spec, kind = "standup") => {
+		startStandup: async (spec, kind = "standup", partner = "yukarin") => {
 			const threadId = `${kind}-${randomUUID()}`;
+			if (partner !== "yukarin") await deps.seats.assign(threadId, partner);
 			await queue.run(threadId, () => openSeat(newSeat(threadId, true), spec));
 			return threadId;
 		},

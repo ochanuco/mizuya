@@ -119,7 +119,7 @@ export type SeatStore = {
 	delete: (threadId: string) => Promise<void>;
 	orca: () => { runId: string | null; reception: string | null };
 	setOrca: (o: { runId: string; reception: string }) => Promise<void>;
-	/** 投稿の担当。席を閉じたあとも残し、同じ投稿にまた書かれたら同じ担当が受ける。 */
+	/** 投稿の担当。席を閉じたあとも残し、同じ投稿にまた書かれたら同じ担当が受ける。朝会などの席の担当は席と一緒に消す。 */
 	partnerOf: (threadId: string) => PartnerId | null;
 	assign: (threadId: string, partner: PartnerId) => Promise<void>;
 	/** 投稿で選ばれたモデル。席を閉じたあとも残し、同じ投稿で席を開き直すときも同じモデルで動かす。 */
@@ -285,7 +285,14 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 			return flush();
 		},
 		delete: (id) => {
-			if (!seats.delete(id)) return Promise.resolve();
+			const seat = seats.get(id);
+			if (!seat) return Promise.resolve();
+			seats.delete(id);
+			// 朝会・見回り・見張りの席は投稿を持たず同じ ID で開き直さないので、担当とモデルも残さない
+			if (seat.standup) {
+				partners.delete(id);
+				models.delete(id);
+			}
 			return flush();
 		},
 		orca: () => orca,
