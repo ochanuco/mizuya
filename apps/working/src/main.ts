@@ -36,10 +36,10 @@ import { buildSeatPreamble } from "./prompts.ts";
 import { startRepoMapSync } from "./repo-map/sync.ts";
 import { openSeatStore } from "./seat-store.ts";
 import { createHealthServer } from "./server.ts";
-import { createSpeaker, createWebhookDirectory } from "./speaker.ts";
 import { finishStandup, startStandup } from "./standup.ts";
 import { gatherStandupMaterials } from "./standup-materials.ts";
 import { parseQuietHours, startStandupTimer } from "./standup-timer.ts";
+import { createSystemPoster } from "./system.ts";
 import {
 	claudeCredentialsPathOf,
 	createClaudeUsageReader,
@@ -48,9 +48,6 @@ import {
 	usageByPartner,
 } from "./usage.ts";
 import { startWorkActivity } from "./work-activity.ts";
-
-/** 席の話し手が webhook で名乗る名前。どの席の発言かもこの名前で見分ける。 */
-const SPEAKER_NAME = { yukarin: "ゆかりん", akarin: "あかりん" } as const;
 
 const config = loadConfig(process.env);
 if (!config.ok) {
@@ -109,38 +106,52 @@ if (cfg.memory) {
 	});
 }
 
-// 読み書きは mizuya の bot で行い、席の発言は webhook で席の名前と画像を名乗る
+// 受信・ボタン・状態の欄は mizuya の bot、席の発言・投稿・リアクション・入力中の表示は人格の bot で行う
 const rest = createDiscordRest({ token: cfg.discordToken, logger });
 const me = await rest.me();
 if (!me.ok) {
 	logger.error("discord login failed", { error: me.error.type });
 	process.exit(1);
 }
-const applicationId = await rest.applicationId();
-if (!applicationId.ok) {
-	logger.error("discord application unreadable", {
-		error: applicationId.error.type,
+const system = createSystemPoster(rest);
+const discord = createDiscordRest({
+	token: cfg.personaTokens.yukarin,
+	logger,
+});
+const yukarinMe = await discord.me();
+if (!yukarinMe.ok) {
+	logger.error("yukarin discord login failed", {
+		error: yukarinMe.error.type,
 	});
 	process.exit(1);
 }
-const hooks = createWebhookDirectory(rest, applicationId.value);
-const discord = createSpeaker(rest, hooks, {
-	name: SPEAKER_NAME.yukarin,
-	avatarUrl: cfg.avatarUrls.yukarin,
-});
-const akarin: SeatPartner = {
-	discord: createSpeaker(rest, hooks, {
-		name: SPEAKER_NAME.akarin,
-		avatarUrl: cfg.avatarUrls.akarin,
-	}),
-	name: SPEAKER_NAME.akarin,
-	preamble: buildSeatPreamble({
-		persona: await personaOf(["akarin"]),
-		handoffPrompt,
-		issueTemplate,
-		partnerName: "Akarin",
-	}),
-};
+
+// Akarin の bot に入れなければ Akarin の席を作らず、Akarin 宛ての依頼も Yukarin が受ける
+const akarin: SeatPartner | null = await (async () => {
+	const token = cfg.personaTokens.akarin;
+	if (!token) {
+		logger.info("akarin seats disabled", { reason: "AKARIN_DISCORD_TOKEN" });
+		return null;
+	}
+	const akarinDiscord = createDiscordRest({ token, logger });
+	const akarinMe = await akarinDiscord.me();
+	if (!akarinMe.ok) {
+		logger.error("akarin discord login failed; akarin seats disabled", {
+			error: akarinMe.error.type,
+		});
+		return null;
+	}
+	return {
+		discord: akarinDiscord,
+		botUserId: akarinMe.value.id,
+		preamble: buildSeatPreamble({
+			persona: await personaOf(["akarin"]),
+			handoffPrompt,
+			issueTemplate,
+			partnerName: "Akarin",
+		}),
+	};
+})();
 
 const env = childEnv(process.env, cfg.stateDir);
 const summarize = createSummarizer({
@@ -169,6 +180,8 @@ const patrolStore = openPatrolStore(cfg.stateDir);
 const activityLog = openActivityLog(cfg.stateDir);
 const standupDeps = {
 	discord,
+	system,
+	ownerUserId: cfg.ownerDiscordUserId,
 	approvals,
 	ledger,
 	workForumChannelId: cfg.workForumChannelId,
@@ -264,8 +277,9 @@ const intake = createIntake({
 		await finishStandup(standupDeps, text, blocked, kind);
 	},
 	preamble,
-	botUserId: me.value.id,
-	yukarinName: SPEAKER_NAME.yukarin,
+	botUserId: yukarinMe.value.id,
+	system,
+	systemUserId: me.value.id,
 	akarin,
 	roleIds: cfg.roleIds,
 	workTextChannelId: cfg.workTextChannelId,

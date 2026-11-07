@@ -14,6 +14,7 @@ import {
 	createAttachmentCollector,
 } from "./attachments.ts";
 import type { DiscordApi } from "./discord-rest.ts";
+import { DISMISS_ASK } from "./dismiss.ts";
 import { grantPathOf, guardDirOf } from "./guard/env.ts";
 import { createLedger } from "./guard/ledger.ts";
 import {
@@ -39,7 +40,6 @@ import {
 	TAGS,
 	TEXT,
 	tempDir,
-	YUKARIN_NAME,
 } from "./test-support.ts";
 
 const T0 = new Date("2026-11-05T08:00:00Z");
@@ -47,6 +47,8 @@ const PREAMBLE = "【人格】\n## 仕事のしかた\n【引き継ぎの指示�
 const AKARIN_PREAMBLE = "【あかりの人格】\n## 仕事のしかた";
 const AKARIN_ROLE = "role-akarin";
 const YUKARIN_ROLE = "role-yukarin";
+const AKARIN_BOT = "akarin-bot";
+const SYSTEM_BOT = "mizuya-bot";
 const WRITES = new Set([
 	"send",
 	"createForumPost",
@@ -83,12 +85,18 @@ const setup = async (
 ) => {
 	const stateDir = opts.stateDir ?? tempDir();
 	const d = fakeDiscord();
+	// mizuya の bot が書くもの（ボタンと状態の欄）は、席の bot の書き込みと分けて見る
+	const sys = fakeDiscord();
 	const o = opts.orca ?? fakeOrca(opts.seatsDir);
 	let clock = T0.getTime();
 	const remembered: string[] = [];
 	const rememberedBy: PartnerId[] = [];
 	const activity: ActivityEntry[] = [];
-	const writes = { yukarin: [] as string[], akarin: [] as string[] };
+	const writes = {
+		yukarin: [] as string[],
+		akarin: [] as string[],
+		system: [] as string[],
+	};
 	const standup: { text: string; blocked: number; kind: string }[] = [];
 	const seats = await openSeatStore(stateDir);
 	const ledger = createLedger(guardDirOf(stateDir));
@@ -99,7 +107,7 @@ const setup = async (
 		akarin: opts.akarin
 			? {
 					discord: asBot(d.api, writes.akarin),
-					name: "あかりん",
+					botUserId: AKARIN_BOT,
 					preamble: AKARIN_PREAMBLE,
 				}
 			: null,
@@ -124,7 +132,8 @@ const setup = async (
 		},
 		preamble: PREAMBLE,
 		botUserId: BOT,
-		yukarinName: YUKARIN_NAME,
+		system: asBot(sys.api, writes.system),
+		systemUserId: SYSTEM_BOT,
 		roleIds: { yukarin: YUKARIN_ROLE, akarin: AKARIN_ROLE },
 		ownerUserIds: new Set([OWNER]),
 		workTextChannelId: TEXT,
@@ -141,6 +150,7 @@ const setup = async (
 	};
 	return {
 		d,
+		sys,
 		o,
 		seats,
 		ledger,
@@ -175,6 +185,38 @@ const openPost = async (
 };
 
 describe("新しい投稿", () => {
+	it("仕事チャンネルの依頼から立てた投稿は、最初の発言で依頼者にメンションして通知する", async () => {
+		const s = await setup();
+		await s.intake.handle(envelope({}));
+		expect(s.d.posts[0]?.content.startsWith(`<@${OWNER}> さんからの依頼`)).toBe(
+			true,
+		);
+		expect(s.d.posts[0]?.notify).toEqual([OWNER]);
+	});
+
+	it("フォーラムの投稿への最初の返事でだけ、依頼者にメンションして通知する", async () => {
+		const s = await setup();
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "status",
+				dispatchId: seat.dispatchId,
+				body: "見ています",
+			}),
+		);
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "status",
+				dispatchId: seat.dispatchId,
+				body: "直しています",
+			}),
+		);
+		expect(s.d.sent.filter((m) => m.channelId === "p1")).toEqual([
+			{ channelId: "p1", content: `<@${OWNER}> 見ています`, notify: [OWNER] },
+			{ channelId: "p1", content: "直しています" },
+		]);
+	});
+
 	it("仕事チャンネルの依頼から投稿を立て、席を作って依頼を渡し、タグを作業中にする", async () => {
 		const s = await setup();
 		await s.intake.handle(envelope({}));
@@ -286,7 +328,9 @@ describe("席の質問", () => {
 			body: "どのブランチに push しますか？",
 		});
 		await s.intake.onSeatMessage(q);
-		expect(s.d.sentTo("p1").at(-1)).toBe("どのブランチに push しますか？");
+		expect(s.d.sentTo("p1").at(-1)).toBe(
+			`<@${OWNER}> どのブランチに push しますか？`,
+		);
 		expect(s.d.tagsOf("p1")).toEqual(["tag-decide"]);
 		expect(s.seats.get("p1")?.status).toBe("asking");
 
@@ -408,8 +452,9 @@ describe("取り消せない操作で止まったとき", () => {
 				body: "push してよい？",
 			}),
 		);
-		const at = s.d.sent.findIndex((m) => m.buttons !== undefined);
-		expect(s.d.sent[at]?.buttons).toEqual([
+		expect(s.d.sent.every((m) => m.buttons === undefined)).toBe(true);
+		const at = s.sys.sent.findIndex((m) => m.buttons !== undefined);
+		expect(s.sys.sent[at]?.buttons).toEqual([
 			"approval:grant",
 			"approval:deny",
 			"thread:dismiss",
@@ -429,12 +474,12 @@ describe("取り消せない操作で止まったとき", () => {
 
 		await s.intake.press(press("p1", asked, "approval:grant", "someone"));
 		expect(existsSync(grantPath)).toBe(false);
-		expect(s.d.edited.has(asked)).toBe(false);
+		expect(s.sys.edited.has(asked)).toBe(false);
 
 		await s.intake.press(press("p1", asked, "approval:grant"));
 		expect(JSON.parse(readFileSync(grantPath, "utf8")).grant_id).toBe("g1");
-		expect(s.d.edited.get(asked)?.content).toContain("許可済み");
-		expect(s.d.edited.get(asked)?.content).toContain("git push origin main");
+		expect(s.sys.edited.get(asked)?.content).toContain("許可済み");
+		expect(s.d.sentTo("p1").join()).toContain("git push origin main");
 		const [reply] = s.o.opsOf("reply") as { body: string }[];
 		expect(reply?.body).toContain("1 回だけ許可した");
 
@@ -448,7 +493,7 @@ describe("取り消せない操作で止まったとき", () => {
 		const s = await setup();
 		const asked = await askApproval(s);
 		await s.intake.press(press("p1", asked, "approval:deny"));
-		expect(s.d.edited.get(asked)?.content).toContain("却下済み");
+		expect(s.sys.edited.get(asked)?.content).toContain("却下済み");
 		expect(existsSync(grantPathOf(guardDirOf(s.stateDir), "p1"))).toBe(false);
 		expect(s.o.opsOf("reply")).toEqual([]);
 		expect(s.o.opsOf("send")).toEqual([]);
@@ -459,7 +504,7 @@ describe("取り消せない操作で止まったとき", () => {
 		const s = await setup();
 		const asked = await askApproval(s);
 		await s.intake.handle(say("p1", "いや、dev/ にして"));
-		expect(s.d.edited.get(asked)?.content).toContain("却下済み");
+		expect(s.sys.edited.get(asked)?.content).toContain("却下済み");
 		await s.intake.press(press("p1", asked, "approval:grant"));
 		expect(existsSync(grantPathOf(guardDirOf(s.stateDir), "p1"))).toBe(false);
 		expect(events(s)).toEqual(["requested", "dismissed"]);
@@ -469,8 +514,8 @@ describe("取り消せない操作で止まったとき", () => {
 		const s = await setup();
 		const asked = await askApproval(s);
 		await s.intake.press(press("p1", asked, "thread:dismiss"));
-		expect(s.d.edited.get(asked)?.content).toContain("却下済み");
-		expect(s.d.edited.get(asked)?.content).toContain("不要として閉じました");
+		expect(s.sys.edited.get(asked)?.content).toContain("却下済み");
+		expect(s.sys.edited.get(asked)?.content).toContain("不要として閉じました");
 		expect(existsSync(grantPathOf(guardDirOf(s.stateDir), "p1"))).toBe(false);
 		expect(events(s)).toEqual(["requested", "dismissed"]);
 		expect(s.seats.get("p1")).toBeNull();
@@ -520,7 +565,7 @@ describe("席の完了報告", () => {
 				outcome: "succeeded",
 			}),
 		);
-		expect(s.d.sentTo("p1").at(-1)).toBe("直して PR を出しました");
+		expect(s.d.sentTo("p1").at(-1)).toBe(`<@${OWNER}> 直して PR を出しました`);
 		expect(s.d.tagsOf("p1")).toEqual(["tag-done"]);
 		expect(s.remembered).toEqual(["仕事フォーラムの「README の誤字」を終えた"]);
 		expect(s.activity).toEqual([
@@ -630,15 +675,13 @@ describe("席の完了報告", () => {
 				authorId: OWNER,
 				authorName: "ちゃぬ",
 				isBot: false,
-				isWebhook: false,
 				content: "README の誤字を直して",
 			},
 			{
 				id: "b1",
-				authorId: "webhook",
-				authorName: YUKARIN_NAME,
+				authorId: BOT,
+				authorName: "ゆかりん",
 				isBot: true,
-				isWebhook: true,
 				content: "直しました",
 			},
 			{
@@ -646,7 +689,6 @@ describe("席の完了報告", () => {
 				authorId: OWNER,
 				authorName: "ちゃぬ",
 				isBot: false,
-				isWebhook: false,
 				content: "もう一か所あった",
 			},
 		]);
@@ -847,7 +889,7 @@ describe("席を始められなかったとき", () => {
 		s.d.addThread("p1", "x");
 		await s.intake.handle(say("p1", "頼みます", { first: true }));
 		expect(s.d.sentTo("p1")).toEqual([
-			"席を始められませんでした（Claude の作業場所の確認で止まった）。返事をくれれば、もう一度始めます。",
+			`<@${OWNER}> 席を始められませんでした（Claude の作業場所の確認で止まった）。返事をくれれば、もう一度始めます。`,
 		]);
 		expect(s.d.tagsOf("p1")).toEqual(["tag-decide"]);
 	});
@@ -932,7 +974,7 @@ describe("裏の作業を待つ席", () => {
 			}),
 		);
 		await s.intake.handle(say("p1", "どう？"));
-		expect(s.d.sentTo("p1")).toEqual(["作業中です。"]);
+		expect(s.d.sentTo("p1")).toEqual([`<@${OWNER}> 作業中です。`]);
 		const current = s.seats.get("p1");
 		await s.intake.onSeatMessage(
 			seatMessage({
@@ -943,7 +985,7 @@ describe("裏の作業を待つ席", () => {
 		);
 		await s.intake.handle(say("p1", "A で"));
 		expect(s.d.sentTo("p1")).toEqual([
-			"作業中です。",
+			`<@${OWNER}> 作業中です。`,
 			"A と B のどちらにしますか",
 		]);
 	});
@@ -990,7 +1032,7 @@ describe("途中経過", () => {
 			}),
 		);
 		expect(s.d.sentTo("p1")).toEqual([
-			"描画を待っています。5 分ほどです。",
+			`<@${OWNER}> 描画を待っています。5 分ほどです。`,
 			"止まってはいません。描き終わったら続けます。",
 		]);
 		expect(s.seats.get("p1")?.status).toBe("working");
@@ -1077,9 +1119,9 @@ describe("席の返事の添付", () => {
 		expect(s.d.sent.filter((m) => m.channelId === "p1")).toEqual([
 			{
 				channelId: "p1",
-				content:
-					"直しました。\n\n添付できなかったもの:\n- out/link.txt（out/ の外を指している）",
+				content: `<@${OWNER}> 直しました。\n\n添付できなかったもの:\n- out/link.txt（out/ の外を指している）`,
 				files: ["shot.png"],
+				notify: [OWNER],
 			},
 		]);
 		expect(s.d.tagsOf("p1")).toEqual(["tag-done"]);
@@ -1111,8 +1153,9 @@ describe("席の返事の添付", () => {
 		const posted = s.d.sent.filter((m) => m.channelId === "p1");
 		expect(posted[0]).toEqual({
 			channelId: "p1",
-			content: "1 枚目です。",
+			content: `<@${OWNER}> 1 枚目です。`,
 			files: ["abc123.png"],
+			notify: [OWNER],
 		});
 		expect(posted[1]?.content).toBe(
 			"どちらにしますか\n\n添付できなかったもの:\n- ../secret.txt（out/ の外のパス）",
@@ -1182,7 +1225,7 @@ describe("作業中かを Discord で見せる", () => {
 			}),
 		);
 		expect(s.d.reactionsOn(TEXT, req.payload.message_id)).toEqual(["✅"]);
-		expect(s.d.panelIn("thread1")).toBe("状態: 完了");
+		expect(s.sys.panelIn("thread1")).toBe("状態: 完了");
 	});
 
 	it("順番待ちの席は受付のまま待たせる", async () => {
@@ -1191,14 +1234,14 @@ describe("作業中かを Discord で見せる", () => {
 		s.d.addThread("p2", "二つ目");
 		await s.intake.handle(say("p2", "こっちも", { first: true }));
 		expect(s.d.reactionsOn("p2", "p2")).toEqual(["👀"]);
-		expect(s.d.panelIn("p2")).toBe("状態: 受付");
+		expect(s.sys.panelIn("p2")).toBe("状態: 受付");
 		expect(s.d.typing).not.toContain("p2");
 	});
 
 	it("状態の欄に状態・経過時間・いまやっていることを書き、経過時間だけの変化は 5 分おきに書き換える", async () => {
 		const s = await setup();
 		const seat = await openPost(s);
-		expect(s.d.panelIn("p1")).toBe("状態: 作業中（1分未満）");
+		expect(s.sys.panelIn("p1")).toBe("状態: 作業中（1分未満）");
 
 		await s.intake.onSeatMessage(
 			seatMessage({
@@ -1207,11 +1250,11 @@ describe("作業中かを Discord で見せる", () => {
 				body: "誤字を探しています",
 			}),
 		);
-		expect(s.d.panelIn("p1")).toBe(
+		expect(s.sys.panelIn("p1")).toBe(
 			"状態: 作業中（1分未満）\nいまやっていること: 誤字を探しています",
 		);
 
-		const edits = vi.mocked(s.d.api.editMessage);
+		const edits = vi.mocked(s.sys.api.editMessage);
 		const before = edits.mock.calls.length;
 		s.advance(3 * 60_000);
 		await s.intake.refreshPanels();
@@ -1219,7 +1262,7 @@ describe("作業中かを Discord で見せる", () => {
 
 		s.advance(2 * 60_000);
 		await s.intake.refreshPanels();
-		expect(s.d.panelIn("p1")).toBe(
+		expect(s.sys.panelIn("p1")).toBe(
 			"状態: 作業中（5分）\nいまやっていること: 誤字を探しています",
 		);
 		await s.intake.refreshPanels();
@@ -1232,7 +1275,7 @@ describe("作業中かを Discord で見せる", () => {
 				body: "どちらにしますか",
 			}),
 		);
-		expect(s.d.panelIn("p1")).toBe("状態: 決めてほしい");
+		expect(s.sys.panelIn("p1")).toBe("状態: 決めてほしい");
 	});
 
 	it("作業中の席の数を数える。朝会と待っている席は数えない", async () => {
@@ -1279,8 +1322,6 @@ describe("Akarin の席", () => {
 				`createForumPost ${FORUM}`,
 				`send ${TEXT}`,
 				`addReaction ${TEXT}`,
-				"createMessage thread1",
-				"editMessage thread1",
 				"typing thread1",
 			]),
 		);
@@ -1300,14 +1341,60 @@ describe("Akarin の席", () => {
 		expect(s.writes.akarin).toEqual([]);
 	});
 
-	it("メンションが無くても、Akarin の名前で書かれた webhook の発言への返信なら Akarin が受ける", async () => {
+	it("仕事チャンネルで Yukarin の bot へのメンションがあれば Yukarin が受ける", async () => {
+		const s = await setup({ akarin: true });
+		await s.intake.handle(envelope({ mentions: [BOT] }));
+		expect(s.seats.partnerOf("thread1")).toBe("yukarin");
+		expect(s.writes.akarin).toEqual([]);
+	});
+
+	it("仕事チャンネルで mizuya の bot へのメンションがあれば Yukarin が受ける", async () => {
+		const s = await setup({ akarin: true });
+		await s.intake.handle(envelope({ mentions: [SYSTEM_BOT] }));
+		expect(s.seats.partnerOf("thread1")).toBe("yukarin");
+	});
+
+	it("席の bot と mizuya の bot の発言では席を作らない", async () => {
+		const s = await setup({ akarin: true });
+		for (const id of [BOT, AKARIN_BOT, SYSTEM_BOT]) {
+			await s.intake.handle(
+				envelope({
+					author: { id, display_name: "bot", is_bot: true },
+					mentions: [BOT],
+				}),
+			);
+		}
+		expect(s.o.opsOf("startSeat")).toEqual([]);
+	});
+
+	it("仕事チャンネルで Akarin の bot へのメンションがあれば Akarin が受ける", async () => {
+		const s = await setup({ akarin: true });
+		await s.intake.handle(envelope({ mentions: [AKARIN_BOT] }));
+		expect(s.seats.partnerOf("thread1")).toBe("akarin");
+		expect(s.writes.yukarin).toEqual([]);
+	});
+
+	it("フォーラムの新しい投稿で Akarin の bot へのメンションがあれば Akarin が受ける", async () => {
+		const s = await setup({ akarin: true });
+		s.d.addThread("p1", "README の誤字");
+		await s.intake.handle(
+			envelope({
+				channel_id: "p1",
+				message_id: "p1",
+				content: "README の誤字を直して",
+				mentions: [AKARIN_BOT],
+			}),
+		);
+		expect(s.seats.partnerOf("p1")).toBe("akarin");
+	});
+
+	it("メンションが無くても、Akarin の bot の発言への返信なら Akarin が受ける", async () => {
 		const s = await setup({ akarin: true });
 		s.d.messages.set("a1", {
 			id: "a1",
-			authorId: "webhook",
+			authorId: AKARIN_BOT,
 			authorName: "あかりん",
 			isBot: true,
-			isWebhook: true,
 			content: "終わりました",
 		});
 		await s.intake.handle(
@@ -1316,14 +1403,13 @@ describe("Akarin の席", () => {
 		expect(s.seats.partnerOf("thread1")).toBe("akarin");
 	});
 
-	it("同じ名前でも webhook でない発言への返信では席を作らない", async () => {
+	it("同じ名前でも席の bot でない人の発言への返信では席を作らない", async () => {
 		const s = await setup({ akarin: true });
 		s.d.messages.set("a1", {
 			id: "a1",
 			authorId: "someone",
 			authorName: "あかりん",
 			isBot: false,
-			isWebhook: false,
 			content: "こんにちは",
 		});
 		await s.intake.handle(
@@ -1430,8 +1516,9 @@ describe("不要のボタン", () => {
 				body: "定期の確認です。対応しますか？",
 			}),
 		);
-		const at = s.d.sent.findIndex((m) => m.buttons !== undefined);
-		expect(s.d.sent[at]?.buttons).toEqual(["thread:dismiss"]);
+		expect(s.d.sent.every((m) => m.buttons === undefined)).toBe(true);
+		const at = s.sys.sent.findIndex((m) => m.buttons !== undefined);
+		expect(s.sys.sent[at]?.buttons).toEqual(["thread:dismiss"]);
 		return `sent${at + 1}`;
 	};
 
@@ -1444,8 +1531,8 @@ describe("不要のボタン", () => {
 		expect(s.o.opsOf("removeWorktree")).toEqual([path]);
 		expect(s.o.opsOf("reply")).toEqual([]);
 		expect(s.d.tagsOf("p1")).toEqual(["tag-done"]);
-		expect(s.d.edited.get(asked)?.content).toBe(
-			"定期の確認です。対応しますか？\n\n不要として閉じました。",
+		expect(s.sys.edited.get(asked)?.content).toBe(
+			`${DISMISS_ASK}\n\n不要として閉じました。`,
 		);
 		expect(s.activity.map((a) => a.kind)).toEqual(["done"]);
 	});
@@ -1455,7 +1542,7 @@ describe("不要のボタン", () => {
 		const asked = await ask(s);
 		await s.intake.press(press("p1", asked, "thread:dismiss", "someone"));
 		expect(s.seats.get("p1")).not.toBeNull();
-		expect(s.d.edited.has(asked)).toBe(false);
+		expect(s.sys.edited.has(asked)).toBe(false);
 	});
 
 	it("席の無い投稿では、タグを完了にしてボタンを外すだけ", async () => {

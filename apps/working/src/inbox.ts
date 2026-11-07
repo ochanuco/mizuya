@@ -6,7 +6,7 @@ import {
 	githubWorkEventSchema,
 } from "./github-events.ts";
 import type { Logger } from "./logger.ts";
-import { WORKING_BUTTON_PREFIX } from "./speaker.ts";
+import { WORKING_BUTTON_PREFIX } from "./system.ts";
 
 /**
  * mizuya の Worker の受け箱。Worker が受けたボタンと GitHub の出来事を、外向きの WebSocket で受け取る。

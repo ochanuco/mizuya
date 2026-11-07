@@ -40,7 +40,7 @@ export type Button = {
 const BUTTON_STYLE = { secondary: 2, success: 3, danger: 4 } as const;
 
 /** ボタンを 1 行に並べる。Discord の components の形。 */
-export const toComponents = (buttons: readonly Button[]) =>
+const toComponents = (buttons: readonly Button[]) =>
 	buttons.length === 0
 		? []
 		: [
@@ -63,15 +63,12 @@ const userSchema = v.object({
 });
 const messageSchema = v.object({
 	id: v.string(),
-	channel_id: v.optional(v.string()),
 	content: v.string(),
 	author: userSchema,
-	webhook_id: v.nullish(v.string()),
 });
 const sentSchema = v.object({ id: v.string() });
 const channelSchema = v.object({
 	id: v.string(),
-	type: v.optional(v.number()),
 	name: v.nullish(v.string()),
 	parent_id: v.nullish(v.string()),
 	applied_tags: v.optional(v.array(v.string())),
@@ -82,8 +79,6 @@ const channelSchema = v.object({
 
 export type ChannelInfo = {
 	id: string;
-	/** スレッド（フォーラムの投稿を含む）なら true。webhook はスレッドの親に付いている。 */
-	isThread: boolean;
 	name: string | null;
 	parentId: string | null;
 	appliedTagIds: string[];
@@ -95,8 +90,6 @@ export type PostedMessage = {
 	authorId: string;
 	authorName: string;
 	isBot: boolean;
-	/** webhook で書かれたメッセージ。authorName は webhook が名乗った名前。 */
-	isWebhook: boolean;
 	content: string;
 };
 
@@ -119,10 +112,13 @@ export type DiscordApi = {
 			content: string;
 			tagIds: string[];
 			buttons?: readonly Button[];
+			/** 本文でメンションした人のうち、通知してよい人。 */
+			notify?: readonly string[];
 		},
 	) => Promise<Result<{ threadId: string }, DomainError>>;
 	/**
-	 * 上限を超える本文は分けて送る。replyTo は最初の 1 件だけに、files と buttons は最後の 1 件だけに付ける。
+	 * 上限を超える本文は分けて送る。replyTo と notify は最初の 1 件だけに、files と buttons は最後の 1 件だけに付ける。
+	 * notify は本文でメンションした人のうち、通知してよい人。ほかのメンションは通知しない。
 	 * 送ったメッセージの ID を順に返す。
 	 */
 	send: (
@@ -131,6 +127,7 @@ export type DiscordApi = {
 		replyTo?: string,
 		files?: readonly Attachment[],
 		buttons?: readonly Button[],
+		notify?: readonly string[],
 	) => Promise<Result<{ messageIds: string[] }, DomainError>>;
 	setTags: (
 		threadId: string,
@@ -163,52 +160,6 @@ export type DiscordApi = {
 	) => Promise<Result<void, DomainError>>;
 };
 
-/** webhook の token は URL に入れて使う。application_id は webhook を作った application。 */
-export type Webhook = {
-	id: string;
-	token: string | null;
-	name: string | null;
-	applicationId: string | null;
-};
-
-/** webhook で送るメッセージ。username と avatar_url は送るたびに名乗る。 */
-export type WebhookMessage = {
-	content: string;
-	username?: string;
-	avatarUrl?: string | null;
-	buttons?: readonly Button[];
-	files?: readonly Attachment[];
-	/** フォーラムに新しい投稿を作るときの件名とタグ。 */
-	threadName?: string;
-	tagIds?: string[];
-};
-
-/** bot の token で webhook を作り、webhook の token で書く。 */
-export type DiscordWebhookApi = {
-	/** bot の application の ID。webhook を作った application を見分けるのに使う。 */
-	applicationId: () => Promise<Result<string, DomainError>>;
-	listWebhooks: (channelId: string) => Promise<Result<Webhook[], DomainError>>;
-	createWebhook: (
-		channelId: string,
-		name: string,
-	) => Promise<Result<Webhook, DomainError>>;
-	/** 書いたメッセージの ID と、書いたチャンネル（新しい投稿ならそのスレッド）を返す。 */
-	executeWebhook: (
-		webhook: { id: string; token: string },
-		threadId: string | null,
-		message: WebhookMessage,
-	) => Promise<Result<{ id: string; channelId: string }, DomainError>>;
-	/** 本文を書き換え、付いていたボタンは外す。 */
-	editWebhookMessage: (
-		webhook: { id: string; token: string },
-		threadId: string | null,
-		messageId: string,
-		content: string,
-	) => Promise<Result<void, DomainError>>;
-};
-
-export type DiscordRest = DiscordApi & DiscordWebhookApi;
-
 export type DiscordRestOptions = {
 	token: string;
 	/** 2xx 以外の応答を残す。未設定なら残さない。 */
@@ -230,16 +181,11 @@ const toPosted = (m: v.InferOutput<typeof messageSchema>): PostedMessage => ({
 	authorId: m.author.id,
 	authorName: m.author.global_name ?? m.author.username,
 	isBot: m.author.bot ?? false,
-	isWebhook: m.webhook_id != null,
 	content: m.content,
 });
 
-/** スレッドのチャンネルの type（公開・非公開・お知らせのスレッド）。 */
-const THREAD_TYPES = new Set([10, 11, 12]);
-
 const toChannel = (c: v.InferOutput<typeof channelSchema>): ChannelInfo => ({
 	id: c.id,
-	isThread: c.type !== undefined && THREAD_TYPES.has(c.type),
 	name: c.name ?? null,
 	parentId: c.parent_id ?? null,
 	appliedTagIds: c.applied_tags ?? [],
@@ -261,7 +207,7 @@ export const splitMessage = (text: string, limit = MESSAGE_LIMIT): string[] => {
 };
 
 /** ファイルを付けるときは multipart で、本文は payload_json、ファイルは files[n] に入れる。 */
-export const withFiles = (
+const withFiles = (
 	payload: Record<string, unknown>,
 	files: readonly Attachment[],
 ): FormData => {
@@ -283,28 +229,7 @@ export const withFiles = (
 	return form;
 };
 
-const webhookSchema = v.object({
-	id: v.string(),
-	token: v.nullish(v.string()),
-	name: v.nullish(v.string()),
-	application_id: v.nullish(v.string()),
-});
-
-const toWebhook = (w: v.InferOutput<typeof webhookSchema>): Webhook => ({
-	id: w.id,
-	token: w.token ?? null,
-	name: w.name ?? null,
-	applicationId: w.application_id ?? null,
-});
-
-const webhookQuery = (threadId: string | null, wait: boolean) => {
-	const q = new URLSearchParams({ with_components: "true" });
-	if (wait) q.set("wait", "true");
-	if (threadId) q.set("thread_id", threadId);
-	return q.toString();
-};
-
-export const createDiscordRest = (opts: DiscordRestOptions): DiscordRest => {
+export const createDiscordRest = (opts: DiscordRestOptions): DiscordApi => {
 	const doFetch = opts.fetch ?? fetch;
 	const timeoutMs = opts.timeoutMs ?? 15_000;
 
@@ -353,8 +278,7 @@ export const createDiscordRest = (opts: DiscordRestOptions): DiscordRest => {
 				await res.json().catch(() => null),
 			);
 			const code = parsed.success ? (parsed.output.code ?? null) : null;
-			// webhook の token は path に入るので、ログに残さない
-			const route = `${method} ${(path.split("?")[0] ?? "").replace(/^\/webhooks\/([^/]+)\/[^/]+/, "/webhooks/$1/***")}`;
+			const route = `${method} ${path.split("?")[0]}`;
 			opts.logger?.warn("discord request rejected", {
 				route,
 				status: res.status,
@@ -422,7 +346,9 @@ export const createDiscordRest = (opts: DiscordRestOptions): DiscordRest => {
 					applied_tags: post.tagIds,
 					message: {
 						content: post.content.slice(0, MESSAGE_LIMIT),
-						allowed_mentions: noMentions,
+						allowed_mentions: post.notify?.length
+							? { parse: [], users: [...post.notify] }
+							: noMentions,
 						...(post.buttons?.length
 							? { components: toComponents(post.buttons) }
 							: {}),
@@ -431,7 +357,14 @@ export const createDiscordRest = (opts: DiscordRestOptions): DiscordRest => {
 			);
 			return r.ok ? ok({ threadId: r.value.id }) : r;
 		},
-		send: async (channelId, content, replyTo, files = [], buttons = []) => {
+		send: async (
+			channelId,
+			content,
+			replyTo,
+			files = [],
+			buttons = [],
+			notify = [],
+		) => {
 			const split = splitMessage(content);
 			const chunks = split.length === 0 && files.length > 0 ? [""] : split;
 			const messageIds: string[] = [];
@@ -439,7 +372,10 @@ export const createDiscordRest = (opts: DiscordRestOptions): DiscordRest => {
 				const last = i === chunks.length - 1;
 				const payload = {
 					content: chunk,
-					allowed_mentions: noMentions,
+					allowed_mentions:
+						i === 0 && notify.length > 0
+							? { parse: [], users: [...notify] }
+							: noMentions,
 					...(last && buttons.length > 0
 						? { components: toComponents(buttons) }
 						: {}),
@@ -505,71 +441,6 @@ export const createDiscordRest = (opts: DiscordRestOptions): DiscordRest => {
 				"DELETE",
 				`/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`,
 				null,
-			);
-			return r.ok ? ok(undefined) : r;
-		},
-		applicationId: async () => {
-			const r = await callJson(
-				"GET",
-				"/applications/@me",
-				v.object({ id: v.string() }),
-			);
-			return r.ok ? ok(r.value.id) : r;
-		},
-		listWebhooks: async (channelId) => {
-			const r = await callJson(
-				"GET",
-				`/channels/${channelId}/webhooks`,
-				v.array(webhookSchema),
-			);
-			return r.ok ? ok(r.value.map(toWebhook)) : r;
-		},
-		createWebhook: async (channelId, name) => {
-			const r = await callJson(
-				"POST",
-				`/channels/${channelId}/webhooks`,
-				webhookSchema,
-				{ name },
-			);
-			return r.ok ? ok(toWebhook(r.value)) : r;
-		},
-		executeWebhook: async (webhook, threadId, m) => {
-			const payload = {
-				content: m.content.slice(0, MESSAGE_LIMIT),
-				allowed_mentions: noMentions,
-				...(m.username ? { username: m.username } : {}),
-				...(m.avatarUrl ? { avatar_url: m.avatarUrl } : {}),
-				...(m.buttons?.length ? { components: toComponents(m.buttons) } : {}),
-				...(m.threadName
-					? {
-							thread_name: m.threadName.slice(0, THREAD_NAME_LIMIT),
-							applied_tags: m.tagIds ?? [],
-						}
-					: {}),
-			};
-			const files = m.files ?? [];
-			const r = await callJson(
-				"POST",
-				`/webhooks/${webhook.id}/${webhook.token}?${webhookQuery(threadId, true)}`,
-				messageSchema,
-				files.length === 0 ? payload : withFiles(payload, files),
-			);
-			if (!r.ok) return r;
-			return ok({
-				id: r.value.id,
-				channelId: r.value.channel_id ?? threadId ?? "",
-			});
-		},
-		editWebhookMessage: async (webhook, threadId, messageId, content) => {
-			const r = await call(
-				"PATCH",
-				`/webhooks/${webhook.id}/${webhook.token}/messages/${messageId}?${webhookQuery(threadId, false)}`,
-				null,
-				{
-					content: content.slice(0, MESSAGE_LIMIT),
-					allowed_mentions: noMentions,
-					components: [],
-				},
 			);
 			return r.ok ? ok(undefined) : r;
 		},

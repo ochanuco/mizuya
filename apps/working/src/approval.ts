@@ -47,19 +47,18 @@ const fence = (text: string) => {
 const describe = (op: Operation) =>
 	op.tool === "Bash" ? fence(op.target) : fence(`${op.tool}: ${op.target}`);
 
-const APPROVAL_ASK =
-	"実行してよければ「許可」を押すか、この投稿に「OK」か「許可」とだけ返事してください。書いてある操作を 1 回だけ実行します。「却下」を押すか、ほかの返事をすると取りやめます。";
+/** 許可のボタンに添える文。止めた操作は、そのすぐ上の席の発言に書いてある。 */
+export const APPROVAL_ASK =
+	"上の操作を実行してよければ「許可」を押すか、この投稿に「OK」か「許可」とだけ返事してください。1 回だけ実行します。「却下」を押すか、ほかの返事をすると取りやめます。";
 
-/** 止めた操作を持ち主に見せ、許可を求めるメッセージ。 */
+/** 止めた操作を持ち主に見せるメッセージ。許可の求め方は、ボタンと一緒に APPROVAL_ASK で書く。 */
 export const approvalRequestText = (items: readonly Pending[]) => {
 	const list = items
 		.map((p, i) => `${i + 1}. ${p.reason}\n${describe(p.operation)}`)
 		.join("\n");
 	return `決めてほしいこと: 次の操作は取り消せないか外に出るので、止めています。
 
-${list}
-
-${APPROVAL_ASK}`;
+${list}`;
 };
 
 export type ApprovalAnswer = "grant" | "deny";
