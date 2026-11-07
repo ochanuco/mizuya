@@ -17,6 +17,7 @@ import {
 	withNote,
 } from "./attachments.ts";
 import type { Summarizer } from "./claude-cli.ts";
+import type { ButtonPressEvent, WorkMessageEvent } from "./discord-events.ts";
 import type { Attachment, DiscordApi, PostedMessage } from "./discord-rest.ts";
 import { dismissedText, isDismissButton } from "./dismiss.ts";
 import { seatNameOf } from "./guard/env.ts";
@@ -24,10 +25,6 @@ import type { Ledger, Pending } from "./guard/ledger.ts";
 import type { Operation } from "./guard/operation.ts";
 import { createKeyedQueue } from "./keyed-queue.ts";
 import { PARTNER_IDS, type PartnerId } from "./lib/core.ts";
-import type {
-	DiscordButtonPressedEnvelope,
-	DiscordMessageCreatedEnvelope,
-} from "./lib/protocol.ts";
 import type { Logger } from "./logger.ts";
 import type { Orca, OrcaError, SeatAgent, SeatMessage } from "./orca.ts";
 import {
@@ -127,7 +124,7 @@ const defaultEvery = (ms: number, fn: () => void) => {
 	return () => clearInterval(timer);
 };
 
-type Payload = DiscordMessageCreatedEnvelope["payload"];
+type Payload = WorkMessageEvent["payload"];
 
 const HISTORY_LIMIT = 100;
 const FAILURE_TEXT =
@@ -206,9 +203,9 @@ export const busyText = (lastStatus: string | null) => {
 
 export type Intake = {
 	/** 受け付けた仕事が終わるまで待つ Promise を返す。HTTP は待たずに 202 を返す。 */
-	handle: (envelope: DiscordMessageCreatedEnvelope) => Promise<void>;
+	handle: (envelope: WorkMessageEvent) => Promise<void>;
 	/** 投稿のボタンが押された。許可の依頼のボタンだけを扱う。 */
-	press: (envelope: DiscordButtonPressedEnvelope) => Promise<void>;
+	press: (envelope: ButtonPressEvent) => Promise<void>;
 	/** 席から届いたメッセージ（質問、完了の報告、止まった知らせ）を投稿に運ぶ。 */
 	onSeatMessage: (msg: SeatMessage) => Promise<void>;
 	/** 朝会か見回りの席を作る。席の名前にする ID を返す。 */
@@ -265,7 +262,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		const userId =
 			partner === "akarin" ? deps.akarin?.botUserId : deps.botUserId;
 		return (
-			(roleId !== null && (p.mention_roles ?? []).includes(roleId)) ||
+			(roleId !== null && p.mention_roles.includes(roleId)) ||
 			(userId !== undefined && p.mentions.includes(userId))
 		);
 	};
@@ -714,7 +711,10 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	/** 席に Claude を座らせ、溜まっている言葉を渡す。worktree があれば前の会話のまま起こす。 */
 	const launch = async (seat: Seat) => {
 		const threadId = seat.threadId;
-		const title = (await titleOf(threadId)) ?? threadId;
+		// 朝会・見回り・GitHub の出来事の席は Discord の投稿を持たず、ID はチャンネルではない
+		const title = seat.standup
+			? threadId
+			: ((await titleOf(threadId)) ?? threadId);
 		const text = seat.pending.join("\n\n---\n\n");
 		const partner = partnerOf(threadId);
 		const agent = agentOf(partner);
@@ -1287,7 +1287,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	 */
 	const pressed = async (
 		threadId: string,
-		p: DiscordButtonPressedEnvelope["payload"],
+		p: ButtonPressEvent["payload"],
 		answer: ApprovalAnswer,
 	) => {
 		const request = deps.approvals.get(threadId);
@@ -1348,7 +1348,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	/** 不要のボタン。押されたメッセージからボタンを外し、閉じたことを書き足す。 */
 	const dismissPressed = async (
 		threadId: string,
-		p: DiscordButtonPressedEnvelope["payload"],
+		p: ButtonPressEvent["payload"],
 	) => {
 		await dismissThread(threadId);
 		const current = await deps.system.getMessage(threadId, p.message_id);
@@ -1456,7 +1456,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 					log.info("work message without addressee", {
 						message_id: p.message_id,
 						mentions: p.mentions.length,
-						mention_roles: (p.mention_roles ?? []).length,
+						mention_roles: p.mention_roles.length,
 					});
 					return;
 				}

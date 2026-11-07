@@ -1,15 +1,10 @@
 import { randomUUID } from "node:crypto";
 import * as v from "valibot";
+import type { ButtonPressEvent } from "./discord-events.ts";
 import {
 	type GithubWorkEvent,
 	githubWorkEventSchema,
 } from "./github-events.ts";
-import {
-	DISCORD_BUTTON_PRESSED,
-	DISCORD_SOURCE,
-	type DiscordButtonPressedEnvelope,
-	discordButtonPressedPayloadSchema,
-} from "./lib/protocol.ts";
 import type { Logger } from "./logger.ts";
 import { WORKING_BUTTON_PREFIX } from "./system.ts";
 
@@ -22,17 +17,32 @@ import { WORKING_BUTTON_PREFIX } from "./system.ts";
 const PING = "ping";
 const PONG = "pong";
 
+const snowflake = v.pipe(v.string(), v.nonEmpty());
+
+/** Worker が受け箱に置くボタンの形。mizuya の Worker の `interactions.ts` と揃える。 */
+const buttonSchema = v.object({
+	guild_id: snowflake,
+	channel_id: snowflake,
+	message_id: snowflake,
+	custom_id: v.pipe(v.string(), v.nonEmpty()),
+	user: v.object({
+		id: snowflake,
+		display_name: v.pipe(v.string(), v.nonEmpty()),
+		is_bot: v.boolean(),
+	}),
+});
+
 const itemSchema = v.object({
 	type: v.literal("item"),
 	id: v.pipe(v.string(), v.nonEmpty()),
 	kind: v.string(),
-	received_at: v.pipe(v.string(), v.isoTimestamp()),
+	received_at: v.string(),
 	body: v.unknown(),
 });
 
 export type InboxHandlers = {
 	/** 押されたボタン。custom_id は Working の頭を外した形で渡す。 */
-	press: (envelope: DiscordButtonPressedEnvelope) => void;
+	press: (envelope: ButtonPressEvent) => void;
 	/** 席を動かす GitHub の出来事。未設定なら受け取って捨てる。 */
 	github?: (event: GithubWorkEvent) => void;
 };
@@ -45,7 +55,6 @@ export const dispatchInboxMessage = (
 	raw: string,
 	handlers: InboxHandlers,
 	logger: Logger,
-	now: () => Date = () => new Date(),
 ): string | null => {
 	if (raw === PONG) return null;
 	let json: unknown;
@@ -60,7 +69,7 @@ export const dispatchInboxMessage = (
 		logger.warn("inbox message unreadable");
 		return null;
 	}
-	const { id, kind, received_at, body } = item.output;
+	const { id, kind, body } = item.output;
 	if (kind === "github") {
 		const event = v.safeParse(githubWorkEventSchema, body);
 		if (!event.success) {
@@ -79,7 +88,7 @@ export const dispatchInboxMessage = (
 		logger.warn("inbox item of unknown kind dropped", { id, kind });
 		return id;
 	}
-	const payload = v.safeParse(discordButtonPressedPayloadSchema, body);
+	const payload = v.safeParse(buttonSchema, body);
 	if (!payload.success) {
 		logger.warn("inbox button unreadable", { id });
 		return id;
@@ -87,12 +96,6 @@ export const dispatchInboxMessage = (
 	const customId = payload.output.custom_id;
 	handlers.press({
 		event_id: randomUUID(),
-		type: DISCORD_BUTTON_PRESSED,
-		source: DISCORD_SOURCE,
-		partner_id: "yukarin",
-		occurred_at: received_at,
-		received_at: now().toISOString(),
-		schema_version: 1,
 		payload: {
 			...payload.output,
 			custom_id: customId.startsWith(WORKING_BUTTON_PREFIX)

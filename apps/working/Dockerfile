@@ -147,7 +147,7 @@ COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=build --chown=worker:worker /out /home/worker/app
 COPY --chown=worker:worker apps/working/start.sh apps/working/seat-env.sh apps/working/init-seats-repo.sh apps/working/release-orcad-lock.sh /home/worker/bin/
 
-# 8080 は gateway からの受付、8090 は Mac からの席の状態
+# 8080 は生存確認（healthz）、8090 は Mac からの席の状態
 EXPOSE 8080 8090
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 	CMD ["curl", "-fsS", "http://127.0.0.1:8080/healthz"]

@@ -5,7 +5,7 @@ import { acceptTitle, SUMMARY_SYSTEM_PROMPT, summaryInput } from "./prompts.ts";
 
 /**
  * 受付が自分で動かす CLI（件名の要約、記憶、gh、ログインの期限）に渡す環境変数。
- * 受付の秘密（Discord のトークン、gateway と共有するトークン）と記憶の口の service token は渡さない。
+ * 受付の秘密（Discord のトークン、受け箱の token）と記憶の口の service token は渡さない。
  */
 const CHILD_ENV_KEYS = [
 	"HOME",

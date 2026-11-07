@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { vi } from "vitest";
 import type { ApprovalRequest, ApprovalStore } from "./approval-store.ts";
+import type { ButtonPressEvent, WorkMessageEvent } from "./discord-events.ts";
 import type { ChannelInfo, DiscordApi, PostedMessage } from "./discord-rest.ts";
 import { createLedger } from "./guard/ledger.ts";
 import {
@@ -11,10 +12,6 @@ import {
 	ok,
 	permissionDenied,
 } from "./lib/core.ts";
-import type {
-	DiscordButtonPressedEnvelope,
-	DiscordMessageCreatedEnvelope,
-} from "./lib/protocol.ts";
 import type { Orca, SeatHandle, SeatMessage } from "./orca.ts";
 
 export const memoryApprovals = (): ApprovalStore & {
@@ -340,8 +337,8 @@ export const seatMessage = (
 });
 
 export const envelope = (
-	payload: Partial<DiscordMessageCreatedEnvelope["payload"]>,
-): DiscordMessageCreatedEnvelope =>
+	payload: Partial<WorkMessageEvent["payload"]>,
+): WorkMessageEvent =>
 	({
 		event_id: `e${++seq}`,
 		payload: {
@@ -351,11 +348,12 @@ export const envelope = (
 			author: { id: OWNER, display_name: "ちゃぬ", is_bot: false },
 			content: "<@123> 請求書を整理して",
 			mentions: [BOT],
+			mention_roles: [],
 			reply_to_message_id: null,
 			attachments: [],
 			...payload,
 		},
-	}) as DiscordMessageCreatedEnvelope;
+	}) as WorkMessageEvent;
 
 /** 投稿内の持ち主の発言。 */
 export const say = (
@@ -377,7 +375,7 @@ export const press = (
 	messageId: string,
 	customId: string,
 	userId = OWNER,
-): DiscordButtonPressedEnvelope =>
+): ButtonPressEvent =>
 	({
 		event_id: `e${++seq}`,
 		payload: {
@@ -387,4 +385,4 @@ export const press = (
 			custom_id: customId,
 			user: { id: userId, display_name: "ちゃぬ", is_bot: false },
 		},
-	}) as DiscordButtonPressedEnvelope;
+	}) as ButtonPressEvent;

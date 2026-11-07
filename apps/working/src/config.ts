@@ -23,7 +23,6 @@ const envSchema = v.object({
 	MIZUYA_ACCESS_CLIENT_ID: v.optional(nonEmpty),
 	MIZUYA_ACCESS_CLIENT_SECRET: v.optional(nonEmpty),
 	CODEX_HOME: v.optional(nonEmpty),
-	WORKING_TOKEN: nonEmpty,
 	WORK_TEXT_CHANNEL_ID: nonEmpty,
 	WORK_FORUM_CHANNEL_ID: nonEmpty,
 	WORKING_OWNER_DISCORD_USER_IDS: nonEmpty,
@@ -77,8 +76,6 @@ export type WorkingConfig = {
 	} | null;
 	/** Codex CLI の設定とログイン情報の置き場所。席の元のリポジトリの信頼をここの config.toml に書く。 */
 	codexHome: string;
-	/** yunomi の gateway と共有するトークン。Authorization: Bearer で受ける。 */
-	sharedToken: string;
 	workTextChannelId: string;
 	workForumChannelId: string;
 	/** この人たちの発言だけで作業する。ほかの人と bot は無視する。 */
@@ -181,7 +178,6 @@ export const loadConfig = (
 					}
 				: null,
 		codexHome: e.CODEX_HOME ?? `${home}/.codex`,
-		sharedToken: e.WORKING_TOKEN,
 		workTextChannelId: e.WORK_TEXT_CHANNEL_ID,
 		workForumChannelId: e.WORK_FORUM_CHANNEL_ID,
 		ownerUserIds: new Set(owners),

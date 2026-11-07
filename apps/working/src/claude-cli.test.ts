@@ -16,7 +16,7 @@ describe("childEnv", () => {
 				PATH: "/bin",
 				GH_TOKEN: "gh",
 				DISCORD_TOKEN: "secret",
-				WORKING_TOKEN: "secret",
+				MIZUYA_INBOX_TOKEN: "secret",
 				MAC_STATE_TOKEN: "secret",
 				CF_ACCESS_CLIENT_SECRET: "secret",
 			},

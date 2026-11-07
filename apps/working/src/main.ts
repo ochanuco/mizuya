@@ -35,7 +35,7 @@ import { readTypicalSleep } from "./persona-profile.ts";
 import { buildSeatPreamble } from "./prompts.ts";
 import { startRepoMapSync } from "./repo-map/sync.ts";
 import { openSeatStore } from "./seat-store.ts";
-import { createWorkingServer } from "./server.ts";
+import { createHealthServer } from "./server.ts";
 import { finishStandup, startStandup } from "./standup.ts";
 import { gatherStandupMaterials } from "./standup-materials.ts";
 import { parseQuietHours, startStandupTimer } from "./standup-timer.ts";
@@ -343,30 +343,7 @@ const usage = startUsagePolling({
 	logger,
 });
 
-const server = createWorkingServer({
-	sharedToken: cfg.sharedToken,
-	accept: (envelope) => {
-		void intake.handle(envelope).catch((e: unknown) => {
-			logger.error("intake crashed", {
-				event_id: envelope.event_id,
-				error: String(e),
-			});
-		});
-	},
-	press: (envelope) => {
-		void intake.press(envelope).catch((e: unknown) => {
-			logger.error("intake crashed", {
-				event_id: envelope.event_id,
-				error: String(e),
-			});
-		});
-	},
-	seatSummary: () => ({
-		...intake.summary(),
-		usage: usageByPartner(usage.current(), agentOf),
-	}),
-	logger,
-});
+const server = createHealthServer();
 server.listen(cfg.port, () => {
 	logger.info("working intake ready", {
 		port: cfg.port,

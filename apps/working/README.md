@@ -43,7 +43,7 @@ Orca の Linux 版は GitHub Releases（`stablyai/orca`）の `orca-ide_<版>_<a
 
 席のメッセージに付けたボタンは、mizuya の application の Interactions Endpoint URL、つまり mizuya の Worker に届く。Worker はそれを受け箱に置き、受付は `MIZUYA_INBOX_URL`（`wss://mizuya.chanu.co/working/inbox`）に外向きの WebSocket でつないで受け取る。接続には Access の service token（`MIZUYA_ACCESS_CLIENT_ID` / `MIZUYA_ACCESS_CLIENT_SECRET`）と `Authorization: Bearer <MIZUYA_INBOX_TOKEN>` を付け、30 秒ごとに `ping` を送る。受け取った行は ack する。切れたら 1 秒から 60 秒まで間をのばしながらつなぎ直し、その間に置かれたボタンは次の接続で届く（押してから 15 分まで）。
 
-yunomi の gateway が仕事カテゴリの発言とボタンを `POST /events` に送る口も残している。mizuya に移る前に yunomi の bot（ゆかりん、あかりん）が書いたメッセージのボタンは、yunomi の gateway に届いてここに来る。`Authorization: Bearer <WORKING_TOKEN>` が合わなければ 401 で断る。受け取ったら 202 を返し、作業は後で進める。`GET /healthz` は生存確認用。
+`PORT`（既定は `8080`）の `GET /healthz` は生存確認用で、image の HEALTHCHECK が読む。
 
 ### 流れ
 
@@ -105,7 +105,6 @@ yunomi の gateway が仕事カテゴリの発言とボタンを `POST /events` 
 - 持ち主の依頼メッセージ（仕事チャンネルの依頼、投稿の最初のメッセージ、投稿への返事）に bot のリアクションを付ける。受付 👀、作業中 ⏳、完了 ✅、決めてほしい・引き継ぎ ❓。状態が変わると前の絵文字を外して付け替え、持ち主が新しく書くとそのメッセージに移す。
 - 席を作るとき投稿に bot のメッセージを 1 件置き、状態の欄にする。状態、作業中なら経過時間（いまの状態になってから）といまやっていること（席の最後の途中経過）を書く。内容が変わったときだけ書き換え、経過時間だけの変化は最短 5 分おき。
 - mizuya の bot のステータスに、席ごとの作業中の数と CLI の使用率を「ゆ 作業中 2件 · 5h 30% · 週 12% ／ あ 5h 5% · 週 1%」の形で 1 分ごとに出す。朝会の席は数えない。使用率は application の説明文（プロフィールの自己紹介欄）にも席ごとに 1 行で書く。変わったときだけ、15 分に一度まで。
-- 同じものを `GET /seats/summary`（`Authorization: Bearer <WORKING_TOKEN>`）で `{ "working": <合計>, "partners": { "yukarin": N, "akarin": M }, "usage": { ... } }` として返す。
 - `usage` はパートナーの席で動く CLI のサブスクリプションの使用率で、Yukarin は Claude、Akarin は Codex。`{ "fiveHour": { "usedPercent": 32, "resetsAt": <UNIX ミリ秒 | null> }, "weekly": { ... } }` の形で、読めていないパートナーは載せない。
   - 5 分おきに読む。Claude は `~/.claude/.credentials.json`（`CLAUDE_CONFIG_DIR` があればその中）のトークンで `https://api.anthropic.com/api/oauth/usage` を読む。Claude Code の `/usage` と同じ非公開の API。トークンの期限が切れていれば読まず、自分では更新しない（席の Claude が動けば CLI が更新する）。
   - Codex は `codex app-server` を起こして `account/rateLimits/read` を呼ぶ。primary が 5 時間枠、secondary が週枠。Akarin の席が無効なら読まない。
@@ -153,7 +152,7 @@ managed settings（`/etc/claude-code/managed-settings.json`、root の持ち物�
 
 hook は席の場所（`CLAUDE_PROJECT_DIR`）で、止めた操作の紐づけ先をその投稿にする。
 
-席の Claude は `orca-ide serve` の環境変数を受け継ぐ。start.sh は `seat-env.sh` で、`HOME`・`PATH`・`GH_TOKEN`・`GIT_AUTHOR_*` / `GIT_COMMITTER_*` などと、hook が使う `MIZUYA_STATE_DIR`・`MIZUYA_SEATS_DIR`、mise・uv・pnpm の置き場所だけを渡して起動する。Discord のトークン、`WORKING_TOKEN`、`MAC_STATE_TOKEN`、記憶の口と chimera の service token は渡さない。
+席の Claude は `orca-ide serve` の環境変数を受け継ぐ。start.sh は `seat-env.sh` で、`HOME`・`PATH`・`GH_TOKEN`・`GIT_AUTHOR_*` / `GIT_COMMITTER_*` などと、hook が使う `MIZUYA_STATE_DIR`・`MIZUYA_SEATS_DIR`、mise・uv・pnpm の置き場所だけを渡して起動する。Discord のトークン、受け箱の token と service token、`MAC_STATE_TOKEN`、記憶の口と chimera の service token は渡さない。
 
 ### 席の Codex の権限
 
@@ -200,7 +199,7 @@ yunomi-memory watch-checked --id <見張りの id> --seen "<key>"  # 見張り�
 
 Mac の Orca の worktree と agent の一覧を、`MAC_STATE_PORT`（既定は `8090`）の `POST /mac-state` で受ける。`MAC_STATE_TOKEN` を設定したときだけ待ち受ける。
 
-- `Authorization: Bearer <MAC_STATE_TOKEN>` が合わなければ 401。gateway と共有する `WORKING_TOKEN` とは別のトークンにする。
+- `Authorization: Bearer <MAC_STATE_TOKEN>` が合わなければ 401。受け箱の `MIZUYA_INBOX_TOKEN` とは別のトークンにする。
 - 本文は `mac-state/send.sh` が作る要約（`sent_at` と `worktrees`）。形が違えば 400。
 - 受け取った最新の 1 件を、受け取った時刻と一緒に `STATE_DIR/mac-state.json` に置き換えて残す。Mac が寝ていても、朝会は最後に届いたものを読む。
 
@@ -284,11 +283,10 @@ CI の失敗、PR のレビュー、issue と PR のコメントがあると、�
 | `MIZUYA_INBOX_TOKEN`                                              | いいえ | 受け箱の token。Worker の `WORKING_INBOX_TOKEN` と同じ値                                                                    |
 | `MIZUYA_ACCESS_CLIENT_ID` / `MIZUYA_ACCESS_CLIENT_SECRET`         | いいえ | 受け箱につなぐ Access の service token（`mizuya-working-inbox`）                                                            |
 | `CODEX_HOME`                                                      | いいえ | Codex CLI の設定とログイン情報の置き場所。イメージでは `~/.codex`                                                           |
-| `WORKING_TOKEN`                                                   | はい   | yunomi の gateway と共有するトークン                                                                                        |
 | `WORK_TEXT_CHANNEL_ID`                                            | はい   | 依頼を受ける仕事テキストチャンネル                                                                                          |
 | `WORK_FORUM_CHANNEL_ID`                                           | はい   | 投稿を立てる仕事フォーラム                                                                                                  |
 | `WORKING_OWNER_DISCORD_USER_IDS`                                  | はい   | 作業を頼める人の Discord ユーザー ID（カンマ区切り）                                                                        |
-| `PORT`                                                            | いいえ | 待ち受けるポート。既定は `8080`                                                                                             |
+| `PORT`                                                            | いいえ | 生存確認（`/healthz`）を待ち受けるポート。既定は `8080`                                                                     |
 | `STATE_DIR`                                                       | いいえ | 対応表の置き場所。既定は `~/state`                                                                                          |
 | `WORK_DIR`                                                        | いいえ | 受付が動かす CLI（件名の要約、記憶、`gh`）の作業ディレクトリ。既定は `~/work`                                               |
 | `PERSONA_SCRIPT`                                                  | いいえ | 人格を出力するスクリプト。既定は `~/bin/persona.sh`                                                                         |
@@ -326,9 +324,9 @@ mizuya の bot には、仕事チャンネルと仕事フォーラムで、読�
 
 main への push で `.github/workflows/working-image.yml` が `ghcr.io/ochanuco/mizuya-working:main` と `:sha-<short>` を公開する。PR ではビルドだけ確かめる。公開の後、Environment `production-approval` で持ち主が承認すると、`deploy` job が chabatake の `docker01-app` を dispatch して `:sha-<short>` を docker01 に配置する（`.github/actions/docker01-app`）。docker01 の stack は chabatake の `docker01/mizuya-working` にある。作り直すと作業中の席が切れるので、承認は作業の切れ目に出す。
 
-gateway と同じホストに、gateway とは別の compose project で置く（`compose.example.yaml`）。gateway を更新しても Working の作業は止まらない。
+docker01 に、yunomi の gateway とは別の compose project で置く（`compose.example.yaml`）。gateway を更新しても Working の作業は止まらない。
 
-- 受付は docker0 のゲートウェイ（`172.17.0.1:8180`）にだけ公開する。gateway は `extra_hosts: host.docker.internal:host-gateway` を足し、`WORKING_URL=http://host.docker.internal:8180/events` で送る。
+- 受付は外から受ける口を持たない（Discord は Gateway、ボタンと GitHub の出来事は受け箱へ外向きにつなぐ）。生存確認の `8080` は公開しない。
 - 席の状態の受け口（コンテナの `8090`）は、Mac から届く LAN の口に公開する。`MAC_STATE_URL` は `http://<host>:<公開したポート>/mac-state` にする。
 - `restart: unless-stopped` で、ホストの再起動後も受付と `orca serve` が上がる。
 - volume は 5 つ（上の表）。コンテナを作り直しても、ログイン・pairing・投稿と席の対応・席の worktree と Claude・Codex の会話が残る。席の Claude はコンテナと一緒に終わるので、受付は起動時に止めた席として扱い、返事で起こす。
@@ -384,7 +382,6 @@ docker build -f apps/working/Dockerfile -t mizuya-working:spike .
 
 docker run -d --name working \
   -p 127.0.0.1:16768:6768 \
-  -p 127.0.0.1:18080:8080 \
   --env-file .env.working \
   -v mizuya-working-claude:/home/worker/.claude \
   -v mizuya-working-codex:/home/worker/.codex \

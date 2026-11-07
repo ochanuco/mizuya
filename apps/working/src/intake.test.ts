@@ -862,6 +862,8 @@ describe("朝会の席", () => {
 		const s = await setup();
 		const id = await s.intake.startStandup("出来事の spec", "event");
 		expect(id.startsWith("event-")).toBe(true);
+		// 投稿を持たない席の ID を Discord のチャンネルとして引かない
+		expect(s.d.api.getChannel).not.toHaveBeenCalledWith(id);
 		await s.intake.onSeatMessage(
 			seatMessage({
 				type: "worker_done",

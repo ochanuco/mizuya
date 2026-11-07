@@ -7,11 +7,7 @@ import {
 	type Message,
 	PermissionFlagsBits,
 } from "discord.js";
-import {
-	DISCORD_MESSAGE_CREATED,
-	DISCORD_SOURCE,
-	type DiscordMessageCreatedEnvelope,
-} from "./lib/protocol.ts";
+import type { WorkMessageEvent } from "./discord-events.ts";
 import type { Logger } from "./logger.ts";
 
 /** Gateway のメッセージのうち、受付が読む分だけの構造型。 */
@@ -22,7 +18,6 @@ export type MessageLike = {
 	/** スレッドなら親のチャンネル。 */
 	parentId: string | null;
 	content: string;
-	createdAt: Date;
 	webhookId: string | null;
 	author: { id: string; bot: boolean; displayName: string };
 	mentionedUserIds: string[];
@@ -32,26 +27,19 @@ export type MessageLike = {
 };
 
 /**
- * 仕事チャンネルと仕事フォーラムの投稿に書かれたメッセージを、受付の envelope にする。それ以外と webhook の発言は null。
+ * 仕事チャンネルと仕事フォーラムの投稿に書かれたメッセージを、受付の出来事にする。それ以外と webhook の発言は null。
  * webhook の発言は席の話し手が書いたもので、受付が自分で書いたものを読み直さない。
  */
-export const toWorkEnvelope = (
+export const toWorkMessage = (
 	m: MessageLike,
 	where: { textChannelId: string; forumChannelId: string },
-	now: Date,
-): DiscordMessageCreatedEnvelope | null => {
+): WorkMessageEvent | null => {
 	if (m.guildId === null || m.webhookId !== null) return null;
 	const inWork =
 		m.channelId === where.textChannelId || m.parentId === where.forumChannelId;
 	if (!inWork) return null;
 	return {
 		event_id: randomUUID(),
-		type: DISCORD_MESSAGE_CREATED,
-		source: DISCORD_SOURCE,
-		partner_id: "yukarin",
-		occurred_at: m.createdAt.toISOString(),
-		received_at: now.toISOString(),
-		schema_version: 1,
 		payload: {
 			guild_id: m.guildId,
 			channel_id: m.channelId,
@@ -80,7 +68,6 @@ const toMessageLike = (m: Message): MessageLike => ({
 	channelId: m.channelId,
 	parentId: m.channel.isThread() ? m.channel.parentId : null,
 	content: m.content,
-	createdAt: m.createdAt,
 	webhookId: m.webhookId,
 	author: {
 		id: m.author.id,
@@ -126,7 +113,7 @@ export const startWorkGateway = async (opts: {
 	token: string;
 	textChannelId: string;
 	forumChannelId: string;
-	accept: (envelope: DiscordMessageCreatedEnvelope) => void;
+	accept: (event: WorkMessageEvent) => void;
 	logger: Logger;
 }): Promise<WorkGateway> => {
 	const log = opts.logger;
@@ -140,23 +127,19 @@ export const startWorkGateway = async (opts: {
 	client.on(Events.MessageCreate, (message) => {
 		if (message.author.id === client.user?.id) return;
 		const m = toMessageLike(message);
-		const envelope = toWorkEnvelope(
-			m,
-			{
-				textChannelId: opts.textChannelId,
-				forumChannelId: opts.forumChannelId,
-			},
-			new Date(),
-		);
+		const event = toWorkMessage(m, {
+			textChannelId: opts.textChannelId,
+			forumChannelId: opts.forumChannelId,
+		});
 		// 届いたのに受付に渡らない発言を、チャンネルの指定と権限のどちらの問題か見分けられるようにする
 		log.info("gateway message", {
 			message_id: m.id,
 			channel_id: m.channelId,
 			parent_id: m.parentId,
 			webhook: m.webhookId !== null,
-			work: envelope !== null,
+			work: event !== null,
 		});
-		if (envelope) opts.accept(envelope);
+		if (event) opts.accept(event);
 	});
 	client.on(Events.Error, (e) => {
 		log.warn("gateway error", { error: String(e) });
