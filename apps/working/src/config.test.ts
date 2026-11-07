@@ -42,6 +42,7 @@ describe("loadConfig", () => {
 				chimera: null,
 				playwright: null,
 				macState: null,
+				seatStatus: null,
 				standup: {
 					enabled: true,
 					at: { hour: 9, minute: 0 },
@@ -124,13 +125,14 @@ describe("loadConfig", () => {
 		expect(loadConfig({ ...base, PORT: "x" }).ok).toBe(false);
 	});
 
-	it("記憶の口・席の状態の口・朝会の設定を読む", () => {
+	it("記憶の口・席の状態の口・席の状態を渡す口・朝会の設定を読む", () => {
 		const r = loadConfig({
 			...base,
 			YUNOMI_URL: "https://worker.example",
 			CF_ACCESS_CLIENT_ID: "id",
 			CF_ACCESS_CLIENT_SECRET: "secret",
 			MAC_STATE_TOKEN: "mac",
+			SEAT_STATUS_TOKEN: "seat",
 			STANDUP_ENABLED: "false",
 			STANDUP_TIME: "08:30",
 		});
@@ -140,6 +142,7 @@ describe("loadConfig", () => {
 			clientSecret: "secret",
 		});
 		expect(r.ok && r.value.macState).toEqual({ token: "mac", port: 8090 });
+		expect(r.ok && r.value.seatStatus).toEqual({ token: "seat", port: 8091 });
 		expect(r.ok && r.value.standup).toEqual({
 			enabled: false,
 			at: { hour: 8, minute: 30 },

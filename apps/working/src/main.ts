@@ -34,6 +34,7 @@ import { openPatrolStore } from "./patrol.ts";
 import { readTypicalSleep } from "./persona-profile.ts";
 import { buildSeatPreamble } from "./prompts.ts";
 import { startRepoMapSync } from "./repo-map/sync.ts";
+import { createSeatStatusServer } from "./seat-status.ts";
 import { openSeatStore } from "./seat-store.ts";
 import { createHealthServer } from "./server.ts";
 import { finishStandup, startStandup } from "./standup.ts";
@@ -47,7 +48,6 @@ import {
 	startUsagePolling,
 	usageByPartner,
 } from "./usage.ts";
-import { startWorkActivity } from "./work-activity.ts";
 
 const config = loadConfig(process.env);
 if (!config.ok) {
@@ -366,15 +366,21 @@ const gateway = await startWorkGateway({
 	logger,
 });
 
-const stopWorkActivity = startWorkActivity({
-	snapshot: () => ({
-		partners: intake.summary().partners,
-		usage: usageByPartner(usage.current(), agentOf),
-	}),
-	setActivity: gateway.setActivity,
-	setBio: gateway.setBio,
-	logger,
-});
+const seatStatusConfig = cfg.seatStatus;
+const seatStatusServer = seatStatusConfig
+	? createSeatStatusServer({
+			token: seatStatusConfig.token,
+			status: (partner) => ({
+				working: intake.summary().partners[partner],
+				usage: usageByPartner(usage.current(), agentOf)[partner] ?? null,
+			}),
+		})
+	: null;
+if (seatStatusConfig && seatStatusServer) {
+	seatStatusServer.listen(seatStatusConfig.port, () => {
+		logger.info("seat status ready", { port: seatStatusConfig.port });
+	});
+}
 
 const macStateServer = cfg.macState
 	? createMacStateServer({ token: cfg.macState.token, store: macState, logger })
@@ -537,7 +543,7 @@ const shutdown = (signal: string) => {
 	macStateServer?.close();
 	server.close();
 	inbox?.stop();
-	stopWorkActivity();
+	seatStatusServer?.close();
 	void gateway.stop();
 	process.exit(0);
 };

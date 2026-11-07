@@ -104,8 +104,8 @@ Orca の Linux 版は GitHub Releases（`stablyai/orca`）の `orca-ide_<版>_<a
 - 席の Claude が動いている間（席の状態が `working`）、投稿に入力中の表示を約 8 秒おきに送る。止まったら送らない。
 - 持ち主の依頼メッセージ（仕事チャンネルの依頼、投稿の最初のメッセージ、投稿への返事）に bot のリアクションを付ける。受付 👀、作業中 ⏳、完了 ✅、決めてほしい・引き継ぎ ❓。状態が変わると前の絵文字を外して付け替え、持ち主が新しく書くとそのメッセージに移す。
 - 席を作るとき投稿に bot のメッセージを 1 件置き、状態の欄にする。状態、作業中なら経過時間（いまの状態になってから）といまやっていること（席の最後の途中経過）を書く。内容が変わったときだけ書き換え、経過時間だけの変化は最短 5 分おき。
-- mizuya の bot のステータスに、席ごとの作業中の数と CLI の使用率を「ゆ 作業中 2件 · 5h 30% · 週 12% ／ あ 5h 5% · 週 1%」の形で 1 分ごとに出す。朝会の席は数えない。使用率は application の説明文（プロフィールの自己紹介欄）にも席ごとに 1 行で書く。変わったときだけ、15 分に一度まで。
-- `usage` はパートナーの席で動く CLI のサブスクリプションの使用率で、Yukarin は Claude、Akarin は Codex。`{ "fiveHour": { "usedPercent": 32, "resetsAt": <UNIX ミリ秒 | null> }, "weekly": { ... } }` の形で、読めていないパートナーは載せない。
+- 席ごとの作業中の数と CLI の使用率は、mizuya の bot には出さない。そのパートナーの bot を動かす yunomi の gateway が、席の状態を渡す口から読んで自分のステータスと自己紹介欄に出す。朝会の席は数えない。
+- 使用率はパートナーの席で動く CLI のサブスクリプションの使用率で、Yukarin は Claude、Akarin は Codex。
   - 5 分おきに読む。Claude は `~/.claude/.credentials.json`（`CLAUDE_CONFIG_DIR` があればその中）のトークンで `https://api.anthropic.com/api/oauth/usage` を読む。Claude Code の `/usage` と同じ非公開の API。トークンの期限が切れていれば読まず、自分では更新しない（席の Claude が動けば CLI が更新する）。
   - Codex は `codex app-server` を起こして `account/rateLimits/read` を呼ぶ。primary が 5 時間枠、secondary が週枠。Akarin の席が無効なら読まない。
   - 一度読めなくても最後の値を 15 分残し、それより古くなったら載せない。
@@ -152,7 +152,7 @@ managed settings（`/etc/claude-code/managed-settings.json`、root の持ち物�
 
 hook は席の場所（`CLAUDE_PROJECT_DIR`）で、止めた操作の紐づけ先をその投稿にする。
 
-席の Claude は `orca-ide serve` の環境変数を受け継ぐ。start.sh は `seat-env.sh` で、`HOME`・`PATH`・`GH_TOKEN`・`GIT_AUTHOR_*` / `GIT_COMMITTER_*` などと、hook が使う `MIZUYA_STATE_DIR`・`MIZUYA_SEATS_DIR`、mise・uv・pnpm の置き場所だけを渡して起動する。Discord のトークン、受け箱の token と service token、`MAC_STATE_TOKEN`、記憶の口と chimera の service token は渡さない。
+席の Claude は `orca-ide serve` の環境変数を受け継ぐ。start.sh は `seat-env.sh` で、`HOME`・`PATH`・`GH_TOKEN`・`GIT_AUTHOR_*` / `GIT_COMMITTER_*` などと、hook が使う `MIZUYA_STATE_DIR`・`MIZUYA_SEATS_DIR`、mise・uv・pnpm の置き場所だけを渡して起動する。Discord のトークン、受け箱の token と service token、`MAC_STATE_TOKEN`・`SEAT_STATUS_TOKEN`、記憶の口と chimera の service token は渡さない。
 
 ### 席の Codex の権限
 
@@ -202,6 +202,13 @@ Mac の Orca の worktree と agent の一覧を、`MAC_STATE_PORT`（既定は 
 - `Authorization: Bearer <MAC_STATE_TOKEN>` が合わなければ 401。受け箱の `MIZUYA_INBOX_TOKEN` とは別のトークンにする。
 - 本文は `mac-state/send.sh` が作る要約（`sent_at` と `worktrees`）。形が違えば 400。
 - 受け取った最新の 1 件を、受け取った時刻と一緒に `STATE_DIR/mac-state.json` に置き換えて残す。Mac が寝ていても、朝会は最後に届いたものを読む。
+
+### 席の状態を渡す口
+
+`SEAT_STATUS_PORT`（既定は `8091`）の `GET /seat-status/<yukarin | akarin>` で、その席の作業中の数と使用率を返す。`SEAT_STATUS_TOKEN` を設定したときだけ待ち受ける。
+
+- `Authorization: Bearer <SEAT_STATUS_TOKEN>` が合わなければ 401。ほかの口とは別のトークンにする。
+- 本文は `{ "working": 2, "usage": { "five_hour": { "used_percent": 32, "resets_at_ms": <UNIX ミリ秒 | null> }, "weekly": { ... } } }`。使用率が読めていなければ `usage` は `null`。
 
 ### 朝会
 
@@ -303,6 +310,8 @@ CI の失敗、PR のレビュー、issue と PR のコメントがあると、�
 | `MEMORY_BIN`                                                      | いいえ | 朝会で記憶を読む CLI。既定は `yunomi-memory`                                                                                |
 | `MAC_STATE_TOKEN`                                                 | いいえ | Mac と共有するトークン。設定したときだけ席の状態の受け口を開く                                                              |
 | `MAC_STATE_PORT`                                                  | いいえ | 席の状態の受け口のポート。既定は `8090`                                                                                     |
+| `SEAT_STATUS_TOKEN`                                               | いいえ | yunomi の gateway と共有するトークン。設定したときだけ席の状態を渡す口を開く                                                |
+| `SEAT_STATUS_PORT`                                                | いいえ | 席の状態を渡す口のポート。既定は `8091`                                                                                     |
 | `STANDUP_ENABLED`                                                 | いいえ | `false` で朝会を止める。既定は `true`                                                                                       |
 | `STANDUP_TIME`                                                    | いいえ | 朝会の時刻（`HH:MM`、Asia/Tokyo）。既定は `09:00`                                                                           |
 | `STANDUP_GITHUB_OWNER`                                            | いいえ | 朝会で PR と申し送りを探す GitHub の owner。既定は `ochanuco`                                                               |
@@ -328,6 +337,7 @@ docker01 に、yunomi の gateway とは別の compose project で置く（`comp
 
 - 受付は外から受ける口を持たない（Discord は Gateway、ボタンと GitHub の出来事は受け箱へ外向きにつなぐ）。生存確認の `8080` は公開しない。
 - 席の状態の受け口（コンテナの `8090`）は、Mac から届く LAN の口に公開する。`MAC_STATE_URL` は `http://<host>:<公開したポート>/mac-state` にする。
+- 席の状態を渡す口（コンテナの `8091`）も、別の stack の yunomi の gateway から届くよう LAN の口に公開する。
 - `restart: unless-stopped` で、ホストの再起動後も受付と `orca serve` が上がる。
 - volume は 5 つ（上の表）。コンテナを作り直しても、ログイン・pairing・投稿と席の対応・席の worktree と Claude・Codex の会話が残る。席の Claude はコンテナと一緒に終わるので、受付は起動時に止めた席として扱い、返事で起こす。
 

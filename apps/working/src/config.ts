@@ -51,6 +51,8 @@ const envSchema = v.object({
 	PLAYWRIGHT_ACCESS_CLIENT_SECRET: v.optional(nonEmpty),
 	MAC_STATE_TOKEN: v.optional(nonEmpty),
 	MAC_STATE_PORT: v.optional(positiveInt),
+	SEAT_STATUS_TOKEN: v.optional(nonEmpty),
+	SEAT_STATUS_PORT: v.optional(positiveInt),
 	STANDUP_ENABLED: v.optional(v.picklist(["true", "false"])),
 	STANDUP_TIME: v.optional(timeOfDay),
 	STANDUP_GITHUB_OWNER: v.optional(nonEmpty),
@@ -112,6 +114,8 @@ export type WorkingConfig = {
 	playwright: { url: string; clientId: string; clientSecret: string } | null;
 	/** Mac から席の状態を受ける口。トークンがなければ待ち受けない。 */
 	macState: { token: string; port: number } | null;
+	/** yunomi の gateway に席の状態を渡す口。トークンがなければ待ち受けない。 */
+	seatStatus: { token: string; port: number } | null;
 	standup: {
 		enabled: boolean;
 		at: { hour: number; minute: number };
@@ -227,6 +231,9 @@ export const loadConfig = (
 				: null,
 		macState: e.MAC_STATE_TOKEN
 			? { token: e.MAC_STATE_TOKEN, port: e.MAC_STATE_PORT ?? 8090 }
+			: null,
+		seatStatus: e.SEAT_STATUS_TOKEN
+			? { token: e.SEAT_STATUS_TOKEN, port: e.SEAT_STATUS_PORT ?? 8091 }
 			: null,
 		standup: {
 			enabled: (e.STANDUP_ENABLED ?? "true") === "true",
