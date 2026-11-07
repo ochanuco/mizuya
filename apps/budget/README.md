@@ -31,9 +31,9 @@ Cloudflare の利用額を毎日取り、予算に対する累計と月末の予
 
 | 名前                        | 1Password の参照                                    | 中身                                      |
 | --------------------------- | --------------------------------------------------- | ----------------------------------------- |
-| `CLOUDFLARE_API_TOKEN`      | `gh-deploy/cloudflare-workers/credential`           | デプロイ用（Worker には入れない）         |
-| `CLOUDFLARE_BILLING_TOKEN`  | `gh-deploy/mizuya-budget/cloudflare_billing_token`  | 請求を読む API token（Billing: Read）     |
-| `DISCORD_BOT_TOKEN`         | `gh-deploy/mizuya-worker/discord_bot_token`         | mizuya bot の token（apps/worker と共用） |
+| `CLOUDFLARE_API_TOKEN`      | `gh-deploy/cloudflare-workers/cf_api_token`         | デプロイ用（Worker には入れない）         |
+| `CLOUDFLARE_BILLING_TOKEN`  | `gh-deploy/mizuya-budget/cf_api_billing_token`      | 請求を読む API token（Billing: Read）     |
+| `DISCORD_BOT_TOKEN`         | `gh-deploy/mizuya-worker/discord_mizuya_bot_token`  | mizuya bot の token（apps/worker と共用） |
 | `DISCORD_APPROVER_USER_ID`  | `gh-deploy/mizuya-worker/discord_approver_user_id`  | 閾値を越えたときにメンションする user ID  |
 | `DISCORD_BUDGET_CHANNEL_ID` | `gh-deploy/mizuya-budget/discord_budget_channel_id` | 予算のチャンネルの ID                     |
 
