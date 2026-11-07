@@ -5,6 +5,7 @@ import {
 	nextHeartbeat,
 	nextStandupAt,
 	parseQuietHours,
+	patrolDue,
 	type RunKind,
 	startStandupTimer,
 } from "./standup-timer.ts";
@@ -137,5 +138,30 @@ describe("startStandupTimer", () => {
 		expect(runs).toEqual(["patrol"]);
 		expect(waits[1]).toBe(2 * 3600_000);
 		timer.stop();
+	});
+});
+
+describe("patrolDue", () => {
+	const plan: HeartbeatPlan = {
+		standupAt: NINE,
+		intervalMs: 2 * 3600_000,
+		// 2:00-8:00 JST
+		quiet: { startMinute: 120, endMinute: 480 },
+	};
+	it.each([
+		["昼は回す", "2026-11-06T03:00:00Z", true],
+		["寝ている時間帯は飛ばす", "2026-11-06T18:00:00Z", false],
+		["朝会の直前は朝会に任せる", "2026-11-05T23:30:00Z", false],
+		["朝会の直後は回す", "2026-11-06T01:00:00Z", true],
+	])("%s", (_name, now, want) => {
+		expect(patrolDue(new Date(now), plan)).toBe(want);
+	});
+	it("見回りを止めていれば回さない", () => {
+		expect(
+			patrolDue(new Date("2026-11-06T03:00:00Z"), {
+				...plan,
+				intervalMs: null,
+			}),
+		).toBe(false);
 	});
 });

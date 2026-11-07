@@ -859,6 +859,20 @@ describe("朝会の席", () => {
 		expect(s.standup).toEqual([{ text: "x", blocked: 0, kind: "patrol" }]);
 	});
 
+	it("見張りの席の報告は見張りとして返す", async () => {
+		const s = await setup();
+		const id = await s.intake.startStandup("見張りの spec", "watch");
+		expect(id.startsWith("watch-")).toBe(true);
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "worker_done",
+				dispatchId: s.seats.get(id)?.dispatchId ?? null,
+				body: "x",
+			}),
+		);
+		expect(s.standup).toEqual([{ text: "x", blocked: 0, kind: "watch" }]);
+	});
+
 	it("GitHub の出来事の席の報告は event として返す", async () => {
 		const s = await setup();
 		const id = await s.intake.startStandup("出来事の spec", "event");

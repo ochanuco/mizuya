@@ -230,7 +230,7 @@ Mac の Orca の worktree と agent の一覧を、`MAC_STATE_PORT`（既定は 
 
 ### 朝会
 
-受付は毎日（曜日も祝日も見ない）の `STANDUP_TIME`（既定は `09:00`、Asia/Tokyo）に朝会をする。`STANDUP_ENABLED=false` で止める。
+受付は毎日（曜日も祝日も見ない）の `STANDUP_TIME`（既定は `09:00`、Asia/Tokyo）に朝会をする。`STANDUP_ENABLED=false` で朝会・見回り・見張り・GitHub の出来事をすべて止める。時刻は受付の内蔵のタイマーが計るか、Dkron が起こす（「Dkron から起こす」）。
 
 1. 材料を集める。記憶（`yunomi-memory read`）とその中の持ち主の目標、最後に届いた席の状態と届いた時刻、GitHub（`STANDUP_GITHUB_OWNER` の open な PR、CI が落ちている PR、label `working-handoff` の申し送り、`GH_TOKEN` の人が `dev/` ブランチから出した PR、Renovate の PR と、その CI・コンフリクトの状態）、Claude CLI のログインの期限（`claude auth status` の `loginExpiresAt`）。取れなかったものは、取れなかったと書いて渡す。
 2. ログインの期限が 7 日以内なら、席の返事を待たずに 1 件投稿する。
@@ -244,11 +244,12 @@ Renovate の PR は持ち主の許しで、朝会と見回りの席が片付け�
 
 持ち主が会話で頼んだ見張り（yunomi の Worker の README の「見張り」）と、仕事の投稿で頼まれて席が `yunomi-memory watch-add` で足した見張りは、朝会と見回りの席が調べる。
 
-- 記憶の `watches` のうち `due`（前に調べてから間隔が過ぎた、まだ調べていない）のものだけを `due_watches` として席に渡す。見回りは GitHub に変わりが無くても、時間が来た見張りがあれば席を立てる。どちらも無い回は席を立てない。
+- 内蔵のタイマーで回すときは、記憶の `watches` のうち `due`（前に調べてから間隔が過ぎた、まだ調べていない）のものだけを `due_watches` として席に渡す。見回りは GitHub に変わりが無くても、時間が来た見張りがあれば席を立てる。どちらも無い回は席を立てない。
+- Dkron に任せるときは、朝会と見回りに見張りを渡さない。見張りごとのジョブが `interval_minutes` の間隔で受付を起こし、受付はその見張り 1 件だけを `due` によらず見張りの席（`seat-watch-<ID>`）に渡す。起こされた時点で記憶に無い（止められた、期限が切れた）見張りと、記憶を読めなかった回は席を立てない。
 - 席は持ち主に確認せず、WebSearch と WebFetch で調べる（auto モードが通す読み取り）。URL の場所は検索よりそのページを直接読む。
 - 条件に合うもののうち `seen` に無いものだけを新着とし、`worker_done` の JSON の `notices` に見張りの id と 1 行の本文で返す。新着が無ければ何も書かない。
 - 受付は新着を書く先ごとにまとめて 1 件のメッセージで書く。席が仕事の投稿で足した見張りは、`yunomi-memory watch-add` が席の作業場所から読んだ投稿（記憶の `notify_thread_id`）に書く。会話で頼まれた見張りと、受付が再起動して書く先を忘れた回は `WORK_TEXT_CHANNEL_ID` のチャンネルに書く。書けなければ 10 秒後と 60 秒後にやり直す。
-- 朝会と見回りは Yukarin と Akarin の両方の記憶から時間が来た見張りを読み、見張りごとに持ち主のパートナー（`partner`）を付けて席に渡す。
+- Yukarin と Akarin の両方の記憶から見張りを読み、見張りごとに持ち主のパートナー（`partner`）を付けて席に渡す。
 - 席は見張りを 1 件調べ終えるたびに `yunomi-memory watch-checked --partner <partner>` で知らせたものの key を残す。残さなかった見張りは `due` のままなので、次の回で調べ直す。
 
 朝会と見回りの席には、目標に効く提案があれば決めてほしいこととして出すよう頼んである。材料に根拠があるときだけで、無い回は出さない。
@@ -259,14 +260,46 @@ Renovate の PR は持ち主の許しで、朝会と見回りの席が片付け�
 
 ### 見回り
 
-朝会の合間に、受付は `HEARTBEAT_INTERVAL_MINUTES`（既定は 120 分）ごとに見回る。`HEARTBEAT_ENABLED=false` で止め、朝会だけにする。
+朝会の合間に、受付は `HEARTBEAT_INTERVAL_MINUTES`（既定は 120 分）ごとに見回る。Dkron に任せるときは `PATROL_SCHEDULE` の時刻に起こされる。`HEARTBEAT_ENABLED=false` で止め、朝会だけにする。
 
-- 1 回が終わってから次を予約する。Yukarin の profile の `living_rhythm.typical_sleep`（寝ている時間帯）に入る回は、起きる時刻まで飛ばす。朝会の前の間隔の半分以内に入る回は、朝会にまとめる。
+- 内蔵のタイマーは 1 回が終わってから次を予約する。Yukarin の profile の `living_rhythm.typical_sleep`（寝ている時間帯）に入る回は、起きる時刻まで飛ばす。朝会の前の間隔の半分以内に入る回は、朝会にまとめる。
+- Dkron に起こされたときも、起こされた時刻で同じように決める。寝ている時間帯と、朝会まで `HEARTBEAT_INTERVAL_MINUTES` の半分より近い回は見回らない。
 - 材料は朝会と同じものを集める。持ち主の目標と GitHub の件（open な PR、CI が落ちている PR、申し送り、`dev/` ブランチの PR、Renovate の PR）を前の回と比べ、新しく出た件と状態が変わった件だけを拾う。目標は新しく足されたものだけを拾い、閉じて消えたものは拾わない。前の回に見たものは `STATE_DIR/patrol-state.json` に残す。朝会も同じものを残すので、朝会で見た件は見回りで拾い直さない。
 - 状態として比べるのは draft かどうか、申し送りが拾われたかどうか、Renovate の PR の CI・コンフリクト・マージの状態だけ。コメントで動く更新時刻は比べないので、席が PR にコメントしても次の回で拾い直さない。
 - 変わった件が無い回は席を作らず、何も投稿しない。初めての回は前の回が無いので、覚えるだけにする。
 - 変わった件があれば、見回りの席（`seat-patrol-<ID>`）に変わった件と記憶、席の状態を渡す。席の扱いと投稿のしかたは朝会と同じで、投稿の最後には見回りの時刻が付く。ログインの期限は朝会だけが投稿する。
 - 取れなかった材料は前の回に見たものを残すので、次に取れたときに全部を新しい件とは見ない。
+
+### Dkron から起こす
+
+`SCHEDULER_URL`・`SCHEDULER_ACCESS_CLIENT_ID`・`SCHEDULER_ACCESS_CLIENT_SECRET`・`SCHEDULER_TOKEN`・`SCHEDULER_SELF_URL` の 5 つをそろえると、朝会・見回り・見張りの時刻を docker01 のスケジューラ Dkron に任せ、内蔵のタイマーは回さない。一部だけなら設定の誤りとして起動しない。どれも設定しなければ内蔵のタイマーで回す。GitHub の出来事はどちらでも同じく受け箱から受ける。
+
+Dkron の API と UI には認証が無いので、Dkron は LAN に口を出さず Cloudflare Access（`https://<scheduler host>`）の内側にだけ置く。受付は Access の service token（`CF-Access-Client-Id` / `CF-Access-Client-Secret`）を付けて REST API を呼ぶ。席には Dkron を触らせず、これらの値は `seat-env.sh` で席に渡さない。
+
+#### 起こされる口
+
+`SCHEDULER_PORT`（既定は `8092`）の `POST /run` で、Dkron から回を起こされる。
+
+- `Authorization: Bearer <SCHEDULER_TOKEN>` が合わなければ 401。ほかの口とは別のトークンにする。
+- 本文は `{"kind": "standup"}`・`{"kind": "patrol"}`・`{"kind": "watch", "partner": "<yukarin | akarin>", "watch_id": "<見張りの id>"}` のどれか。形が違えば 400。
+- 受けたらすぐ 202 を返し、回は後ろで動かす。席は長く動くので、Dkron の HTTP の待ち時間に引っかけない。どの回も見回りと同じ列で一つずつ回す。
+- `STANDUP_ENABLED=false` のときは待ち受けない。
+
+#### ジョブの同期
+
+受付は起動時と `SCHEDULER_SYNC_INTERVAL_MINUTES`（既定は 10 分）ごとに、あるべきジョブの一覧を作って Dkron の今のジョブと突き合わせ、作成・更新・削除する。
+
+| ジョブ                             | schedule                                                                  | timezone     |
+| ---------------------------------- | ------------------------------------------------------------------------- | ------------ |
+| `standup`                          | `STANDUP_TIME` から作る `0 MM HH * * *`                                   | `Asia/Tokyo` |
+| `patrol`                           | `PATROL_SCHEDULE`（既定は `0 0 */2 * * *`）。見回りを止めていれば置かない | `Asia/Tokyo` |
+| `watch-<パートナー>-<見張りの id>` | `@every <interval_minutes>m`。動いている見張りごとに 1 つ                 | なし         |
+
+- どのジョブも `concurrency: "forbid"`、`executor: "http"` で、`SCHEDULER_SELF_URL` に `Authorization: Bearer <SCHEDULER_TOKEN>` を付けて POST し、202 を待つ。失敗すれば 2 回までやり直す。
+- 受付のジョブは `metadata.owner` が `mizuya-working`。それ以外のジョブには触らない。
+- 見張りのジョブ名は id を小文字にし、使えない文字を `-` に置き換える。見張りが止められたり期限が切れたりすれば、次の同期でジョブを消す。記憶を読めなかったパートナーの見張りのジョブは消さずに残す。
+- `STANDUP_ENABLED=false` なら受付のジョブをすべて消す。
+- Dkron に届かなければログを残して次の回に任せ、受付は止めない。Dkron は止まっている間に過ぎた回を後から実行しないので、その回は飛ぶ。
 
 ### 活動ログ
 
@@ -331,11 +364,18 @@ CI の失敗、PR のレビュー、issue と PR のコメントがあると、�
 | `MAC_STATE_PORT`                                                  | いいえ | 席の状態の受け口のポート。既定は `8090`                                                                                     |
 | `SEAT_STATUS_TOKEN`                                               | いいえ | yunomi の gateway と共有するトークン。設定したときだけ席の状態を渡す口を開く                                                |
 | `SEAT_STATUS_PORT`                                                | いいえ | 席の状態を渡す口のポート。既定は `8091`                                                                                     |
-| `STANDUP_ENABLED`                                                 | いいえ | `false` で朝会を止める。既定は `true`                                                                                       |
+| `STANDUP_ENABLED`                                                 | いいえ | `false` で朝会・見回り・見張り・GitHub の出来事を止める。既定は `true`                                                      |
 | `STANDUP_TIME`                                                    | いいえ | 朝会の時刻（`HH:MM`、Asia/Tokyo）。既定は `09:00`                                                                           |
 | `STANDUP_GITHUB_OWNER`                                            | いいえ | 朝会で PR と申し送りを探す GitHub の owner。既定は `ochanuco`                                                               |
 | `HEARTBEAT_ENABLED`                                               | いいえ | `false` で見回りを止め、朝会だけにする。既定は `true`                                                                       |
-| `HEARTBEAT_INTERVAL_MINUTES`                                      | いいえ | 見回りの間隔（分、30 以上）。既定は `120`                                                                                   |
+| `HEARTBEAT_INTERVAL_MINUTES`                                      | いいえ | 見回りの間隔（分、30 以上）。既定は `120`。Dkron に任せるときは、朝会の直前の見回りを飛ばす幅（この半分）にだけ使う         |
+| `SCHEDULER_URL`                                                   | いいえ | Dkron の URL（`https://<scheduler host>`）。下の 4 つとそろえると Dkron に任せる                                            |
+| `SCHEDULER_ACCESS_CLIENT_ID` / `SCHEDULER_ACCESS_CLIENT_SECRET`   | いいえ | Dkron の前の Cloudflare Access の service token。受付だけが使い、席には渡さない                                             |
+| `SCHEDULER_TOKEN`                                                 | いいえ | Dkron が起こされる口に付けるトークン。ジョブに書く                                                                          |
+| `SCHEDULER_SELF_URL`                                              | いいえ | Dkron から届く起こされる口（`http://<host>:<公開したポート>/run`）                                                          |
+| `SCHEDULER_PORT`                                                  | いいえ | 起こされる口のポート。既定は `8092`                                                                                         |
+| `SCHEDULER_SYNC_INTERVAL_MINUTES`                                 | いいえ | Dkron のジョブを突き合わせる間隔（分）。既定は `10`                                                                         |
+| `PATROL_SCHEDULE`                                                 | いいえ | Dkron の見回りのジョブの schedule（先頭が秒の 6 フィールドの cron、Asia/Tokyo）。既定は `0 0 */2 * * *`                     |
 | `ACTIVITY_LOG_THREAD_ID`                                          | いいえ | 活動ログを投稿するスレッドの ID。設定したときだけ活動ログをまとめる                                                         |
 | `ACTIVITY_LOG_TIME`                                               | いいえ | 活動ログをまとめる時刻（`HH:MM`、Asia/Tokyo）。既定は `23:30`                                                               |
 | `CLAUDE_BIN`                                                      | いいえ | 受付が件名の要約とログインの期限に使う Claude CLI のパス。既定は `claude`                                                   |
@@ -357,6 +397,7 @@ docker01 に、yunomi の gateway とは別の compose project で置く（`comp
 - 受付は外から受ける口を持たない（Discord は Gateway、ボタンと GitHub の出来事は受け箱へ外向きにつなぐ）。生存確認の `8080` は公開しない。
 - 席の状態の受け口（コンテナの `8090`）は、Mac から届く LAN の口に公開する。`MAC_STATE_URL` は `http://<host>:<公開したポート>/mac-state` にする。
 - 席の状態を渡す口（コンテナの `8091`）も、別の stack の yunomi の gateway から届くよう LAN の口に公開する。
+- Dkron から起こされる口（コンテナの `8092`）は、Dkron から届く LAN の口に公開する。`SCHEDULER_SELF_URL` は `http://<host>:<公開したポート>/run` にする。
 - `restart: unless-stopped` で、ホストの再起動後も受付と `orca serve` が上がる。
 - volume は 5 つ（上の表）。コンテナを作り直しても、ログイン・pairing・投稿と席の対応・席の worktree と Claude・Codex の会話が残る。席の Claude はコンテナと一緒に終わるので、受付は起動時に止めた席として扱い、返事で起こす。
 

@@ -43,8 +43,10 @@ describe("loadConfig", () => {
 				playwright: null,
 				macState: null,
 				seatStatus: null,
+				scheduler: null,
 				standup: {
 					enabled: true,
+					timer: true,
 					at: { hour: 9, minute: 0 },
 					githubOwner: "ochanuco",
 					heartbeatIntervalMs: 2 * 3600_000,
@@ -145,6 +147,7 @@ describe("loadConfig", () => {
 		expect(r.ok && r.value.seatStatus).toEqual({ token: "seat", port: 8091 });
 		expect(r.ok && r.value.standup).toEqual({
 			enabled: false,
+			timer: false,
 			at: { hour: 8, minute: 30 },
 			githubOwner: "ochanuco",
 			heartbeatIntervalMs: 2 * 3600_000,
@@ -205,6 +208,62 @@ describe("loadConfig", () => {
 			PLAYWRIGHT_MCP_URL: "https://playwright.example/mcp",
 		});
 		expect(partial.ok && partial.value.playwright).toBeNull();
+	});
+
+	describe("Dkron", () => {
+		const scheduler = {
+			SCHEDULER_URL: "https://scheduler.example.com",
+			SCHEDULER_ACCESS_CLIENT_ID: "sid",
+			SCHEDULER_ACCESS_CLIENT_SECRET: "ssecret",
+			SCHEDULER_TOKEN: "run-token",
+			SCHEDULER_SELF_URL: "http://working.example.com:8192/run",
+		};
+
+		it("5 つそろえば Dkron に任せ、内蔵のタイマーは回さない。GitHub の出来事は止めない", () => {
+			const r = loadConfig({ ...base, ...scheduler });
+			expect(r.ok && r.value.scheduler).toEqual({
+				url: "https://scheduler.example.com",
+				clientId: "sid",
+				clientSecret: "ssecret",
+				token: "run-token",
+				selfUrl: "http://working.example.com:8192/run",
+				port: 8092,
+				syncIntervalMs: 600_000,
+				patrolSchedule: "0 0 */2 * * *",
+			});
+			expect(r.ok && r.value.standup.timer).toBe(false);
+			expect(r.ok && r.value.standup.enabled).toBe(true);
+		});
+
+		it("ポート、同期の間隔、見回りの schedule を変えられる", () => {
+			const r = loadConfig({
+				...base,
+				...scheduler,
+				SCHEDULER_PORT: "9000",
+				SCHEDULER_SYNC_INTERVAL_MINUTES: "5",
+				PATROL_SCHEDULE: "0 30 */3 * * *",
+			});
+			expect(r.ok && r.value.scheduler).toMatchObject({
+				port: 9000,
+				syncIntervalMs: 300_000,
+				patrolSchedule: "0 30 */3 * * *",
+			});
+		});
+
+		it("一部だけなら設定の誤りとして欠けたものを返す", () => {
+			const r = loadConfig({
+				...base,
+				SCHEDULER_URL: "https://scheduler.example.com",
+			});
+			expect(r.ok).toBe(false);
+			expect(!r.ok && r.error.join("\n")).toContain("SCHEDULER_TOKEN");
+		});
+
+		it("朝会を止めれば、内蔵のタイマーも回さない", () => {
+			const r = loadConfig({ ...base, STANDUP_ENABLED: "false" });
+			expect(r.ok && r.value.standup.timer).toBe(false);
+			expect(r.ok && r.value.scheduler).toBeNull();
+		});
 	});
 
 	it("トークンとチャンネル ID が欠けていれば理由を返す", () => {

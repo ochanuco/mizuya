@@ -60,7 +60,23 @@ const envSchema = v.object({
 	HEARTBEAT_INTERVAL_MINUTES: v.optional(v.pipe(positiveInt, v.minValue(30))),
 	ACTIVITY_LOG_THREAD_ID: v.optional(nonEmpty),
 	ACTIVITY_LOG_TIME: v.optional(timeOfDay),
+	SCHEDULER_URL: v.optional(v.pipe(v.string(), v.url())),
+	SCHEDULER_ACCESS_CLIENT_ID: v.optional(nonEmpty),
+	SCHEDULER_ACCESS_CLIENT_SECRET: v.optional(nonEmpty),
+	SCHEDULER_TOKEN: v.optional(nonEmpty),
+	SCHEDULER_SELF_URL: v.optional(v.pipe(v.string(), v.url())),
+	SCHEDULER_PORT: v.optional(positiveInt),
+	SCHEDULER_SYNC_INTERVAL_MINUTES: v.optional(positiveInt),
+	PATROL_SCHEDULE: v.optional(nonEmpty),
 });
+
+const SCHEDULER_KEYS = [
+	"SCHEDULER_URL",
+	"SCHEDULER_ACCESS_CLIENT_ID",
+	"SCHEDULER_ACCESS_CLIENT_SECRET",
+	"SCHEDULER_TOKEN",
+	"SCHEDULER_SELF_URL",
+] as const;
 
 export type WorkingConfig = {
 	/** mizuya の bot トークン。Gateway で仕事チャンネルを読み、ボタンと状態の欄を書く。 */
@@ -116,8 +132,29 @@ export type WorkingConfig = {
 	macState: { token: string; port: number } | null;
 	/** yunomi の gateway に席の状態を渡す口。トークンがなければ待ち受けない。 */
 	seatStatus: { token: string; port: number } | null;
+	/**
+	 * Dkron から朝会・見回り・見張りを起こすときの設定。5 つそろったときだけ Dkron に任せ、内蔵のタイマーは回さない。
+	 * 受付だけが使い、席には渡さない。
+	 */
+	scheduler: {
+		/** Dkron の API。Cloudflare Access の内側にある。 */
+		url: string;
+		clientId: string;
+		clientSecret: string;
+		/** Dkron が起こす口のトークン。 */
+		token: string;
+		/** Dkron から届く、LAN に公開したこの受付の口（`/run` まで）。 */
+		selfUrl: string;
+		port: number;
+		syncIntervalMs: number;
+		/** 見回りのジョブの schedule（Dkron の 6 フィールドの cron、Asia/Tokyo）。 */
+		patrolSchedule: string;
+	} | null;
 	standup: {
+		/** 朝会・見回り・見張り・GitHub の出来事を回すか。 */
 		enabled: boolean;
+		/** 内蔵のタイマーで朝会と見回りを回すか。Dkron に任せるときは回さない。 */
+		timer: boolean;
 		at: { hour: number; minute: number };
 		githubOwner: string;
 		/** 朝会の合間の見回りの間隔。null なら見回らず、朝会だけを回す。 */
@@ -155,6 +192,31 @@ export const loadConfig = (
 	if (owner === undefined) {
 		return err(["WORKING_OWNER_DISCORD_USER_IDS: ID が 1 つもない"]);
 	}
+	const schedulerSet = SCHEDULER_KEYS.filter((k) => e[k] !== undefined);
+	if (schedulerSet.length > 0 && schedulerSet.length < SCHEDULER_KEYS.length) {
+		// 一部だけでは内蔵のタイマーに戻るので、Dkron のつもりの設定漏れに気づけるよう落とす
+		return err([
+			`${SCHEDULER_KEYS.filter((k) => e[k] === undefined).join(" / ")}: Dkron に任せるには ${SCHEDULER_KEYS.join(" / ")} がすべて要る`,
+		]);
+	}
+	const scheduler =
+		e.SCHEDULER_URL &&
+		e.SCHEDULER_ACCESS_CLIENT_ID &&
+		e.SCHEDULER_ACCESS_CLIENT_SECRET &&
+		e.SCHEDULER_TOKEN &&
+		e.SCHEDULER_SELF_URL
+			? {
+					url: e.SCHEDULER_URL,
+					clientId: e.SCHEDULER_ACCESS_CLIENT_ID,
+					clientSecret: e.SCHEDULER_ACCESS_CLIENT_SECRET,
+					token: e.SCHEDULER_TOKEN,
+					selfUrl: e.SCHEDULER_SELF_URL,
+					port: e.SCHEDULER_PORT ?? 8092,
+					syncIntervalMs: (e.SCHEDULER_SYNC_INTERVAL_MINUTES ?? 10) * 60_000,
+					patrolSchedule: e.PATROL_SCHEDULE ?? "0 0 */2 * * *",
+				}
+			: null;
+	const standupEnabled = (e.STANDUP_ENABLED ?? "true") === "true";
 	const timeOf = (hhmm: string) => {
 		const [hour = 0, minute = 0] = hhmm.split(":").map(Number);
 		return { hour, minute };
@@ -235,8 +297,10 @@ export const loadConfig = (
 		seatStatus: e.SEAT_STATUS_TOKEN
 			? { token: e.SEAT_STATUS_TOKEN, port: e.SEAT_STATUS_PORT ?? 8091 }
 			: null,
+		scheduler,
 		standup: {
-			enabled: (e.STANDUP_ENABLED ?? "true") === "true",
+			enabled: standupEnabled,
+			timer: standupEnabled && scheduler === null,
 			at: timeOf(e.STANDUP_TIME ?? "09:00"),
 			githubOwner: e.STANDUP_GITHUB_OWNER ?? "ochanuco",
 			heartbeatIntervalMs:

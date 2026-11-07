@@ -14,11 +14,13 @@ import {
 	seatSpec,
 	standupPostFooter,
 	standupPrompt,
+	watchPrompt,
 } from "./prompts.ts";
 import {
 	failed,
 	memoryForSeat,
 	type StandupMaterials,
+	type Unavailable,
 	type Watch,
 } from "./standup-materials.ts";
 import type { RunKind } from "./standup-timer.ts";
@@ -125,6 +127,7 @@ const RUN_NAME: Record<RunKind, string> = {
 	standup: "朝会",
 	patrol: "見回り",
 	event: "GitHub の知らせ",
+	watch: "見張り",
 };
 
 /** 投稿の最後に足す「どの回から」。朝会は日付、見回りは時刻で見分ける。 */
@@ -233,6 +236,64 @@ export const postDecisions = async (
 export const dueWatches = (m: StandupMaterials): Watch[] =>
 	failed(m.watches) ? [] : m.watches.filter((w) => w.due);
 
+/** 新着を書く先を、席の報告が届くまで覚えておく。 */
+const rememberThreads = (deps: StandupDeps, watches: readonly Watch[]) => {
+	for (const w of watches) {
+		if (w.notify_thread_id !== null)
+			deps.watchThreads?.set(w.id, w.notify_thread_id);
+	}
+};
+/** 書く先は受付が決めるので、席には渡さない。 */
+const forSeat = ({ notify_thread_id: _omit, ...w }: Watch) => w;
+
+/**
+ * 見張り 1 件の席を、`due` によらず立てる。Dkron がその見張りの間隔で起こす。
+ * 記憶に無い（止められた、期限が切れた）見張りと、記憶を読めなかった回は席を立てない。
+ * 席を立てたら席の ID、立てなかったら null を返す。
+ */
+export const startWatch = async (input: {
+	deps: StandupDeps;
+	partner: string;
+	watchId: string;
+	read: (partner: string) => Promise<Watch[] | Unavailable>;
+	preamble: string;
+	start: (spec: string, kind: RunKind) => Promise<string>;
+}): Promise<string | null> => {
+	const { deps, partner, watchId } = input;
+	const now = (deps.now ?? (() => new Date()))();
+	const watches = await input.read(partner);
+	if (failed(watches)) {
+		deps.logger.warn("watch skipped", {
+			partner,
+			watch_id: watchId,
+			reason: watches.unavailable,
+		});
+		return null;
+	}
+	const watch = watches.find((w) => w.id === watchId);
+	if (watch === undefined) {
+		deps.logger.info("watch gone", { partner, watch_id: watchId });
+		return null;
+	}
+	rememberThreads(deps, [watch]);
+	const id = await input.start(
+		seatSpec(
+			input.preamble,
+			watchPrompt({
+				now,
+				materials: toModelJson({ due_watches: [forSeat(watch)] }),
+			}),
+		),
+		"watch",
+	);
+	deps.logger.info("watch started", {
+		seat: id,
+		partner,
+		watch_id: watchId,
+	});
+	return id;
+};
+
 /**
  * 朝会か見回りを始める。材料を集めて席に渡す。席は取り消せることを済ませ、決めてほしいことを worker_done で返す。
  * 見回りは前の回から変わった件と時間が来た見張りだけを渡し、どちらも無ければ席を立てない（トークン代を使わない）。
@@ -255,12 +316,8 @@ export const startStandup = async (input: {
 	const { changes, next } = diffPatrol(prev ?? {}, patrolSources(materials));
 
 	const due = dueWatches(materials);
-	for (const w of due) {
-		if (w.notify_thread_id !== null)
-			deps.watchThreads?.set(w.id, w.notify_thread_id);
-	}
-	// 書く先は受付が決めるので、席には渡さない
-	const watches = due.map(({ notify_thread_id: _omit, ...w }) => w);
+	rememberThreads(deps, due);
+	const watches = due.map(forSeat);
 
 	if (kind === "patrol") {
 		// 初めての回は前の回が無く、全部が新着に見える。朝会で見る分を二度投稿しないよう、覚えるだけにする
