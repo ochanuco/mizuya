@@ -47,6 +47,8 @@ const PREAMBLE = "【人格】\n## 仕事のしかた\n【引き継ぎの指示�
 const AKARIN_PREAMBLE = "【あかりの人格】\n## 仕事のしかた";
 const AKARIN_ROLE = "role-akarin";
 const YUKARIN_ROLE = "role-yukarin";
+const AKARIN_USER = "user-akarin";
+const YUKARIN_USER = "user-yukarin";
 const WRITES = new Set([
 	"send",
 	"createForumPost",
@@ -126,6 +128,7 @@ const setup = async (
 		botUserId: BOT,
 		yukarinName: YUKARIN_NAME,
 		roleIds: { yukarin: YUKARIN_ROLE, akarin: AKARIN_ROLE },
+		userIds: { yukarin: YUKARIN_USER, akarin: AKARIN_USER },
 		ownerUserIds: new Set([OWNER]),
 		workTextChannelId: TEXT,
 		workForumChannelId: FORUM,
@@ -1298,6 +1301,34 @@ describe("Akarin の席", () => {
 		);
 		expect(s.seats.partnerOf("thread1")).toBe("yukarin");
 		expect(s.writes.akarin).toEqual([]);
+	});
+
+	it("仕事チャンネルで Yukarin とみなすユーザーへのメンションがあれば Yukarin が受ける", async () => {
+		const s = await setup({ akarin: true });
+		await s.intake.handle(envelope({ mentions: [YUKARIN_USER] }));
+		expect(s.seats.partnerOf("thread1")).toBe("yukarin");
+		expect(s.writes.akarin).toEqual([]);
+	});
+
+	it("仕事チャンネルで Akarin とみなすユーザーへのメンションがあれば Akarin が受ける", async () => {
+		const s = await setup({ akarin: true });
+		await s.intake.handle(envelope({ mentions: [AKARIN_USER] }));
+		expect(s.seats.partnerOf("thread1")).toBe("akarin");
+		expect(s.writes.yukarin).toEqual([]);
+	});
+
+	it("フォーラムの新しい投稿で Akarin とみなすユーザーへのメンションがあれば Akarin が受ける", async () => {
+		const s = await setup({ akarin: true });
+		s.d.addThread("p1", "README の誤字");
+		await s.intake.handle(
+			envelope({
+				channel_id: "p1",
+				message_id: "p1",
+				content: "README の誤字を直して",
+				mentions: [AKARIN_USER],
+			}),
+		);
+		expect(s.seats.partnerOf("p1")).toBe("akarin");
 	});
 
 	it("メンションが無くても、Akarin の名前で書かれた webhook の発言への返信なら Akarin が受ける", async () => {

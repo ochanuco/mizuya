@@ -16,6 +16,8 @@ const envSchema = v.object({
 	DISCORD_TOKEN: nonEmpty,
 	YUKARIN_ROLE_ID: v.optional(nonEmpty),
 	AKARIN_ROLE_ID: v.optional(nonEmpty),
+	YUKARIN_USER_ID: v.optional(nonEmpty),
+	AKARIN_USER_ID: v.optional(nonEmpty),
 	YUKARIN_AVATAR_URL: v.optional(v.pipe(v.string(), v.url())),
 	AKARIN_AVATAR_URL: v.optional(v.pipe(v.string(), v.url())),
 	MIZUYA_INBOX_URL: v.optional(v.pipe(v.string(), v.url())),
@@ -66,6 +68,8 @@ export type WorkingConfig = {
 	discordToken: string;
 	/** 依頼の宛先の席を決める role。無ければその role では選べない。 */
 	roleIds: { yukarin: string | null; akarin: string | null };
+	/** メンションされたらその席宛てとみなすユーザー（yunomi のゆかりん・あかりんの bot）。 */
+	userIds: { yukarin: string | null; akarin: string | null };
 	/** 席の話し手の画像。無ければ webhook の既定の画像になる。 */
 	avatarUrls: { yukarin: string | null; akarin: string | null };
 	/** mizuya の Worker の受け箱。4 つそろったときだけつなぎ、ボタンを受け取る。 */
@@ -163,6 +167,10 @@ export const loadConfig = (
 		roleIds: {
 			yukarin: e.YUKARIN_ROLE_ID ?? null,
 			akarin: e.AKARIN_ROLE_ID ?? null,
+		},
+		userIds: {
+			yukarin: e.YUKARIN_USER_ID ?? null,
+			akarin: e.AKARIN_USER_ID ?? null,
 		},
 		avatarUrls: {
 			yukarin: e.YUKARIN_AVATAR_URL ?? null,

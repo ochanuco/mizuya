@@ -101,6 +101,8 @@ export type IntakeDeps = {
 	akarin?: SeatPartner | null;
 	/** 依頼の宛先の席を決める role。メンションされた role の席に渡す。 */
 	roleIds: { yukarin: string | null; akarin: string | null };
+	/** メンションされたらその席宛てとみなすユーザー。yunomi のゆかりん・あかりんの bot を、移る前と同じ呼び方で呼べるようにする。 */
+	userIds?: { yukarin: string | null; akarin: string | null };
 	/** この人たちの発言だけで作業する。 */
 	ownerUserIds: ReadonlySet<string>;
 	workTextChannelId: string;
@@ -258,8 +260,15 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		if (deps.akarin && m.authorName === deps.akarin.name) return "akarin";
 		return m.authorName === yukarin.name ? "yukarin" : null;
 	};
-	const mentionsRole = (p: Payload, roleId: string | null) =>
-		roleId !== null && (p.mention_roles ?? []).includes(roleId);
+	/** その席の role か、その席とみなすユーザーへのメンションがあるか。 */
+	const mentionsPartner = (p: Payload, partner: PartnerId) => {
+		const roleId = deps.roleIds[partner];
+		const userId = deps.userIds?.[partner] ?? null;
+		return (
+			(roleId !== null && (p.mention_roles ?? []).includes(roleId)) ||
+			(userId !== null && p.mentions.includes(userId))
+		);
+	};
 	/** 投稿に書き込む話し手。読むだけの呼び出しは Yukarin の話し手のままにする（読むのはどちらも mizuya の bot）。 */
 	const botOf = (threadId: string) => speaker(partnerOf(threadId)).discord;
 
@@ -498,15 +507,12 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	};
 
 	/**
-	 * 仕事チャンネルの依頼の宛先。Akarin の role へのメンションがあれば Akarin、Yukarin の role か mizuya の bot へのメンションがあれば Yukarin。
+	 * 仕事チャンネルの依頼の宛先。Akarin へのメンションがあれば Akarin、Yukarin か mizuya の bot へのメンションがあれば Yukarin。
 	 * メンションが無ければ、返信した先のメッセージを書いた席にする。
 	 */
 	const addresseeOf = async (p: Payload): Promise<PartnerId | null> => {
-		if (deps.akarin && mentionsRole(p, deps.roleIds.akarin)) return "akarin";
-		if (
-			mentionsRole(p, deps.roleIds.yukarin) ||
-			p.mentions.includes(deps.botUserId)
-		) {
+		if (deps.akarin && mentionsPartner(p, "akarin")) return "akarin";
+		if (mentionsPartner(p, "yukarin") || p.mentions.includes(deps.botUserId)) {
 			return "yukarin";
 		}
 		if (!p.reply_to_message_id) return null;
@@ -1149,9 +1155,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	const startFromForumPost = async (p: Payload) => {
 		const threadId = p.channel_id;
 		const partner: PartnerId =
-			deps.akarin && mentionsRole(p, deps.roleIds.akarin)
-				? "akarin"
-				: "yukarin";
+			deps.akarin && mentionsPartner(p, "akarin") ? "akarin" : "yukarin";
 		await deps.seats.assign(threadId, partner);
 		log.info("forum post received", { thread_id: threadId, partner });
 		await openSeat(
@@ -1409,7 +1413,14 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 
 			if (p.channel_id === deps.workTextChannelId) {
 				const partner = await addresseeOf(p);
-				if (partner === null) return;
+				if (partner === null) {
+					log.info("work message without addressee", {
+						message_id: p.message_id,
+						mentions: p.mentions.length,
+						mention_roles: (p.mention_roles ?? []).length,
+					});
+					return;
+				}
 				await startFromRequest(p, partner);
 				return;
 			}
