@@ -13,9 +13,15 @@
 		}
 	],
 	"durable_objects": {
-		"bindings": [{ "name": "WORKING_INBOX", "class_name": "WorkingInbox" }]
+		"bindings": [
+			{ "name": "WORKING_INBOX", "class_name": "WorkingInbox" },
+			{ "name": "APPROVAL_LEDGER", "class_name": "ApprovalLedger" }
+		]
 	},
-	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkingInbox"] }],
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["WorkingInbox"] },
+		{ "tag": "v2", "new_sqlite_classes": ["ApprovalLedger"] }
+	],
 	"observability": {
 		"enabled": true
 	}

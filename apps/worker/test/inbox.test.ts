@@ -1,29 +1,11 @@
-/// <reference types="node" />
-import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import {
 	BUTTON_MAX_AGE_MS,
 	createInbox,
 	GITHUB_MAX_AGE_MS,
 	RETENTION_MS,
-	type Sql,
 } from "../src/inbox.ts";
-
-/** Durable Object の SQLite の代わりに node の SQLite を使う */
-function memorySql(): Sql {
-	const db = new DatabaseSync(":memory:");
-	return {
-		exec: (query, ...bindings) => {
-			const statement = db.prepare(query);
-			if (statement.columns().length === 0) {
-				statement.run(...bindings);
-				return { toArray: () => [] };
-			}
-			const rows = statement.all(...bindings) as Record<string, unknown>[];
-			return { toArray: () => rows };
-		},
-	};
-}
+import { memorySql } from "./sql.ts";
 
 function setup() {
 	let now = 1_000_000_000_000;
