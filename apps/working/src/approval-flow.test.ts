@@ -49,6 +49,8 @@ const setup = async () => {
 		standupDone: async () => {},
 		preamble: "",
 		botUserId: BOT,
+		yukarinName: "ゆかりん",
+		roleIds: { yukarin: null, akarin: null },
 		ownerUserIds: new Set([OWNER]),
 		workTextChannelId: TEXT,
 		workForumChannelId: FORUM,

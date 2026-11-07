@@ -39,12 +39,14 @@ import {
 	TAGS,
 	TEXT,
 	tempDir,
+	YUKARIN_NAME,
 } from "./test-support.ts";
 
 const T0 = new Date("2026-11-05T08:00:00Z");
 const PREAMBLE = "【人格】\n## 仕事のしかた\n【引き継ぎの指示】";
 const AKARIN_PREAMBLE = "【あかりの人格】\n## 仕事のしかた";
-const AKARIN_BOT = "akarin-bot";
+const AKARIN_ROLE = "role-akarin";
+const YUKARIN_ROLE = "role-yukarin";
 const WRITES = new Set([
 	"send",
 	"createForumPost",
@@ -97,7 +99,7 @@ const setup = async (
 		akarin: opts.akarin
 			? {
 					discord: asBot(d.api, writes.akarin),
-					botUserId: AKARIN_BOT,
+					name: "あかりん",
 					preamble: AKARIN_PREAMBLE,
 				}
 			: null,
@@ -122,6 +124,8 @@ const setup = async (
 		},
 		preamble: PREAMBLE,
 		botUserId: BOT,
+		yukarinName: YUKARIN_NAME,
+		roleIds: { yukarin: YUKARIN_ROLE, akarin: AKARIN_ROLE },
 		ownerUserIds: new Set([OWNER]),
 		workTextChannelId: TEXT,
 		workForumChannelId: FORUM,
@@ -626,13 +630,15 @@ describe("席の完了報告", () => {
 				authorId: OWNER,
 				authorName: "ちゃぬ",
 				isBot: false,
+				isWebhook: false,
 				content: "README の誤字を直して",
 			},
 			{
 				id: "b1",
-				authorId: BOT,
-				authorName: "Yukarin",
+				authorId: "webhook",
+				authorName: YUKARIN_NAME,
 				isBot: true,
+				isWebhook: true,
 				content: "直しました",
 			},
 			{
@@ -640,6 +646,7 @@ describe("席の完了報告", () => {
 				authorId: OWNER,
 				authorName: "ちゃぬ",
 				isBot: false,
+				isWebhook: false,
 				content: "もう一か所あった",
 			},
 		]);
@@ -1254,10 +1261,14 @@ describe("作業中かを Discord で見せる", () => {
 });
 
 describe("Akarin の席", () => {
-	it("仕事チャンネルで Akarin へのメンションがあれば、Akarin の bot で投稿を立て、Codex の席に Akarin の前置きを渡す", async () => {
+	it("仕事チャンネルで Akarin へのメンションがあれば、Akarin の話し手で投稿を立て、Codex の席に Akarin の前置きを渡す", async () => {
 		const s = await setup({ akarin: true });
 		await s.intake.handle(
-			envelope({ content: "<@1> 請求書を整理して", mentions: [AKARIN_BOT] }),
+			envelope({
+				content: "<@1> 請求書を整理して",
+				mentions: [],
+				mention_roles: [AKARIN_ROLE],
+			}),
 		);
 		const [start] = s.o.opsOf("startSeat") as { spec: string; agent: string }[];
 		expect(start?.agent).toBe("codex");
@@ -1280,19 +1291,64 @@ describe("Akarin の席", () => {
 		});
 	});
 
-	it("Yukarin と Akarin の両方へのメンションなら Akarin が受ける", async () => {
+	it("仕事チャンネルで Yukarin の role へのメンションがあれば Yukarin が受ける", async () => {
 		const s = await setup({ akarin: true });
-		await s.intake.handle(envelope({ mentions: [BOT, AKARIN_BOT] }));
+		await s.intake.handle(
+			envelope({ mentions: [], mention_roles: [YUKARIN_ROLE] }),
+		);
+		expect(s.seats.partnerOf("thread1")).toBe("yukarin");
+		expect(s.writes.akarin).toEqual([]);
+	});
+
+	it("メンションが無くても、Akarin の名前で書かれた webhook の発言への返信なら Akarin が受ける", async () => {
+		const s = await setup({ akarin: true });
+		s.d.messages.set("a1", {
+			id: "a1",
+			authorId: "webhook",
+			authorName: "あかりん",
+			isBot: true,
+			isWebhook: true,
+			content: "終わりました",
+		});
+		await s.intake.handle(
+			envelope({ mentions: [], reply_to_message_id: "a1" }),
+		);
 		expect(s.seats.partnerOf("thread1")).toBe("akarin");
 	});
 
-	it("Akarin の bot が無ければ、Akarin へのメンションだけの依頼では席を作らない", async () => {
-		const s = await setup();
-		await s.intake.handle(envelope({ mentions: [AKARIN_BOT] }));
+	it("同じ名前でも webhook でない発言への返信では席を作らない", async () => {
+		const s = await setup({ akarin: true });
+		s.d.messages.set("a1", {
+			id: "a1",
+			authorId: "someone",
+			authorName: "あかりん",
+			isBot: false,
+			isWebhook: false,
+			content: "こんにちは",
+		});
+		await s.intake.handle(
+			envelope({ mentions: [], reply_to_message_id: "a1" }),
+		);
 		expect(s.o.opsOf("startSeat")).toEqual([]);
 	});
 
-	it("Akarin 宛ての投稿は、返事も完了の報告も Akarin の bot で書き、完了のあとも Akarin の Codex の席で続ける", async () => {
+	it("Yukarin と Akarin の両方へのメンションなら Akarin が受ける", async () => {
+		const s = await setup({ akarin: true });
+		await s.intake.handle(
+			envelope({ mentions: [BOT], mention_roles: [AKARIN_ROLE] }),
+		);
+		expect(s.seats.partnerOf("thread1")).toBe("akarin");
+	});
+
+	it("Akarin の席が無ければ、Akarin へのメンションだけの依頼では席を作らない", async () => {
+		const s = await setup();
+		await s.intake.handle(
+			envelope({ mentions: [], mention_roles: [AKARIN_ROLE] }),
+		);
+		expect(s.o.opsOf("startSeat")).toEqual([]);
+	});
+
+	it("Akarin 宛ての投稿は、返事も完了の報告も Akarin の話し手で書き、完了のあとも Akarin の Codex の席で続ける", async () => {
 		const s = await setup({ akarin: true });
 		s.d.addThread("p1", "README の誤字");
 		await s.intake.handle(
@@ -1300,7 +1356,8 @@ describe("Akarin の席", () => {
 				channel_id: "p1",
 				message_id: "p1",
 				content: "README の誤字を直して",
-				mentions: [AKARIN_BOT],
+				mentions: [],
+				mention_roles: [AKARIN_ROLE],
 			}),
 		);
 		const seat = s.seats.get("p1");
@@ -1331,7 +1388,8 @@ describe("Akarin の席", () => {
 				channel_id: "p1",
 				message_id: "p1",
 				content: "README の誤字を直して",
-				mentions: [AKARIN_BOT],
+				mentions: [],
+				mention_roles: [AKARIN_ROLE],
 			}),
 		);
 		const seat = s.seats.get("p1");

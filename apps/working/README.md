@@ -12,7 +12,7 @@ Working（仕事）を受け持つコンテナ。`orca serve`、Claude CLI、Cod
 | `mise/config.toml`              | 席の既定の道具（node、pnpm、uv、jq）。`/etc/mise/config.toml` に置く                                                                                                                                                         |
 | `persona.sh`                    | image に入れた人格の元ファイル `~/persona/<パートナー>`（引数、既定は `yukarin`）の `identity/*.md`・`profile.yaml`・`examples.yaml` を連結し、席の agent に渡す人格として標準出力に出す                                     |
 | `compose.example.yaml`          | 常駐させるときの compose の雛形                                                                                                                                                                                              |
-| `src/`                          | Working 受付（`@mizuya/working`）。gateway から envelope を受け、Discord REST と Orca の席で作業する                                                                                                                         |
+| `src/`                          | Working 受付（`@mizuya/working`）。mizuya の bot で Gateway から仕事チャンネルを読み、Worker の受け箱からボタンを受け、Discord REST と Orca の席で作業する                                                                   |
 | `src/memory-cli/`               | 記憶の道具 `yunomi-memory`。Worker の Working の記憶の口を読み書きする。node の組み込みだけで書き、`/opt/yunomi-memory/` に置いて node で直接動かす                                                                          |
 | `mac-state/`                    | Mac から Orca の席の状態を送るスクリプトと launchd の plist の雛形（[mac-state/README.md](mac-state/README.md)）                                                                                                             |
 | `src/guard/`                    | Claude CLI の PreToolUse hook。道具を使う前に、聞かずに実行してよいかを決める。node の組み込みだけで書き、`/opt/mizuya-guard/` に置いて node で直接動かす                                                                    |
@@ -39,7 +39,11 @@ Orca の Linux 版は GitHub Releases（`stablyai/orca`）の `orca-ide_<版>_<a
 
 ## Working 受付
 
-gateway が仕事カテゴリの発言と、bot のメッセージに付けたボタンが押されたこと（`discord.button.pressed`）を `POST /events` に送ってくる（`WORKING_URL` は `http://<host>:8080/events`）。`Authorization: Bearer <WORKING_TOKEN>` が合わなければ 401 で断る。受け取ったら 202 を返し、作業は後で進める。`GET /healthz` は生存確認用。
+受付は mizuya の bot（`DISCORD_TOKEN`）で Discord の Gateway につなぎ、仕事テキストチャンネルと仕事フォーラムの投稿に書かれたメッセージを読む（Message Content intent）。webhook の発言（席の話し手が書いたもの）は読まない。
+
+席のメッセージに付けたボタンは、mizuya の application の Interactions Endpoint URL、つまり mizuya の Worker に届く。Worker はそれを受け箱に置き、受付は `MIZUYA_INBOX_URL`（`wss://mizuya.chanu.co/working/inbox`）に外向きの WebSocket でつないで受け取る。接続には Access の service token（`MIZUYA_ACCESS_CLIENT_ID` / `MIZUYA_ACCESS_CLIENT_SECRET`）と `Authorization: Bearer <MIZUYA_INBOX_TOKEN>` を付け、30 秒ごとに `ping` を送る。受け取った行は ack する。切れたら 1 秒から 60 秒まで間をのばしながらつなぎ直し、その間に置かれたボタンは次の接続で届く（押してから 15 分まで）。
+
+yunomi の gateway が仕事カテゴリの発言とボタンを `POST /events` に送る口も残している。mizuya に移る前に yunomi の bot（ゆかりん、あかりん）が書いたメッセージのボタンは、yunomi の gateway に届いてここに来る。`Authorization: Bearer <WORKING_TOKEN>` が合わなければ 401 で断る。受け取ったら 202 を返し、作業は後で進める。`GET /healthz` は生存確認用。
 
 ### 流れ
 
@@ -57,10 +61,10 @@ gateway が仕事カテゴリの発言と、bot のメッセージに付けた�
 | Mac でやる必要がある                                                          | 席が申し送り issue を書いて報告する。タグを `引き継ぎ` にし、席を閉じる                              |
 | 見張りを頼まれた                                                              | 席が見張りを登録して報告する。タグを `見張り中` にし、席を閉じる。新着は朝会と見回りがこの投稿に書く |
 
-- 仕事テキストチャンネルで Yukarin か Akarin 宛て（その bot か bot ロールへのメンション、その bot の発言への返信）の依頼が来たら、仕事フォーラムに投稿を立てる。件名は依頼の要約（Claude CLI の haiku で作る。前置きやメタ発言、複数行、40 字超の出力は使わず、依頼の 1 行目にする）、本文は元の依頼と元メッセージへのリンク。テキストチャンネルには投稿へのリンクを返信で返す。
+- 仕事テキストチャンネルで Yukarin か Akarin 宛て（「Akarin の席」の節）の依頼が来たら、仕事フォーラムに投稿を立てる。件名は依頼の要約（Claude CLI の haiku で作る。前置きやメタ発言、複数行、40 字超の出力は使わず、依頼の 1 行目にする）、本文は元の依頼と元メッセージへのリンク。テキストチャンネルには投稿へのリンクを返信で返す。
 - 同じ投稿への発言と席からのメッセージは、1 件ずつ順に処理する。
 - Discord REST が 2xx 以外を返したときは、経路・ステータス・Discord のエラーコードとメッセージを warn で残す。bot の権限不足（403 の Missing Access / Missing Permissions）は `PermissionDenied` として扱う。
-- `WORKING_OWNER_DISCORD_USER_IDS` に入っている人の発言だけを扱う。Yukarin 自身、ほかの人、ほかの bot の発言は、依頼・フォーラムの投稿・投稿内の返事のどれでも無視する。
+- `WORKING_OWNER_DISCORD_USER_IDS` に入っている人の発言だけを扱う。mizuya の bot と席の話し手（webhook）、ほかの人、ほかの bot の発言は、依頼・フォーラムの投稿・投稿内の返事のどれでも無視する。
 
 ### 席
 
@@ -78,12 +82,13 @@ gateway が仕事カテゴリの発言と、bot のメッセージに付けた�
 
 ### Akarin の席
 
-`AKARIN_DISCORD_TOKEN` があれば、受付は Akarin の bot でも Discord に書き、Akarin 宛ての依頼に Akarin の席を作る。無いとき（Akarin の bot に入れなかったときも）は Akarin の席を作らず、すべて Yukarin が受ける。
+受付は Akarin 宛ての依頼に Akarin の席を作る。Discord には mizuya の bot 1 つで出るので、宛先は role で決める。
 
-- 仕事カテゴリの発言を受付に渡すのは Yukarin の gateway だけ。Akarin へのメンションと Akarin の bot ロールへのメンションも、Akarin の bot のユーザー ID として envelope の `mentions` に入って届く。
-- 依頼（仕事テキストチャンネルの発言、フォーラムの新しい投稿）で Akarin の bot がメンションされていれば Akarin の席、そうでなければ Yukarin の席を作る。両方へのメンションなら Akarin。仕事テキストチャンネルでは、Akarin の発言への返信も Akarin 宛てとみなす。
+- 依頼（仕事テキストチャンネルの発言、フォーラムの新しい投稿）で role `あかり`（`AKARIN_ROLE_ID`）がメンションされていれば Akarin の席を作る。フォーラムの新しい投稿は、それ以外なら Yukarin の席。
+- 仕事テキストチャンネルでは、role `ゆかり`（`YUKARIN_ROLE_ID`）か mizuya の bot へのメンションで Yukarin 宛てになる。`あかり` と両方なら Akarin。メンションが無ければ、返信した先が席の話し手の発言（webhook で、席の名前を名乗ったもの）ならその席宛て。それ以外は依頼とみなさない。
 - 投稿の担当は席を作るときに決めて `seats.json` の `partners` に残す。投稿への返事、止めた席を起こすとき、完了のあとにまた書いたときも、同じ担当が受ける。
-- 投稿・返事・タグ・リアクション・状態の欄・入力中の表示は、担当のパートナーの bot で書く。Akarin の bot には Yukarin の bot と同じ権限が要る。
+- 投稿・返事・状態の欄は、担当の席の話し手で書く。話し手は mizuya の application が作った webhook（チャンネルごとに 1 つ、名前 `mizuya-working`。スレッドには親のフォーラムの webhook で `thread_id` を添える）で、書くたびに席の名前（`ゆかりん` / `あかりん`）と画像（`YUKARIN_AVATAR_URL` / `AKARIN_AVATAR_URL`）を名乗る。webhook では返信の形にできないので、普通のメッセージで書く。ボタンの custom_id には `working:` を頭に付け、Worker がこれで受け箱に回す。
+- タグ・リアクション・入力中の表示・読み取りは mizuya の bot で行う。
 - Akarin の席は Codex CLI で動き、前置きの人格は `persona.sh akarin`、記憶の読み書きは Akarin の記憶（`/v1/partners/akarin/working/memory`）にする。
 - Codex は `codex -a never -s danger-full-access` で起動する。止めた席は同じ worktree で `codex resume --last` で起こす。Codex の `resume --last` は作業ディレクトリの最新の会話を選ぶので、投稿ごとの worktree で前の会話のまま続く。
 - Codex は worktree の信頼を元のリポジトリで引く。受付は起動時に、席の元のリポジトリ（`SEATS_REPO` の realpath）を `CODEX_HOME/config.toml` の `[projects."<path>"]` に `trust_level = "trusted"` で足す（表が無いときだけ）。
@@ -98,7 +103,8 @@ gateway が仕事カテゴリの発言と、bot のメッセージに付けた�
 - 席の Claude が動いている間（席の状態が `working`）、投稿に入力中の表示を約 8 秒おきに送る。止まったら送らない。
 - 持ち主の依頼メッセージ（仕事チャンネルの依頼、投稿の最初のメッセージ、投稿への返事）に bot のリアクションを付ける。受付 👀、作業中 ⏳、完了 ✅、決めてほしい・引き継ぎ ❓。状態が変わると前の絵文字を外して付け替え、持ち主が新しく書くとそのメッセージに移す。
 - 席を作るとき投稿に bot のメッセージを 1 件置き、状態の欄にする。状態、作業中なら経過時間（いまの状態になってから）といまやっていること（席の最後の途中経過）を書く。内容が変わったときだけ書き換え、経過時間だけの変化は最短 5 分おき。
-- 作業中の席の数を `GET /seats/summary`（`Authorization: Bearer <WORKING_TOKEN>`）で `{ "working": <合計>, "partners": { "yukarin": N, "akarin": M }, "usage": { ... } }` として返す。朝会の席は数えない。gateway が自分のパートナーの分を bot のステータスに出す。
+- mizuya の bot のステータスに、席ごとの作業中の数と CLI の使用率を「ゆ 作業中 2件 · 5h 30% · 週 12% ／ あ 5h 5% · 週 1%」の形で 1 分ごとに出す。朝会の席は数えない。使用率は application の説明文（プロフィールの自己紹介欄）にも席ごとに 1 行で書く。変わったときだけ、15 分に一度まで。
+- 同じものを `GET /seats/summary`（`Authorization: Bearer <WORKING_TOKEN>`）で `{ "working": <合計>, "partners": { "yukarin": N, "akarin": M }, "usage": { ... } }` として返す。
 - `usage` はパートナーの席で動く CLI のサブスクリプションの使用率で、Yukarin は Claude、Akarin は Codex。`{ "fiveHour": { "usedPercent": 32, "resetsAt": <UNIX ミリ秒 | null> }, "weekly": { ... } }` の形で、読めていないパートナーは載せない。
   - 5 分おきに読む。Claude は `~/.claude/.credentials.json`（`CLAUDE_CONFIG_DIR` があればその中）のトークンで `https://api.anthropic.com/api/oauth/usage` を読む。Claude Code の `/usage` と同じ非公開の API。トークンの期限が切れていれば読まず、自分では更新しない（席の Claude が動けば CLI が更新する）。
   - Codex は `codex app-server` を起こして `account/rateLimits/read` を呼ぶ。primary が 5 時間枠、secondary が週枠。Akarin の席が無効なら読まない。
@@ -238,7 +244,7 @@ Renovate の PR は持ち主の許しで、朝会と見回りの席が片付け�
 
 ### 活動ログ
 
-`ACTIVITY_LOG_THREAD_ID` を設定すると、受付は毎日 `ACTIVITY_LOG_TIME`（既定は `23:30`、Asia/Tokyo）に、前の回からその時刻までに席がしたことを、そのスレッドへ Yukarin の bot で 1 投稿にまとめる。設定しなければまとめない。
+`ACTIVITY_LOG_THREAD_ID` を設定すると、受付は毎日 `ACTIVITY_LOG_TIME`（既定は `23:30`、Asia/Tokyo）に、前の回からその時刻までに席がしたことを、そのスレッドへ Yukarin の話し手で 1 投稿にまとめる。設定しなければまとめない。
 
 - 席が完了・引き継ぎで閉じたときと、hook が止めた操作の許可を求めたとき（朝会・見回り・GitHub の知らせの席が止められた操作の投稿を含む）に、受付が `STATE_DIR/activity-log.jsonl` に 1 行ずつ残す。行には投稿の件名、担当、止めた道具の名前だけを書き、コマンドの本文や席の出力は残さない。
 - 投稿には、終えた仕事、Mac に引き継いだ仕事、止められた操作（投稿ごとに道具の名前と件数）、Working が出した PR（`GH_TOKEN` の人が `STANDUP_GITHUB_OWNER` の repo に `dev/` ブランチから出したもの）のうち、その範囲でマージされたものと新しく出したものを並べる。
@@ -267,48 +273,52 @@ CI の失敗、PR のレビュー、issue と PR のコメントがあると、�
 
 ### 環境変数
 
-| 変数                                                              | 必須   | 内容                                                                                                                     |
-| ----------------------------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------ |
-| `DISCORD_TOKEN`                                                   | はい   | Yukarin の bot トークン。Discord REST に使う                                                                             |
-| `AKARIN_DISCORD_TOKEN`                                            | いいえ | Akarin の bot トークン。あれば Akarin 宛ての依頼に Codex CLI の席を作る                                                  |
-| `CODEX_HOME`                                                      | いいえ | Codex CLI の設定とログイン情報の置き場所。イメージでは `~/.codex`                                                        |
-| `WORKING_TOKEN`                                                   | はい   | gateway と共有するトークン                                                                                               |
-| `WORK_TEXT_CHANNEL_ID`                                            | はい   | 依頼を受ける仕事テキストチャンネル                                                                                       |
-| `WORK_FORUM_CHANNEL_ID`                                           | はい   | 投稿を立てる仕事フォーラム                                                                                               |
-| `WORKING_OWNER_DISCORD_USER_IDS`                                  | はい   | 作業を頼める人の Discord ユーザー ID（カンマ区切り）                                                                     |
-| `PORT`                                                            | いいえ | 待ち受けるポート。既定は `8080`                                                                                          |
-| `STATE_DIR`                                                       | いいえ | 対応表の置き場所。既定は `~/state`                                                                                       |
-| `WORK_DIR`                                                        | いいえ | 受付が動かす CLI（件名の要約、記憶、`gh`）の作業ディレクトリ。既定は `~/work`                                            |
-| `PERSONA_SCRIPT`                                                  | いいえ | 人格を出力するスクリプト。既定は `~/bin/persona.sh`                                                                      |
-| `PERSONA_DIR`                                                     | いいえ | 人格の元ファイルの置き場。既定は `~/persona`                                                                             |
-| `HANDOFF_DIR`                                                     | いいえ | `prompt.md` と `issue-template.md` の置き場所。既定は `~/handoff`                                                        |
-| `GH_TOKEN`                                                        | いいえ | 席の Claude の `gh` と `git push` が使う書き込みトークン                                                                 |
-| `GIT_AUTHOR_NAME` など                                            | いいえ | 席の Claude の commit の作者。`GIT_AUTHOR_*` と `GIT_COMMITTER_*` を渡す                                                 |
-| `YUNOMI_URL`                                                      | いいえ | Worker の URL。`yunomi-memory` が Working の記憶の口（`/v1/partners/:partnerId/working/memory`）を呼ぶ                   |
-| `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET`                 | いいえ | Working 用の Access service token。yunomi の Worker の `accessCallers` で `working` に引かれる。席の Claude には渡さない |
-| `CHIMERA_URL`                                                     | いいえ | chimera の URL。`chimera:` の行の画像を取る                                                                              |
-| `CHIMERA_ACCESS_CLIENT_ID` / `CHIMERA_ACCESS_CLIENT_SECRET`       | いいえ | chimera の Access service token。受付だけが使い、席の Claude には渡さない                                                |
-| `PLAYWRIGHT_MCP_URL`                                              | いいえ | Playwright MCP の URL（`https://playwright.chanu.co/mcp`）。Akarin の席の Codex に MCP サーバー `playwright` として渡す  |
-| `PLAYWRIGHT_ACCESS_CLIENT_ID` / `PLAYWRIGHT_ACCESS_CLIENT_SECRET` | いいえ | Playwright MCP の Cloudflare Access の service token。URL とそろったときだけ渡す                                         |
-| `MEMORY_BIN`                                                      | いいえ | 朝会で記憶を読む CLI。既定は `yunomi-memory`                                                                             |
-| `MAC_STATE_TOKEN`                                                 | いいえ | Mac と共有するトークン。設定したときだけ席の状態の受け口を開く                                                           |
-| `MAC_STATE_PORT`                                                  | いいえ | 席の状態の受け口のポート。既定は `8090`                                                                                  |
-| `STANDUP_ENABLED`                                                 | いいえ | `false` で朝会を止める。既定は `true`                                                                                    |
-| `STANDUP_TIME`                                                    | いいえ | 朝会の時刻（`HH:MM`、Asia/Tokyo）。既定は `09:00`                                                                        |
-| `STANDUP_GITHUB_OWNER`                                            | いいえ | 朝会で PR と申し送りを探す GitHub の owner。既定は `ochanuco`                                                            |
-| `HEARTBEAT_ENABLED`                                               | いいえ | `false` で見回りを止め、朝会だけにする。既定は `true`                                                                    |
-| `HEARTBEAT_INTERVAL_MINUTES`                                      | いいえ | 見回りの間隔（分、30 以上）。既定は `120`                                                                                |
-| `ACTIVITY_LOG_THREAD_ID`                                          | いいえ | 活動ログを投稿するスレッドの ID。設定したときだけ活動ログをまとめる                                                      |
-| `ACTIVITY_LOG_TIME`                                               | いいえ | 活動ログをまとめる時刻（`HH:MM`、Asia/Tokyo）。既定は `23:30`                                                            |
-| `CLAUDE_BIN`                                                      | いいえ | 受付が件名の要約とログインの期限に使う Claude CLI のパス。既定は `claude`                                                |
-| `ORCA_BIN`                                                        | いいえ | Orca の CLI。既定は `orca-ide`                                                                                           |
-| `SEATS_REPO`                                                      | いいえ | 席の元にする空の git リポジトリ。既定は `~/work/seats`                                                                   |
-| `SEATS_DIR`                                                       | いいえ | Orca が席の worktree を作る場所。既定は `~/work/orca/workspaces/seats`。受付と `seat-env.sh` の両方が読む                |
-| `SEAT_LIMIT`                                                      | いいえ | 同時に Claude を動かしておく席の上限。既定は `6`                                                                         |
-| `SEAT_SLEEP_AFTER_MINUTES`                                        | いいえ | `決めてほしい` のままこれだけたった席の Claude を止める。既定は `120`                                                    |
-| `LOG_LEVEL`                                                       | いいえ | `debug` / `info` / `warn` / `error`。既定は `info`                                                                       |
+| 変数                                                              | 必須   | 内容                                                                                                                        |
+| ----------------------------------------------------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `DISCORD_TOKEN`                                                   | はい   | mizuya の bot トークン。Gateway、Discord REST、webhook の作成に使う                                                         |
+| `YUKARIN_ROLE_ID` / `AKARIN_ROLE_ID`                              | いいえ | 依頼の宛先の席を決める role（chabatake の `discord/chanuco` の output `working_role_ids`）                                  |
+| `YUKARIN_AVATAR_URL` / `AKARIN_AVATAR_URL`                        | いいえ | 席の話し手の画像の URL。無ければ webhook の既定の画像                                                                       |
+| `MIZUYA_INBOX_URL`                                                | いいえ | mizuya の Worker の受け箱（`wss://mizuya.chanu.co/working/inbox`）。下の 3 つとそろわなければつながず、ボタンを受け取れない |
+| `MIZUYA_INBOX_TOKEN`                                              | いいえ | 受け箱の token。Worker の `WORKING_INBOX_TOKEN` と同じ値                                                                    |
+| `MIZUYA_ACCESS_CLIENT_ID` / `MIZUYA_ACCESS_CLIENT_SECRET`         | いいえ | 受け箱につなぐ Access の service token（`mizuya-working-inbox`）                                                            |
+| `CODEX_HOME`                                                      | いいえ | Codex CLI の設定とログイン情報の置き場所。イメージでは `~/.codex`                                                           |
+| `WORKING_TOKEN`                                                   | はい   | yunomi の gateway と共有するトークン                                                                                        |
+| `WORK_TEXT_CHANNEL_ID`                                            | はい   | 依頼を受ける仕事テキストチャンネル                                                                                          |
+| `WORK_FORUM_CHANNEL_ID`                                           | はい   | 投稿を立てる仕事フォーラム                                                                                                  |
+| `WORKING_OWNER_DISCORD_USER_IDS`                                  | はい   | 作業を頼める人の Discord ユーザー ID（カンマ区切り）                                                                        |
+| `PORT`                                                            | いいえ | 待ち受けるポート。既定は `8080`                                                                                             |
+| `STATE_DIR`                                                       | いいえ | 対応表の置き場所。既定は `~/state`                                                                                          |
+| `WORK_DIR`                                                        | いいえ | 受付が動かす CLI（件名の要約、記憶、`gh`）の作業ディレクトリ。既定は `~/work`                                               |
+| `PERSONA_SCRIPT`                                                  | いいえ | 人格を出力するスクリプト。既定は `~/bin/persona.sh`                                                                         |
+| `PERSONA_DIR`                                                     | いいえ | 人格の元ファイルの置き場。既定は `~/persona`                                                                                |
+| `HANDOFF_DIR`                                                     | いいえ | `prompt.md` と `issue-template.md` の置き場所。既定は `~/handoff`                                                           |
+| `GH_TOKEN`                                                        | いいえ | 席の Claude の `gh` と `git push` が使う書き込みトークン                                                                    |
+| `GIT_AUTHOR_NAME` など                                            | いいえ | 席の Claude の commit の作者。`GIT_AUTHOR_*` と `GIT_COMMITTER_*` を渡す                                                    |
+| `YUNOMI_URL`                                                      | いいえ | Worker の URL。`yunomi-memory` が Working の記憶の口（`/v1/partners/:partnerId/working/memory`）を呼ぶ                      |
+| `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET`                 | いいえ | Working 用の Access service token。yunomi の Worker の `accessCallers` で `working` に引かれる。席の Claude には渡さない    |
+| `CHIMERA_URL`                                                     | いいえ | chimera の URL。`chimera:` の行の画像を取る                                                                                 |
+| `CHIMERA_ACCESS_CLIENT_ID` / `CHIMERA_ACCESS_CLIENT_SECRET`       | いいえ | chimera の Access service token。受付だけが使い、席の Claude には渡さない                                                   |
+| `PLAYWRIGHT_MCP_URL`                                              | いいえ | Playwright MCP の URL（`https://playwright.chanu.co/mcp`）。Akarin の席の Codex に MCP サーバー `playwright` として渡す     |
+| `PLAYWRIGHT_ACCESS_CLIENT_ID` / `PLAYWRIGHT_ACCESS_CLIENT_SECRET` | いいえ | Playwright MCP の Cloudflare Access の service token。URL とそろったときだけ渡す                                            |
+| `MEMORY_BIN`                                                      | いいえ | 朝会で記憶を読む CLI。既定は `yunomi-memory`                                                                                |
+| `MAC_STATE_TOKEN`                                                 | いいえ | Mac と共有するトークン。設定したときだけ席の状態の受け口を開く                                                              |
+| `MAC_STATE_PORT`                                                  | いいえ | 席の状態の受け口のポート。既定は `8090`                                                                                     |
+| `STANDUP_ENABLED`                                                 | いいえ | `false` で朝会を止める。既定は `true`                                                                                       |
+| `STANDUP_TIME`                                                    | いいえ | 朝会の時刻（`HH:MM`、Asia/Tokyo）。既定は `09:00`                                                                           |
+| `STANDUP_GITHUB_OWNER`                                            | いいえ | 朝会で PR と申し送りを探す GitHub の owner。既定は `ochanuco`                                                               |
+| `HEARTBEAT_ENABLED`                                               | いいえ | `false` で見回りを止め、朝会だけにする。既定は `true`                                                                       |
+| `HEARTBEAT_INTERVAL_MINUTES`                                      | いいえ | 見回りの間隔（分、30 以上）。既定は `120`                                                                                   |
+| `ACTIVITY_LOG_THREAD_ID`                                          | いいえ | 活動ログを投稿するスレッドの ID。設定したときだけ活動ログをまとめる                                                         |
+| `ACTIVITY_LOG_TIME`                                               | いいえ | 活動ログをまとめる時刻（`HH:MM`、Asia/Tokyo）。既定は `23:30`                                                               |
+| `CLAUDE_BIN`                                                      | いいえ | 受付が件名の要約とログインの期限に使う Claude CLI のパス。既定は `claude`                                                   |
+| `ORCA_BIN`                                                        | いいえ | Orca の CLI。既定は `orca-ide`                                                                                              |
+| `SEATS_REPO`                                                      | いいえ | 席の元にする空の git リポジトリ。既定は `~/work/seats`                                                                      |
+| `SEATS_DIR`                                                       | いいえ | Orca が席の worktree を作る場所。既定は `~/work/orca/workspaces/seats`。受付と `seat-env.sh` の両方が読む                   |
+| `SEAT_LIMIT`                                                      | いいえ | 同時に Claude を動かしておく席の上限。既定は `6`                                                                            |
+| `SEAT_SLEEP_AFTER_MINUTES`                                        | いいえ | `決めてほしい` のままこれだけたった席の Claude を止める。既定は `120`                                                       |
+| `LOG_LEVEL`                                                       | いいえ | `debug` / `info` / `warn` / `error`。既定は `info`                                                                          |
 
-bot には仕事フォーラムでの投稿の作成・メッセージ送信・スレッドの管理（タグの付け替え）と、メッセージ履歴を読む権限が要る。
+mizuya の bot には、仕事チャンネルと仕事フォーラムで、読む・送る・スレッドでの送信・公開スレッドの作成・スレッドの管理（タグの付け替え）・webhook の管理・埋め込み・ファイル・履歴の読み取り・リアクションの権限が要る（chabatake の `discord/chanuco` の上書き）。application では Message Content intent を有効にする。
 
 ## 配備
 

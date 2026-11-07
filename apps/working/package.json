@@ -9,6 +9,7 @@
 		"test": "vitest run && bash test/release-orcad-lock.sh && bash test/seat-env.sh && bash test/init-seats-repo.sh"
 	},
 	"dependencies": {
+		"discord.js": "^14.28.1",
 		"tsx": "^4.21.0",
 		"valibot": "^1.5.0",
 		"yaml": "^2.9.1"
