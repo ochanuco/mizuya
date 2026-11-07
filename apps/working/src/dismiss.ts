@@ -9,6 +9,9 @@ export const DISMISS_BUTTON: Button = {
 	style: "secondary",
 };
 
+/** 不要のボタンに添える文。 */
+export const DISMISS_ASK = "この件が要らなければ「不要」を押すと閉じます。";
+
 export const isDismissButton = (customId: string) => customId === DISMISS_ID;
 
 const DISMISSED_TEXT = "不要として閉じました。";

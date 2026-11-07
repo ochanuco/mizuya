@@ -1,9 +1,8 @@
 import * as v from "valibot";
 import type { ActivityEntry } from "./activity-log.ts";
-import { APPROVAL_BUTTONS, approvalRequestText } from "./approval.ts";
+import { approvalRequestText } from "./approval.ts";
 import type { ApprovalStore } from "./approval-store.ts";
-import type { Button, DiscordApi } from "./discord-rest.ts";
-import { DISMISS_BUTTON } from "./dismiss.ts";
+import type { DiscordApi } from "./discord-rest.ts";
 import type { Ledger, Pending } from "./guard/ledger.ts";
 import { formatJstForPrompt, toModelJson } from "./lib/core.ts";
 import type { Logger } from "./logger.ts";
@@ -23,6 +22,7 @@ import {
 	type Watch,
 } from "./standup-materials.ts";
 import type { RunKind } from "./standup-timer.ts";
+import { buttonMessage } from "./system.ts";
 
 export type Decision = { title: string; body: string };
 
@@ -90,7 +90,10 @@ export const parseDecisions = (text: string): Decision[] | null =>
 	parseReport(text)?.decisions ?? null;
 
 export type StandupDeps = {
+	/** Yukarin の bot。投稿を立て、知らせを書く。 */
 	discord: DiscordApi;
+	/** mizuya の bot。投稿に許可と不要のボタンを出す。 */
+	system: DiscordApi;
 	approvals: ApprovalStore;
 	ledger: Ledger;
 	workForumChannelId: string;
@@ -147,14 +150,14 @@ export const postDecisions = async (
 	if (!tagId) log.warn("forum tag missing", { tag: DECIDE_TAG });
 	const from = runLabel(kind, now);
 
-	const post = async (d: Decision, buttons: readonly Button[] = []) => {
+	/** 投稿を立て、その中に mizuya の bot でボタンを出す。ボタンのメッセージの ID も返す。 */
+	const post = async (d: Decision, approval = false) => {
 		const created = await deps.discord.createForumPost(
 			deps.workForumChannelId,
 			{
 				name: d.title,
 				content: `${d.body}${standupPostFooter(from)}`,
 				tagIds: tagId ? [tagId] : [],
-				buttons: [...buttons, DISMISS_BUTTON],
 			},
 		);
 		if (!created.ok) {
@@ -162,19 +165,38 @@ export const postDecisions = async (
 			log.error("standup post failed", { error: created.error.type });
 			return null;
 		}
-		report.posted.push(created.value.threadId);
-		return created.value.threadId;
+		const threadId = created.value.threadId;
+		report.posted.push(threadId);
+		const m = buttonMessage({ approval, dismiss: true });
+		const buttons = await deps.system.send(
+			threadId,
+			m.content,
+			undefined,
+			[],
+			m.buttons,
+		);
+		if (!buttons.ok) {
+			log.error("standup buttons failed", {
+				thread_id: threadId,
+				error: buttons.error.type,
+			});
+		}
+		return {
+			threadId,
+			buttonMessageIds: buttons.ok ? buttons.value.messageIds : [],
+		};
 	};
 
 	for (const d of decisions) await post(d);
 
 	if (blocked.length > 0) {
 		const title = `${RUN_NAME[kind]}で止めた操作`;
-		const threadId = await post(
+		const posted = await post(
 			{ title, body: approvalRequestText(blocked) },
-			APPROVAL_BUTTONS,
+			true,
 		);
-		if (threadId !== null) {
+		if (posted !== null) {
+			const { threadId } = posted;
 			const operations = blocked.map((b) => b.operation);
 			await deps
 				.recordActivity?.({
@@ -190,7 +212,7 @@ export const postDecisions = async (
 				);
 			// フォーラム投稿の最初のメッセージは投稿と同じ ID を持つ
 			await deps.approvals.set(threadId, {
-				messageIds: [threadId],
+				messageIds: [threadId, ...posted.buttonMessageIds],
 				operations,
 			});
 			deps.ledger.log({
