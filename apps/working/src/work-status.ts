@@ -8,8 +8,9 @@ export const WORK_STATUSES = [
 ] as const;
 export type WorkStatus = (typeof WORK_STATUSES)[number];
 
+// 席が --body に改行を \n の 2 文字で書いてしまうことがあり、そのときは状態が同じ行に続く
 const MARKER = new RegExp(
-	`^\\s*状態\\s*[:：]\\s*(${WORK_STATUSES.join("|")})\\s*$`,
+	`(?:^|\\\\n)\\s*状態\\s*[:：]\\s*(${WORK_STATUSES.join("|")})\\s*$`,
 );
 
 /**
@@ -23,8 +24,9 @@ export const takeStatus = (
 	const last = lines.at(-1) ?? "";
 	const m = MARKER.exec(last);
 	if (!m) return { body: text.trim(), status: "決めてほしい" };
+	const rest = [...lines.slice(0, -1), last.slice(0, m.index)];
 	return {
-		body: lines.slice(0, -1).join("\n").trim(),
+		body: rest.join("\n").trim(),
 		status: m[1] as WorkStatus,
 	};
 };
