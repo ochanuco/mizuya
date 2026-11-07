@@ -230,8 +230,9 @@ export const seatCommand = (
 		return kind === "start" ? withModel : `${withModel} --continue`;
 	}
 	const head = kind === "start" ? "codex" : "codex resume --last";
+	// Codex は Claude の opus のような短い名前を解決せず、ChatGPT のアカウントでは model_not_found で起動前に落ちる
 	return model
-		? `${head} -m ${model} ${SEAT_CODEX_FLAGS}`
+		? `${head} -m gpt-5.6-${model} ${SEAT_CODEX_FLAGS}`
 		: `${head} ${SEAT_CODEX_FLAGS}`;
 };
 /** 席の Claude を起動してから spec を渡すまで待つ時間。手元では 10 秒でコネクタが読み込まれていた。 */
