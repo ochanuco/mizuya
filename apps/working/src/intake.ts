@@ -711,7 +711,10 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	/** 席に Claude を座らせ、溜まっている言葉を渡す。worktree があれば前の会話のまま起こす。 */
 	const launch = async (seat: Seat) => {
 		const threadId = seat.threadId;
-		const title = (await titleOf(threadId)) ?? threadId;
+		// 朝会・見回り・GitHub の出来事の席は Discord の投稿を持たず、ID はチャンネルではない
+		const title = seat.standup
+			? threadId
+			: ((await titleOf(threadId)) ?? threadId);
 		const text = seat.pending.join("\n\n---\n\n");
 		const partner = partnerOf(threadId);
 		const agent = agentOf(partner);
