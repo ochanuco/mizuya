@@ -256,6 +256,7 @@ describe("startStandup の見回り", () => {
 		due,
 		seen: ["https://shop.example/gpu/1"],
 		notify_thread_id: thread,
+		partner: "yukarin",
 	});
 
 	it("GitHub に変わりが無くても、時間が来た見張りがあれば、その見張りだけを渡して席を立てる", async () => {
@@ -280,7 +281,10 @@ describe("startStandup の見回り", () => {
 			expect(spec).not.toContain('"id":"w2"');
 			// 見張りは記憶からは外し、時間が来たものだけを渡す
 			expect(spec).toContain('"memory":{"facts":[]}');
-			expect(spec).toContain("yunomi-memory watch-checked --id");
+			expect(spec).toContain(
+				"yunomi-memory watch-checked --partner <見張りの partner> --id",
+			);
+			expect(spec).toContain('"partner":"yukarin"');
 			expect(spec).toContain('"changes":{}');
 		}
 	});
@@ -559,6 +563,7 @@ describe("gatherStandupMaterials", () => {
 			cwd: "/w",
 			claudeBin: "claude",
 			memoryBin: "yunomi-memory",
+			partners: ["yukarin"],
 			githubOwner: "o",
 			macState: store,
 			now: () => NOW,
@@ -580,6 +585,91 @@ describe("gatherStandupMaterials", () => {
 			expires_at: new Date("2026-11-10T00:00:00.000Z"),
 			expires_soon: true,
 		});
+	});
+
+	it("見張りは全員の記憶から読み、持ち主のパートナーを付ける。記憶は既定のパートナーの分だけ", async () => {
+		const watchOf = (id: string) => ({
+			id,
+			query: "q",
+			sources: [],
+			interval_minutes: 360,
+			until_at: null,
+			last_checked_at: null,
+			due: true,
+			seen: [],
+		});
+		const run = vi.fn(
+			async (
+				bin: string,
+				args: readonly string[],
+				opts: { env?: Record<string, string> },
+			) => {
+				if (bin !== "yunomi-memory" || args[0] !== "read")
+					return { code: 0, stdout: "[]", stderr: "" };
+				const partner = opts.env?.YUNOMI_PARTNER ?? "yukarin";
+				return partner === "yukarin"
+					? {
+							code: 0,
+							stderr: "",
+							stdout: JSON.stringify({ facts: [], watches: [watchOf("y1")] }),
+						}
+					: {
+							code: 0,
+							stderr: "",
+							stdout: JSON.stringify({
+								facts: ["a"],
+								watches: [watchOf("a1")],
+							}),
+						};
+			},
+		);
+		const m = await gatherStandupMaterials({
+			exec: run,
+			env: {},
+			cwd: "/w",
+			claudeBin: "claude",
+			memoryBin: "yunomi-memory",
+			partners: ["yukarin", "akarin"],
+			githubOwner: "o",
+			macState: openMacStateStore(tempDir()),
+			now: () => NOW,
+			logger: silentLogger,
+		});
+		expect(m.memory).toEqual({ facts: [], watches: [watchOf("y1")] });
+		expect(m.watches).toEqual([
+			expect.objectContaining({ id: "y1", partner: "yukarin" }),
+			expect.objectContaining({ id: "a1", partner: "akarin" }),
+		]);
+	});
+
+	it("読めなかったパートナーの見張りだけを外し、残りで回す", async () => {
+		const run = vi.fn(
+			async (
+				bin: string,
+				args: readonly string[],
+				opts: { env?: Record<string, string> },
+			) => {
+				if (bin !== "yunomi-memory" || args[0] !== "read")
+					return { code: 0, stdout: "[]", stderr: "" };
+				return opts.env?.YUNOMI_PARTNER === "akarin"
+					? { code: 0, stderr: "", stdout: JSON.stringify({ watches: [] }) }
+					: { code: 1, stderr: "boom", stdout: "" };
+			},
+		);
+		const m = await gatherStandupMaterials({
+			exec: run,
+			env: {},
+			cwd: "/w",
+			claudeBin: "claude",
+			memoryBin: "yunomi-memory",
+			partners: ["yukarin", "akarin"],
+			githubOwner: "o",
+			macState: openMacStateStore(tempDir()),
+			now: () => NOW,
+			logger: silentLogger,
+		});
+		expect(m.watches).toEqual([]);
+		expect(m.memory).toEqual({ unavailable: "記憶 を取れなかった" });
 	});
 
 	it("Renovate の PR は repo ごとに CI とコンフリクトの状態を引く", async () => {
@@ -632,6 +722,7 @@ describe("gatherStandupMaterials", () => {
 			cwd: "/w",
 			claudeBin: "claude",
 			memoryBin: "yunomi-memory",
+			partners: ["yukarin"],
 			githubOwner: "o",
 			macState: openMacStateStore(tempDir()),
 			now: () => NOW,
@@ -663,10 +754,10 @@ describe("watchesOf", () => {
 			due: true,
 			seen: [],
 		};
-		expect(watchesOf({ watches: [w] })).toEqual([
-			{ ...w, notify_thread_id: null },
+		expect(watchesOf({ watches: [w] }, "akarin")).toEqual([
+			{ ...w, notify_thread_id: null, partner: "akarin" },
 		]);
-		expect(watchesOf({ facts: [] })).toEqual({
+		expect(watchesOf({ facts: [] }, "akarin")).toEqual({
 			unavailable: "記憶の見張りを読めなかった",
 		});
 	});

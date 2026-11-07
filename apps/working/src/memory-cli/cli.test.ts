@@ -57,6 +57,21 @@ describe("runMemoryCli", () => {
 		);
 	});
 
+	it("watch-checked の --partner は YUNOMI_PARTNER より優先し、見張りを持つパートナーの記憶に残す", async () => {
+		const env = { ...setup(), YUNOMI_PARTNER: "yukarin" };
+		const f = respond(200, { id: "w1", checked: true });
+		const out = await runMemoryCli(
+			["watch-checked", "--id", "w1", "--partner", "akarin"],
+			env,
+			f as typeof fetch,
+		);
+		expect(out.code).toBe(0);
+		const [url] = f.mock.calls[0] ?? [];
+		expect(String(url)).toBe(
+			"https://worker.example/v1/partners/akarin/working/memory",
+		);
+	});
+
 	it("write は 1 行を POST する", async () => {
 		const env = setup();
 		const f = respond(201, { id: "n1" });
@@ -274,6 +289,8 @@ describe("runMemoryCli", () => {
 			["close", "--status", "achieved"],
 			["watch-checked", "--seen", "x"],
 			["watch-checked", "--id", "w1", "--seen", "a\nb"],
+			["watch-checked", "--id", "w1", "--partner", "Akarin"],
+			["read", "--partner", "akarin"],
 			["watch-checked", "--id", "w1", "--seen", "あ".repeat(201)],
 			["close", "--id", "g1", "--status", "achieved", "--seen", "x"],
 			["watch-add"],

@@ -415,6 +415,7 @@ const standupTimer = cfg.standup.enabled
 								cwd: cfg.workDir,
 								claudeBin: cfg.claudeBin,
 								memoryBin: cfg.memoryBin,
+								partners: ["yukarin", "akarin"],
 								githubOwner: cfg.standup.githubOwner,
 								macState,
 								now: () => new Date(),

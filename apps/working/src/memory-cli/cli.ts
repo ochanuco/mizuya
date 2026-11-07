@@ -57,7 +57,7 @@ const USAGE = `使い方:
   yunomi-memory close --id <目標の id> --status achieved|dropped
   yunomi-memory watch-add --query "<何を>" [--source "<どこを>"]... [--interval-hours <時間>] [--until "<ISO 8601>"]
   yunomi-memory watch-stop --id <見張りの id>
-  yunomi-memory watch-checked --id <見張りの id> [--seen "<知らせたものの key>"]...
+  yunomi-memory watch-checked --id <見張りの id> [--seen "<知らせたものの key>"]... [--partner <パートナー>]
 `;
 
 const fail = (code: number, message: string): CliOutput => ({
@@ -126,6 +126,7 @@ export const runMemoryCli = async (
 		source?: string[];
 		"interval-hours"?: string;
 		until?: string;
+		partner?: string;
 	};
 	try {
 		values = parseArgs({
@@ -140,6 +141,7 @@ export const runMemoryCli = async (
 				source: { type: "string", multiple: true },
 				"interval-hours": { type: "string" },
 				until: { type: "string" },
+				partner: { type: "string" },
 			},
 			strict: true,
 			allowPositionals: false,
@@ -156,7 +158,7 @@ export const runMemoryCli = async (
 		close: ["id", "status"],
 		"watch-add": ["query", "source", "interval-hours", "until"],
 		"watch-stop": ["id"],
-		"watch-checked": ["id", "seen"],
+		"watch-checked": ["id", "seen", "partner"],
 	};
 	if (given.some((k) => !allowed[command].includes(k))) return fail(2, USAGE);
 	if (command === "write") {
@@ -241,14 +243,20 @@ export const runMemoryCli = async (
 		}
 		values.id = (values.id ?? "").trim();
 		values.seen = seen;
+		if (values.partner !== undefined && !PARTNER.test(values.partner)) {
+			return fail(2, "--partner は英小文字のパートナー名");
+		}
 	}
 
 	const creds = readCredentials(env);
 	if (creds === null) return fail(1, "記憶の口の接続情報がない");
-	// Akarin の席（Codex）は YUNOMI_PARTNER=akarin を付けて呼ぶ。無ければ接続情報の既定（Yukarin）
-	const partner = PARTNER.test(env.YUNOMI_PARTNER ?? "")
-		? (env.YUNOMI_PARTNER as string)
-		: creds.partner_id;
+	// 朝会と見回りは Yukarin の席から全員の見張りを調べるので、--partner で見張りの持ち主の記憶に書く。
+	// Akarin の席（Codex）は YUNOMI_PARTNER=akarin を付けて呼ぶ。どちらも無ければ接続情報の既定（Yukarin）
+	const partner =
+		values.partner ??
+		(PARTNER.test(env.YUNOMI_PARTNER ?? "")
+			? (env.YUNOMI_PARTNER as string)
+			: creds.partner_id);
 	const base = `${creds.url.replace(/\/$/, "")}/v1/partners/${encodeURIComponent(partner)}/working/memory`;
 	const headers = {
 		"CF-Access-Client-Id": creds.client_id,

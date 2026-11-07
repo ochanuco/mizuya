@@ -224,7 +224,7 @@ const GOAL_RULE = `- 持ち主の目標（goals）に効く提案があれば、
 
 const WATCH_RULES = `- 時間が来た見張り（due_watches）は 1 件ずつ調べる。query が探すもの（条件ごと）、sources が見る場所（店やサイトの名前か URL。空なら普通の検索）。持ち主に確認せず WebSearch と WebFetch で調べてよい。URL の source は検索よりそのページを直接読む（中古の在庫は検索への反映が遅い）。
 - 条件に合う出品や記事のうち、seen に無いものだけが新着。新着は notices に 1 件ずつ、見張りの id（watch_id）と 1 行の text で書く。何がどこにいくらで出ていたかと URL を入れる（例「RTX3090 の中古（24GB）がじゃんぱらに 89,800 円で出ていました <URL>」）。条件に合うかあやしいものは入れない。新着が無い見張りは何も書かない。
-- 1 件調べ終えるたびに \`yunomi-memory watch-checked --id <見張りの id>\` を呼ぶ。新着があれば、その出品を指す key（URL があれば URL、無ければ店と品名と値段）を \`--seen "<key>"\` で 1 件ずつ付ける。調べられなかった見張りは呼ばずに残す（次の回で調べ直す）。
+- 1 件調べ終えるたびに \`yunomi-memory watch-checked --partner <見張りの partner> --id <見張りの id>\` を呼ぶ。新着があれば、その出品を指す key（URL があれば URL、無ければ店と品名と値段）を \`--seen "<key>"\` で 1 件ずつ付ける。調べられなかった見張りは呼ばずに残す（次の回で調べ直す）。
 - 見張りの新着は決めてほしいことに入れない。`;
 
 const decisionsContract = (

@@ -61,6 +61,8 @@ export type Watch = {
 	seen: string[];
 	/** 新着を書く仕事フォーラムの投稿。席から登録した見張りだけが持つ。 */
 	notify_thread_id: string | null;
+	/** 見張りを持つパートナー。調べ終えたら、このパートナーの記憶に残す。 */
+	partner: string;
 };
 
 export type StandupMaterials = {
@@ -94,6 +96,11 @@ export type MaterialDeps = {
 	cwd: string;
 	claudeBin: string;
 	memoryBin: string;
+	/**
+	 * 見張りを読むパートナー。先頭は接続情報の既定のパートナーで、その記憶を席に渡す。
+	 * 見張りは Talking でも Akarin の席でも足されるので、朝会と見回りは全員の分を調べる。
+	 */
+	partners: readonly [string, ...string[]];
 	githubOwner: string;
 	macState: MacStateStore;
 	now: () => Date;
@@ -218,12 +225,23 @@ const memoryWatchesSchema = v.object({
 });
 
 /** 記憶の応答から見張りを取り出す。古い Worker は watches を返さないので、取れなければ unavailable にする。 */
-export const watchesOf = (memory: unknown): Watch[] | Unavailable => {
+export const watchesOf = (
+	memory: unknown,
+	partner: string,
+): Watch[] | Unavailable => {
 	if (failed(memory)) return memory;
 	const parsed = v.safeParse(memoryWatchesSchema, memory);
 	return parsed.success
-		? parsed.output.watches
+		? parsed.output.watches.map((w) => ({ ...w, partner }))
 		: { unavailable: "記憶の見張りを読めなかった" };
+};
+
+/** パートナーごとの見張りを 1 つにまとめる。読めたパートナーの分だけで回し、どれも読めなければ unavailable にする。 */
+const mergeWatches = (
+	lists: readonly (Watch[] | Unavailable)[],
+): Watch[] | Unavailable => {
+	const ok = lists.filter((l): l is Watch[] => !failed(l));
+	return ok.length === 0 && lists[0] !== undefined ? lists[0] : ok.flat();
 };
 
 /** 席に渡す記憶。見張りは時間が来たものだけを別に渡すので、記憶からは外す。 */
@@ -260,12 +278,13 @@ export const gatherStandupMaterials = async (
 		bin: string,
 		args: readonly string[],
 		schema: v.GenericSchema<unknown, T>,
+		env: Record<string, string> = deps.env,
 	): Promise<T | Unavailable> => {
 		const out = await deps.exec(bin, args, {
 			stdin: "",
 			cwd: deps.cwd,
 			timeoutMs: 60_000,
-			env: deps.env,
+			env,
 		});
 		if (out.code !== 0) {
 			deps.logger.warn("standup material failed", {
@@ -290,6 +309,18 @@ export const gatherStandupMaterials = async (
 	};
 	const owner = deps.githubOwner;
 	const prFields = "repository,number,title,url,isDraft,updatedAt,author";
+	const [primary, ...others] = deps.partners;
+	const otherWatches = Promise.all(
+		others.map(async (partner) =>
+			watchesOf(
+				await run(`${partner} の記憶`, deps.memoryBin, ["read"], v.unknown(), {
+					...deps.env,
+					YUNOMI_PARTNER: partner,
+				}),
+				partner,
+			),
+		),
+	);
 	const [memory, latest, openPrs, failingPrs, handoffs, auth] =
 		await Promise.all([
 			run("記憶", deps.memoryBin, ["read"], v.unknown()),
@@ -465,12 +496,16 @@ export const gatherStandupMaterials = async (
 		);
 		renovatePrs = perRepo.flat();
 	}
+	const watches = mergeWatches([
+		watchesOf(memory, primary),
+		...(await otherWatches),
+	]);
 
 	const expiresAt = failed(auth) ? null : toDate(auth.loginExpiresAt);
 	return {
 		memory,
 		goals: goalsOf(memory),
-		watches: watchesOf(memory),
+		watches,
 		mac_state:
 			latest === null
 				? { unavailable: "Mac から席の状態が届いたことがない" }
