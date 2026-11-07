@@ -45,7 +45,7 @@ export const SEEN_KEY_MAX_LENGTH = 200;
 export const WATCH_QUERY_MAX_LENGTH = 200;
 export const WATCH_SOURCE_MAX_LENGTH = 300;
 export const WATCH_SOURCES_MAX = 5;
-export const WATCH_INTERVAL_MIN_HOURS = 2;
+export const WATCH_INTERVAL_MIN_HOURS = 1;
 export const WATCH_INTERVAL_MAX_HOURS = 24 * 7;
 export const WATCH_INTERVAL_DEFAULT_HOURS = 24;
 
