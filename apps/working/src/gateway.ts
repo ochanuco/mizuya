@@ -5,6 +5,7 @@ import {
 	Events,
 	GatewayIntentBits,
 	type Message,
+	PermissionFlagsBits,
 } from "discord.js";
 import {
 	DISCORD_MESSAGE_CREATED,
@@ -96,6 +97,19 @@ const toMessageLike = (m: Message): MessageLike => ({
 	})),
 });
 
+/** Gateway の channel の一覧は見えないチャンネルも含むので、権限で読めるかを確かめる。 */
+const canRead = (c: Client<true>, channelId: string): boolean => {
+	const ch = c.channels.cache.get(channelId);
+	if (!ch || ch.isDMBased()) return false;
+	const perms = ch.permissionsFor(c.user);
+	return (
+		perms?.has([
+			PermissionFlagsBits.ViewChannel,
+			PermissionFlagsBits.ReadMessageHistory,
+		]) ?? false
+	);
+};
+
 export type WorkGateway = {
 	/** bot のステータスを書き換える。null で消す。 */
 	setActivity: (text: string | null) => void;
@@ -125,14 +139,23 @@ export const startWorkGateway = async (opts: {
 	});
 	client.on(Events.MessageCreate, (message) => {
 		if (message.author.id === client.user?.id) return;
+		const m = toMessageLike(message);
 		const envelope = toWorkEnvelope(
-			toMessageLike(message),
+			m,
 			{
 				textChannelId: opts.textChannelId,
 				forumChannelId: opts.forumChannelId,
 			},
 			new Date(),
 		);
+		// 届いたのに受付に渡らない発言を、チャンネルの指定と権限のどちらの問題か見分けられるようにする
+		log.info("gateway message", {
+			message_id: m.id,
+			channel_id: m.channelId,
+			parent_id: m.parentId,
+			webhook: m.webhookId !== null,
+			work: envelope !== null,
+		});
 		if (envelope) opts.accept(envelope);
 	});
 	client.on(Events.Error, (e) => {
@@ -140,7 +163,12 @@ export const startWorkGateway = async (opts: {
 	});
 	const ready = new Promise<void>((resolve) => {
 		client.once(Events.ClientReady, (c) => {
-			log.info("gateway ready", { bot_user_id: c.user.id });
+			log.info("gateway ready", {
+				bot_user_id: c.user.id,
+				guilds: c.guilds.cache.size,
+				text_channel_readable: canRead(c, opts.textChannelId),
+				forum_channel_readable: canRead(c, opts.forumChannelId),
+			});
 			resolve();
 		});
 	});
