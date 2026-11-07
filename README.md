@@ -12,7 +12,7 @@
 ## 動き
 
 1. job が Environment の承認待ちに入ると、GitHub が `workflow_job`（`waiting`）の webhook を `POST /github/webhook` に送る。payload は Environment を持たないので、mizuya はその run の `pending_deployments` から承認待ちの Environment を取る。
-2. mizuya は承認用チャンネルに、Environment ごとに repo・workflow（run 名）・Environment・待っている job・起動元のコミット・run へのリンクと「承認」「却下」ボタンの付いたメッセージを、承認者（`DISCORD_APPROVER_USER_ID`）へのメンション付きで投稿する。起動元のコミットは run を起動したコミットで、workflow_dispatch で別の ref を出すときはデプロイする ref と違う（deploy workflow は run 名にデプロイする ref を入れる）。同じ承認待ちのメッセージが未決着で残っていれば投稿しない。
+2. mizuya は承認用チャンネルに、Environment ごとに repo・workflow（run 名）・Environment・待っている job・起動元のコミット・run へのリンクと「承認」「却下」ボタンの付いたメッセージを、承認者（`DISCORD_APPROVER_USER_ID`）へのメンション付きで投稿する。起動元のコミットは run を起動したコミットで、workflow_dispatch で別の ref を出すときはデプロイする ref と違う（deploy workflow は run 名にデプロイする ref を入れる）。承認者（required reviewers）のいない待ちは投稿しない。同じ承認待ち（run と Environment の組）は 1 回だけ投稿する。投稿したことは Durable Object `ApprovalLedger` に記録し、同時に届いた配信でも投稿は 1 つになる。投稿に失敗したら記録を消し、次の配信で投稿し直す。
 3. ボタンを押すと、Discord が `POST /discord/interactions` を呼ぶ。押した人が承認者でなければ本人にだけ見える返事で断る。承認者なら deferred update で応答し、メッセージの run の URL と Environment 欄から対象を読み、同じ run の `pending_deployments` から Environment の ID を取って承認・却下を送る。決着したらタイトルを「承認」「却下」「取り消し」に、本文を「承認しました」「却下しました」「取り消されました」に変え、誰が決めたかを書いてボタンを消す。書き換えでは承認者に再び通知しない。失敗したらエラーを書き、押し直せるようボタンを残す。承認待ちがもう無ければ、押した人にだけそう伝える。
 4. GitHub の画面で承認・却下された場合は、待っていた job の `workflow_job` が `in_progress`（承認）か `completed`（却下は `failure`、run の取り消しは `cancelled`）で来る。承認用チャンネルを直近 500 件までさかのぼり、ボタンの残るメッセージを run の URL と job で探して決着済みに書き換える。対応表は持たない。
 
@@ -35,7 +35,7 @@ Working（docker01）は公開していないので、Worker が受けた仕事�
 
 - Cloudflare Worker `mizuya`。chabatake が管理する独自ドメインだけで受け、`workers.dev` は閉じている。Discord は HTTP interactions で受ける。常時接続は、Working が受け箱につなぐ WebSocket だけ。
 - ストレージは Working の受け箱（Durable Object `WorkingInbox` の SQLite）だけ。
-- `apps/worker/src/` の `index.ts` が経路の振り分け、`webhook.ts` が GitHub の webhook、`interactions.ts` が Discord のボタン、`review.ts` がメッセージの組み立てと、メッセージから対象を読む処理、`signature.ts` が署名検証、`work-events.ts` が GitHub の出来事の絞り込み、`inbox.ts` と `inbox-object.ts` と `inbox-route.ts` が Working の受け箱、`github.ts` と `discord.ts` が外部 API。
+- `apps/worker/src/` の `index.ts` が経路の振り分け、`webhook.ts` が GitHub の webhook、`interactions.ts` が Discord のボタン、`review.ts` がメッセージの組み立てと、メッセージから対象を読む処理、`signature.ts` が署名検証、`work-events.ts` が GitHub の出来事の絞り込み、`inbox.ts` と `inbox-object.ts` と `inbox-route.ts` が Working の受け箱、`approval-ledger.ts` と `approval-ledger-object.ts` が承認待ちの投稿の記録、`github.ts` と `discord.ts` が外部 API。
 
 ## 開発
 

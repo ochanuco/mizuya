@@ -29,6 +29,7 @@ function pending(...names: string[]) {
 	return names.map((name, i) => ({
 		environment: { id: i + 1, name },
 		current_user_can_approve: true,
+		reviewers: [{ type: "User", reviewer: { login: "approver" } }],
 	}));
 }
 
@@ -37,8 +38,9 @@ async function webhook(
 	event = "workflow_job",
 	signature?: string,
 	delivery = "delivery-1",
+	made?: Awaited<ReturnType<typeof makeEnv>>,
 ) {
-	const { env, inbox } = await makeEnv();
+	const { env, inbox } = made ?? (await makeEnv());
 	const body = typeof payload === "string" ? payload : JSON.stringify(payload);
 	const request = new Request("https://mizuya.example.com/github/webhook", {
 		method: "POST",
@@ -179,6 +181,58 @@ describe("POST /github/webhook", () => {
 		const { response } = await webhook(workflowJobPayload("waiting"));
 		expect(response.status).toBe(200);
 		expect(calls.map((c) => c.method)).toEqual(["GET"]);
+	});
+
+	it("承認者のいない待ちでは投稿しない", async () => {
+		const calls = services({
+			pendingDeployments: pending("production").map((d) => ({
+				...d,
+				reviewers: [],
+			})),
+		});
+		const { response } = await webhook(workflowJobPayload("waiting"));
+		expect(response.status).toBe(200);
+		expect(calls.map((c) => c.method)).toEqual(["GET"]);
+	});
+
+	it("同じ承認待ちの waiting が別の delivery で同時に届いても、投稿は 1 つ", async () => {
+		const calls = services();
+		const made = await makeEnv();
+		const payload = workflowJobPayload("waiting");
+		await Promise.all([
+			webhook(payload, "workflow_job", undefined, "delivery-1", made),
+			webhook(payload, "workflow_job", undefined, "delivery-2", made),
+		]);
+		const posts = calls.filter(
+			(c) => c.method === "POST" && c.url === MESSAGES_URL,
+		);
+		expect(posts).toHaveLength(1);
+	});
+
+	it("投稿に失敗した承認待ちは、次の配信で投稿し直す", async () => {
+		let fail = true;
+		const calls = services({
+			discordPost: () =>
+				fail
+					? new Response("unavailable", { status: 503 })
+					: (Response.json({ id: "new" }) as Response),
+		});
+		const made = await makeEnv();
+		const payload = workflowJobPayload("waiting");
+		const first = await webhook(payload, "workflow_job", undefined, "d1", made);
+		expect(first.response.status).toBe(502);
+		fail = false;
+		const second = await webhook(
+			payload,
+			"workflow_job",
+			undefined,
+			"d2",
+			made,
+		);
+		expect(second.response.status).toBe(200);
+		expect(
+			calls.filter((c) => c.method === "POST" && c.url === MESSAGES_URL),
+		).toHaveLength(2);
 	});
 
 	it("Discord への投稿に失敗したら 502 を返す", async () => {

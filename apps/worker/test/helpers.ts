@@ -44,10 +44,34 @@ export function fakeInbox(): {
 	return { namespace, puts, connects };
 }
 
+/** 承認待ちの記録の Durable Object の代わり。呼び出しは 1 つずつ終わるので、同時の配信でも取れるのは 1 つ */
+export function fakeLedger(): {
+	namespace: Bindings["APPROVAL_LEDGER"];
+	claimed: Set<string>;
+} {
+	const claimed = new Set<string>();
+	const stub = {
+		claim: async (key: string) => {
+			if (claimed.has(key)) return false;
+			claimed.add(key);
+			return true;
+		},
+		release: async (key: string) => {
+			claimed.delete(key);
+		},
+	};
+	const namespace = {
+		idFromName: (name: string) => name,
+		get: () => stub,
+	} as unknown as Bindings["APPROVAL_LEDGER"];
+	return { namespace, claimed };
+}
+
 export async function makeEnv(): Promise<{
 	env: Bindings;
 	discordKey: CryptoKeyPair;
 	inbox: ReturnType<typeof fakeInbox>;
+	ledger: ReturnType<typeof fakeLedger>;
 }> {
 	const discordKey = (await crypto.subtle.generateKey(
 		{ name: "Ed25519" },
@@ -56,11 +80,14 @@ export async function makeEnv(): Promise<{
 	)) as CryptoKeyPair;
 	const publicKey = await crypto.subtle.exportKey("raw", discordKey.publicKey);
 	const inbox = fakeInbox();
+	const ledger = fakeLedger();
 	return {
 		discordKey,
 		inbox,
+		ledger,
 		env: {
 			WORKING_INBOX: inbox.namespace,
+			APPROVAL_LEDGER: ledger.namespace,
 			WORKING_INBOX_TOKEN: "test-inbox-token",
 			GITHUB_WEBHOOK_SECRET: "test-webhook-secret",
 			GITHUB_APPROVER_TOKEN: "test-github-token",

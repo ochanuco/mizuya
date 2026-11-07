@@ -1,6 +1,7 @@
 import * as v from "valibot";
+import { approvalKey } from "./approval-ledger.ts";
 import { createMessage, editMessage, findMessages } from "./discord.ts";
-import { type Bindings, inboxOf } from "./env.ts";
+import { approvalLedgerOf, type Bindings, inboxOf } from "./env.ts";
 import { listPendingDeployments } from "./github.ts";
 import {
 	jobIdOf,
@@ -113,7 +114,9 @@ async function postWaiting(job: WorkflowJob, env: Bindings): Promise<Response> {
 		console.error("github: pending_deployments の取得に失敗", pending.error);
 		return new Response("github error", { status: 502 });
 	}
-	if (pending.value.length === 0) return new Response("nothing pending");
+	// 承認者のいない待ち（待ち時間やブランチの規則だけの Environment）は、押す人がいないので投稿しない
+	const reviewable = pending.value.filter((d) => d.reviewers.length > 0);
+	if (reviewable.length === 0) return new Response("nothing to review");
 
 	// 配信のやり直しや、同じ run で別の job が待ちに入ったときに、同じ承認待ちのボタンが二つ並ばないようにする
 	const existing = await pendingMessages(
@@ -125,10 +128,14 @@ async function postWaiting(job: WorkflowJob, env: Bindings): Promise<Response> {
 		.map((m) => targetOf(m))
 		.filter((t): t is ReviewTarget => t !== null);
 
+	const ledger = approvalLedgerOf(env);
 	let count = 0;
-	for (const deployment of pending.value) {
+	for (const deployment of reviewable) {
 		const target = { repo, runId, environment: deployment.environment.name };
 		if (posted.some((t) => sameTarget(t, target))) continue;
+		// 同時に届いた配信では、どちらも上の Discord の確認をすり抜けるので、先に取れた方だけが投稿する
+		const key = approvalKey(target);
+		if (!(await ledger.claim(key))) continue;
 		const res = await createMessage(
 			env.DISCORD_BOT_TOKEN,
 			env.DISCORD_APPROVAL_CHANNEL_ID,
@@ -145,7 +152,10 @@ async function postWaiting(job: WorkflowJob, env: Bindings): Promise<Response> {
 				job: { name: job.workflow_job.name, url: job.workflow_job.html_url },
 			}),
 		);
-		if (!res.ok) return discordError(res.error);
+		if (!res.ok) {
+			await ledger.release(key);
+			return discordError(res.error);
+		}
 		count++;
 	}
 	return new Response(`posted ${count}`);
