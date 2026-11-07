@@ -272,6 +272,7 @@ const intake = createIntake({
 	yukarinName: SPEAKER_NAME.yukarin,
 	akarin,
 	roleIds: cfg.roleIds,
+	userIds: cfg.userIds,
 	workTextChannelId: cfg.workTextChannelId,
 	workForumChannelId: cfg.workForumChannelId,
 	ownerUserIds: cfg.ownerUserIds,

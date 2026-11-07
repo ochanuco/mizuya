@@ -84,8 +84,8 @@ yunomi の gateway が仕事カテゴリの発言とボタンを `POST /events` 
 
 受付は Akarin 宛ての依頼に Akarin の席を作る。Discord には mizuya の bot 1 つで出るので、宛先は role で決める。
 
-- 依頼（仕事テキストチャンネルの発言、フォーラムの新しい投稿）で role `あかり`（`AKARIN_ROLE_ID`）がメンションされていれば Akarin の席を作る。フォーラムの新しい投稿は、それ以外なら Yukarin の席。
-- 仕事テキストチャンネルでは、role `ゆかり`（`YUKARIN_ROLE_ID`）か mizuya の bot へのメンションで Yukarin 宛てになる。`あかり` と両方なら Akarin。メンションが無ければ、返信した先が席の話し手の発言（webhook で、席の名前を名乗ったもの）ならその席宛て。それ以外は依頼とみなさない。
+- 依頼（仕事テキストチャンネルの発言、フォーラムの新しい投稿）で role `あかり`（`AKARIN_ROLE_ID`）か、あかりんの bot のユーザー（`AKARIN_USER_ID`）がメンションされていれば Akarin の席を作る。フォーラムの新しい投稿は、それ以外なら Yukarin の席。
+- 仕事テキストチャンネルでは、role `ゆかり`（`YUKARIN_ROLE_ID`）、ゆかりんの bot のユーザー（`YUKARIN_USER_ID`）、mizuya の bot のどれかへのメンションで Yukarin 宛てになる。`あかり` と両方なら Akarin。メンションが無ければ、返信した先が席の話し手の発言（webhook で、席の名前を名乗ったもの）ならその席宛て。それ以外は依頼とみなさない。
 - 投稿の担当は席を作るときに決めて `seats.json` の `partners` に残す。投稿への返事、止めた席を起こすとき、完了のあとにまた書いたときも、同じ担当が受ける。
 - 投稿・返事・状態の欄は、担当の席の話し手で書く。話し手は mizuya の application が作った webhook（チャンネルごとに 1 つ、名前 `mizuya-working`。スレッドには親のフォーラムの webhook で `thread_id` を添える）で、書くたびに席の名前（`ゆかりん` / `あかりん`）と画像（`YUKARIN_AVATAR_URL` / `AKARIN_AVATAR_URL`）を名乗る。webhook では返信の形にできないので、普通のメッセージで書く。ボタンの custom_id には `working:` を頭に付け、Worker がこれで受け箱に回す。
 - タグ・リアクション・入力中の表示・読み取りは mizuya の bot で行う。
@@ -277,6 +277,7 @@ CI の失敗、PR のレビュー、issue と PR のコメントがあると、�
 | ----------------------------------------------------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------- |
 | `DISCORD_TOKEN`                                                   | はい   | mizuya の bot トークン。Gateway、Discord REST、webhook の作成に使う                                                         |
 | `YUKARIN_ROLE_ID` / `AKARIN_ROLE_ID`                              | いいえ | 依頼の宛先の席を決める role（chabatake の `discord/chanuco` の output `working_role_ids`）                                  |
+| `YUKARIN_USER_ID` / `AKARIN_USER_ID`                              | いいえ | メンションされたらその席宛てとみなすユーザー（yunomi のゆかりん・あかりんの bot のユーザー ID）                             |
 | `YUKARIN_AVATAR_URL` / `AKARIN_AVATAR_URL`                        | いいえ | 席の話し手の画像の URL。無ければ webhook の既定の画像                                                                       |
 | `MIZUYA_INBOX_URL`                                                | いいえ | mizuya の Worker の受け箱（`wss://mizuya.chanu.co/working/inbox`）。下の 3 つとそろわなければつながず、ボタンを受け取れない |
 | `MIZUYA_INBOX_TOKEN`                                              | いいえ | 受け箱の token。Worker の `WORKING_INBOX_TOKEN` と同じ値                                                                    |

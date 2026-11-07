@@ -17,6 +17,7 @@ describe("loadConfig", () => {
 			value: {
 				discordToken: "t",
 				roleIds: { yukarin: null, akarin: null },
+				userIds: { yukarin: null, akarin: null },
 				avatarUrls: { yukarin: null, akarin: null },
 				inbox: null,
 				codexHome: "/home/w/.codex",
@@ -72,14 +73,16 @@ describe("loadConfig", () => {
 		expect(loadConfig({ ...base, ACTIVITY_LOG_TIME: "8:00" }).ok).toBe(false);
 	});
 
-	it("席の role と画像を読む", () => {
+	it("席の role、席とみなすユーザー、画像を読む", () => {
 		const r = loadConfig({
 			...base,
 			YUKARIN_ROLE_ID: "501",
 			AKARIN_ROLE_ID: "502",
+			AKARIN_USER_ID: "602",
 			AKARIN_AVATAR_URL: "https://example.com/akarin.png",
 		});
 		expect(r.ok && r.value.roleIds).toEqual({ yukarin: "501", akarin: "502" });
+		expect(r.ok && r.value.userIds).toEqual({ yukarin: null, akarin: "602" });
 		expect(r.ok && r.value.avatarUrls).toEqual({
 			yukarin: null,
 			akarin: "https://example.com/akarin.png",
