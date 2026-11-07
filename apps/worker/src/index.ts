@@ -3,6 +3,7 @@ import { handleInboxConnect } from "./inbox-route.ts";
 import { handleDiscordInteraction } from "./interactions.ts";
 import { handleGithubWebhook } from "./webhook.ts";
 
+export { ApprovalLedger } from "./approval-ledger-object.ts";
 export { WorkingInbox } from "./inbox-object.ts";
 
 export default {
