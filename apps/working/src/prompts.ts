@@ -1,4 +1,4 @@
-import type { PostedMessage } from "./discord-rest.ts";
+import { type PostedMessage, THREAD_NAME_LIMIT } from "./discord-rest.ts";
 import { formatJstForPrompt } from "./lib/core.ts";
 
 /** 席の agent に渡す仕事のしかた。人格の後ろに置く。name は会話のときに同じ記憶を読むパートナー。 */
@@ -302,3 +302,40 @@ export const loginExpiryDecision = (expiresAt: Date) => ({
 	title: "Claude CLI のログインの更新",
 	body: `Working のコンテナの Claude CLI のログインが ${formatJstForPrompt(expiresAt)} に切れます。切れると仕事フォーラムの作業と朝会が止まります。\n\nコンテナで \`claude\` を開いて \`/login\` をやり直してください（README の「Claude CLI のログイン」）。`,
 });
+
+/** label を付けた人が書いた issue。席が読む材料。 */
+export type PickedIssue = {
+	repo: string;
+	number: number;
+	title: string;
+	url: string;
+	body: string;
+};
+
+export const issueThreadName = (issue: PickedIssue) => {
+	const name = `${issue.repo.split("/").pop() ?? issue.repo}#${issue.number} ${issue.title}`;
+	return name.length > THREAD_NAME_LIMIT
+		? `${name.slice(0, THREAD_NAME_LIMIT - 1)}…`
+		: name;
+};
+
+export const issuePostBody = (issue: PickedIssue) =>
+	`GitHub の issue から拾った仕事\n\n${issue.repo}#${issue.number} ${issue.title}\n${issue.url}${issue.body.trim() === "" ? "" : `\n\n${quote(issue.body, 1500)}`}`;
+
+export const issuePrompt = (input: { now: Date; issue: PickedIssue }) => {
+	const { issue } = input;
+	const ref = `${issue.repo}#${issue.number}`;
+	return `${clock(input.now)}
+GitHub の issue に Working の label が付いていたので拾い、この投稿を立てた。この issue の作業をして、この投稿で返事をする。
+
+issue: ${ref} ${issue.title}
+${issue.url}
+
+- 本文の後のやりとりは \`gh issue view ${issue.number} --repo ${issue.repo} --comments\` で読む。
+- 直す PR の本文には \`Closes ${ref}\` を書き、issue はマージで閉じる。
+- label（working、working-yukarin、working-akarin、working-picked）は付け外ししない。
+- 読んでも分からないことは、この投稿で聞く。
+
+本文:
+${issue.body.trim() === "" ? "（なし）" : issue.body}`;
+};

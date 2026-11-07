@@ -29,6 +29,7 @@ import type { Ledger, Pending } from "./guard/ledger.ts";
 import type { Operation } from "./guard/operation.ts";
 import { createKeyedQueue } from "./keyed-queue.ts";
 import { PARTNER_IDS, type PartnerId } from "./lib/core.ts";
+import { err, ok, type Result } from "./lib/result.ts";
 import type { Logger } from "./logger.ts";
 import type { Orca, OrcaError, SeatAgent, SeatMessage } from "./orca.ts";
 import {
@@ -37,7 +38,11 @@ import {
 	forumPostBody,
 	forumStarterPrompt,
 	historyPrompt,
+	issuePostBody,
+	issuePrompt,
+	issueThreadName,
 	messageLink,
+	type PickedIssue,
 	replyPrompt,
 	requestPrompt,
 	restartNote,
@@ -237,6 +242,11 @@ export type Intake = {
 		kind?: RunKind,
 		partner?: PartnerId,
 	) => Promise<string>;
+	/** label の付いた GitHub の issue から投稿を立て、partner の席で作業させる。 */
+	startFromIssue: (
+		issue: PickedIssue,
+		partner: PartnerId,
+	) => Promise<Result<{ threadId: string }, { type: string }>>;
 	/** 決めてほしいまま時間がたった席の Claude を止める。 */
 	sleepIdle: () => Promise<void>;
 	/** 起動時に、対応表と Orca の席を突き合わせる。 */
@@ -1414,6 +1424,42 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		});
 	};
 
+	const startFromIssue = async (
+		issue: PickedIssue,
+		partner: PartnerId,
+	): Promise<Result<{ threadId: string }, { type: string }>> => {
+		const tags = await statusTags();
+		const working = tags.get("作業中");
+		const post = await speaker(partner).discord.createForumPost(
+			deps.workForumChannelId,
+			{
+				name: issueThreadName(issue),
+				content: issuePostBody(issue),
+				tagIds: working ? [working] : [],
+			},
+		);
+		if (!post.ok) {
+			log.error("forum post failed", {
+				issue: `${issue.repo}#${issue.number}`,
+				error: post.error.type,
+			});
+			return err({ type: post.error.type });
+		}
+		const { threadId } = post.value;
+		await deps.seats.assign(threadId, partner);
+		parentOf.set(threadId, deps.workForumChannelId);
+		log.info("forum post created", {
+			issue: `${issue.repo}#${issue.number}`,
+			thread_id: threadId,
+			partner,
+		});
+		await queue.run(threadId, async () => {
+			if (seats.get(threadId) !== null) return;
+			await openSeat(newSeat(threadId), issuePrompt({ now: now(), issue }));
+		});
+		return ok({ threadId });
+	};
+
 	/** 担当と違う相手の `/ai` を投稿の中で打たれた。 */
 	const onOtherPartnerCommand = async (
 		threadId: string,
@@ -1841,6 +1887,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			if (msg.type === "question" || msg.type === "worker_done")
 				deps.seatReplied?.();
 		},
+		startFromIssue,
 		startStandup: async (spec, kind = "standup", partner = "yukarin") => {
 			const threadId = `${kind}-${randomUUID()}`;
 			if (partner !== "yukarin") await deps.seats.assign(threadId, partner);

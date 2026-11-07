@@ -1906,3 +1906,38 @@ describe("/ai コマンド", () => {
 		expect(starts.at(-1)?.model).toBe("opus");
 	});
 });
+
+describe("GitHub の issue", () => {
+	const ISSUE = {
+		repo: "example/repo",
+		number: 7,
+		title: "設定の読み込みが落ちる",
+		url: "https://github.com/example/repo/issues/7",
+		body: "起動すると落ちる",
+	};
+
+	it("issue から作業中の投稿を立て、指定した席で作業を始める", async () => {
+		const s = await setup({ akarin: true });
+		const r = await s.intake.startFromIssue(ISSUE, "akarin");
+		expect(r).toEqual({ ok: true, value: { threadId: "thread1" } });
+		expect(s.d.posts[0]).toMatchObject({
+			name: "repo#7 設定の読み込みが落ちる",
+			tagIds: ["tag-working"],
+		});
+		expect(s.d.posts[0]?.content).toContain(ISSUE.url);
+		expect(s.seats.partnerOf("thread1")).toBe("akarin");
+		const [start] = s.o.opsOf("startSeat") as { spec: string; agent: string }[];
+		expect(start?.agent).toBe("codex");
+		expect(start?.spec).toContain("Closes example/repo#7");
+		expect(start?.spec).toContain("起動すると落ちる");
+		expect(s.writes.yukarin).toEqual([]);
+	});
+
+	it("席が上限なら、投稿を立てて順番待ちにする", async () => {
+		const s = await setup({ seatLimit: 0 });
+		const r = await s.intake.startFromIssue(ISSUE, "yukarin");
+		expect(r.ok).toBe(true);
+		expect(s.seats.get("thread1")?.status).toBe("queued");
+		expect(s.o.opsOf("startSeat")).toEqual([]);
+	});
+});
