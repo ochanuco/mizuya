@@ -23,6 +23,8 @@ describe("classifyBash: hook では止めない（auto モードに任せる）"
 		'orca orchestration send --type worker_done --body "値を出さずに確かめるなら test -n \\"\\$GH_TOKEN\\" で"',
 		"echo 'echo $GH_TOKEN は使わない'",
 		"cat > notes.md <<'EOF'\necho $GH_TOKEN\nEOF",
+		"orca orchestration send --type worker_done --body $'参考: [仕様](https://www.amd.com/en/products/processors/laptop/ryzen.html)'",
+		"curl -fsSL https://example.com/docs/environment.html",
 	])("%s", (cmd) => {
 		expect(classifyBash(cmd, ctx)).toBeNull();
 	});
@@ -63,6 +65,9 @@ describe("classifyBash: 秘密情報や許可の記録の場所に触るのを�
 		"rm -rf /home/worker/state",
 		"cp x /etc/claude-code/managed-settings.json",
 		"cat .git-credentials",
+		"cat /proc/1/cmdline",
+		"ls /proc",
+		"cat '/home/worker/.ssh/id_ed25519'",
 	])("%s", (cmd) => {
 		expect(classifyBash(cmd, ctx)).toBe(
 			"秘密情報や設定・許可の記録がある場所に触る",
