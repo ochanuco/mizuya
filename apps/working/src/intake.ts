@@ -1404,7 +1404,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			if (p.author.id === deps.botUserId) return;
 			// 持ち主以外の人やほかの bot の発言で席を動かさない
 			if (p.author.is_bot || !deps.ownerUserIds.has(p.author.id)) {
-				log.debug("message from non-owner ignored", {
+				log.info("message from non-owner ignored", {
 					message_id: p.message_id,
 					author_id: p.author.id,
 				});
