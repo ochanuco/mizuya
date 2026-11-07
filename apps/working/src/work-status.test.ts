@@ -13,6 +13,13 @@ describe("takeStatus", () => {
 		});
 	});
 
+	it("改行が \\n の 2 文字で書かれていても、行末の状態を読む", () => {
+		expect(takeStatus("見張りを登録しました。\\n状態: 見張り中")).toEqual({
+			body: "見張りを登録しました。",
+			status: "見張り中",
+		});
+	});
+
 	it("書き忘れや知らない状態は、本文をそのまま残して決めてほしいにする", () => {
 		expect(takeStatus("返事だけ")).toEqual({
 			body: "返事だけ",

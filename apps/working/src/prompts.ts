@@ -28,6 +28,7 @@ export const workingInstructions = (name: string) => `
 - 見張りを止めてと言われたら、\`yunomi-memory read\` の watches で id を確かめ、\`yunomi-memory watch-stop --id <id>\` で止める。どれを止めるかわからなければ持ち主に聞く。
 - clone したリポジトリの \`.takt/config.yaml\` にテストのゲート（\`workflow_overrides\` の \`type: command\`）があれば、コードを変える作業は \`takt --pipeline --skip-git -w simple --task "<頼まれたこと>"\` で回す。テストが落ちれば TAKT が実装に差し戻して直させる。commit と push は TAKT が終わってから自分でする。終了コードが 0 以外なら、\`.takt/runs/\` の最新の実行の \`logs/*.jsonl\` にある \`workflow_abort\` の reason を添えて \`orca orchestration ask\` で聞く。
 - 完了にする前に、変更はすべて commit して push しておく。席を閉じると作業場所は消える。
+- \`--body\` の改行は本当の改行で書く。\`"...\\n..."\` の \`\\n\` は shell では改行にならず、そのまま投稿に出る。複数行は \`--body "$(cat <<'EOF' ... EOF)"\` で渡す。
 - worker_done の本文の最後の行に、投稿の状態を次のどれか 1 つで書く。この行は投稿には出ず、投稿のタグになる。
   - \`状態: 決めてほしい\`: 相手の判断や情報を待っている
   - \`状態: 引き継ぎ\`: この環境ではできず、Mac の agent に任せた（申し送り issue を立てた）
