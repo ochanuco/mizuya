@@ -187,7 +187,7 @@ yunomi-memory write --kind goal --summary "<1行の目標>"     # 持ち主の�
 yunomi-memory close --id <目標の id> --status achieved      # 目標を閉じる（やめたら dropped）
 yunomi-memory watch-add --query "<何を>" --source "<どこを>" --interval-hours 6 --until "2026-12-31T23:59:00+09:00"  # 見張りを足す。id と登録した内容を出す
 yunomi-memory watch-stop --id <見張りの id>                  # 見張りを止める
-yunomi-memory watch-checked --id <見張りの id> --seen "<key>"  # 見張りを調べ終えた。--seen は知らせたもの（0 件以上）
+yunomi-memory watch-checked --id <見張りの id> --seen "<key>" --partner <パートナー>  # 見張りを調べ終えた。--seen は知らせたもの（0 件以上）。--partner は見張りを持つパートナー（省くと YUNOMI_PARTNER か既定）
 ```
 
 - 呼ぶ先は yunomi の Worker の `/v1/partners/<パートナー>/working/memory`。パートナーは環境変数 `YUNOMI_PARTNER`（Akarin の席の Codex がコマンドに渡す）、無ければ `yukarin`。受付が完了のときに残す 1 行も、担当のパートナーの記憶に書く。記憶の持ち主は `WORKING_OWNER_DISCORD_USER_IDS` の先頭の人。
@@ -223,7 +223,8 @@ Renovate の PR は持ち主の許しで、朝会と見回りの席が片付け�
 - 席は持ち主に確認せず、WebSearch と WebFetch で調べる（auto モードが通す読み取り）。URL の場所は検索よりそのページを直接読む。
 - 条件に合うもののうち `seen` に無いものだけを新着とし、`worker_done` の JSON の `notices` に見張りの id と 1 行の本文で返す。新着が無ければ何も書かない。
 - 受付は新着を書く先ごとにまとめて 1 件のメッセージで書く。席が仕事の投稿で足した見張りは、`yunomi-memory watch-add` が席の作業場所から読んだ投稿（記憶の `notify_thread_id`）に書く。会話で頼まれた見張りと、受付が再起動して書く先を忘れた回は `WORK_TEXT_CHANNEL_ID` のチャンネルに書く。書けなければ 10 秒後と 60 秒後にやり直す。
-- 席は見張りを 1 件調べ終えるたびに `yunomi-memory watch-checked` で知らせたものの key を残す。残さなかった見張りは `due` のままなので、次の回で調べ直す。
+- 朝会と見回りは Yukarin と Akarin の両方の記憶から時間が来た見張りを読み、見張りごとに持ち主のパートナー（`partner`）を付けて席に渡す。
+- 席は見張りを 1 件調べ終えるたびに `yunomi-memory watch-checked --partner <partner>` で知らせたものの key を残す。残さなかった見張りは `due` のままなので、次の回で調べ直す。
 
 朝会と見回りの席には、目標に効く提案があれば決めてほしいこととして出すよう頼んである。材料に根拠があるときだけで、無い回は出さない。
 
