@@ -26,6 +26,7 @@ import { guardDirOf } from "./guard/env.ts";
 import { createLedger } from "./guard/ledger.ts";
 import { startInbox } from "./inbox.ts";
 import { agentOf, createIntake, type SeatPartner } from "./intake.ts";
+import { createGhIssueTracker } from "./issue-close.ts";
 import { pickupIssues, startIssuePickupTimer } from "./issue-pickup.ts";
 import { PARTNER_IDS } from "./lib/core.ts";
 import { createLogger } from "./logger.ts";
@@ -315,6 +316,8 @@ const intake = createIntake({
 	workTextChannelId: cfg.workTextChannelId,
 	workForumChannelId: cfg.workForumChannelId,
 	ownerUserIds: cfg.ownerUserIds,
+	notifyUserId: cfg.ownerDiscordUserId,
+	issues: createGhIssueTracker({ exec: spawnExec, env, cwd: cfg.workDir }),
 	seatLimit: cfg.seatLimit,
 	sleepAfterMs: cfg.seatSleepAfterMs,
 	logger,

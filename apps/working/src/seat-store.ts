@@ -109,7 +109,14 @@ const fileSchema = v.object({
 	seats: v.record(v.string(), seatSchema),
 	partners: v.optional(v.record(v.string(), v.picklist(PARTNER_IDS)), {}),
 	models: v.optional(v.record(v.string(), v.string()), {}),
+	issues: v.optional(
+		v.record(v.string(), v.object({ repo: v.string(), number: v.number() })),
+		{},
+	),
 });
+
+/** 投稿の元になった GitHub の issue。 */
+export type IssueRef = { repo: string; number: number };
 
 export type SeatStore = {
 	get: (threadId: string) => Seat | null;
@@ -125,6 +132,9 @@ export type SeatStore = {
 	/** 投稿で選ばれたモデル。席を閉じたあとも残し、同じ投稿で席を開き直すときも同じモデルで動かす。 */
 	modelOf: (threadId: string) => string | null;
 	setModel: (threadId: string, model: string) => Promise<void>;
+	/** 投稿の元になった issue。席を閉じたあとも残し、完了の後に issue を閉じるボタンが引く。 */
+	issueOf: (threadId: string) => IssueRef | null;
+	setIssue: (threadId: string, issue: IssueRef) => Promise<void>;
 };
 
 export const newSeat = (threadId: string, standup = false): Seat => ({
@@ -164,6 +174,7 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 	const seats = new Map<string, Seat>();
 	const partners = new Map<string, PartnerId>();
 	const models = new Map<string, string>();
+	const issues = new Map<string, IssueRef>();
 	let orca: { runId: string | null; reception: string | null } = {
 		runId: null,
 		reception: null,
@@ -187,6 +198,9 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 		}
 		for (const [id, m] of Object.entries(parsed.output.models)) {
 			models.set(id, m);
+		}
+		for (const [id, i] of Object.entries(parsed.output.issues)) {
+			issues.set(id, i);
 		}
 		for (const [id, s] of Object.entries(parsed.output.seats)) {
 			seats.set(id, {
@@ -265,6 +279,7 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 			),
 			partners: Object.fromEntries(partners),
 			models: Object.fromEntries(models),
+			issues: Object.fromEntries(issues),
 		};
 		// 書きかけで落ちても前の内容が残るよう、別名に書いてから置き換える
 		writing = writing.then(async () => {
@@ -310,6 +325,11 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 		setModel: (id, model) => {
 			if (models.get(id) === model) return Promise.resolve();
 			models.set(id, model);
+			return flush();
+		},
+		issueOf: (id) => issues.get(id) ?? null,
+		setIssue: (id, issue) => {
+			issues.set(id, issue);
 			return flush();
 		},
 	};

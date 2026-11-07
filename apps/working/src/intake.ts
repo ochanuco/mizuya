@@ -27,6 +27,14 @@ import { dismissedText, isDismissButton } from "./dismiss.ts";
 import { seatNameOf } from "./guard/env.ts";
 import type { Ledger, Pending } from "./guard/ledger.ts";
 import type { Operation } from "./guard/operation.ts";
+import {
+	CLOSE_ISSUE_BUTTON,
+	type IssueTracker,
+	isCloseIssueButton,
+	issueClosedText,
+	issueDoneText,
+	issueRefText,
+} from "./issue-close.ts";
 import { createKeyedQueue } from "./keyed-queue.ts";
 import { PARTNER_IDS, type PartnerId } from "./lib/core.ts";
 import { err, ok, type Result } from "./lib/result.ts";
@@ -128,6 +136,10 @@ export type IntakeDeps = {
 	ownerUserIds: ReadonlySet<string>;
 	workTextChannelId: string;
 	workForumChannelId: string;
+	/** 持ち主に知らせるときにメンションする人。朝会の投稿と同じ人。 */
+	notifyUserId?: string | null;
+	/** issue から立てた投稿の完了の後に、issue の状態を引いて閉じる口。無ければ閉じるボタンを出さない。 */
+	issues?: IssueTracker | null;
 	/** 同時に Claude を動かしておく席の上限。止めた席と順番待ちは数えない。 */
 	seatLimit: number;
 	/** 決めてほしいままこれだけたった席は Claude を止める。 */
@@ -1139,6 +1151,76 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		log.info("seat asked", { thread_id: threadId, blocked: blocked.length });
 	};
 
+	/**
+	 * issue から立てた投稿が完了したら、持ち主にメンションして知らせる。issue が開いていれば閉じるボタンを付ける。
+	 * 閉じるのは持ち主が確かめてからにするので、席には閉じさせない。
+	 */
+	const announceIssueDone = async (threadId: string) => {
+		const issue = deps.seats.issueOf(threadId);
+		if (issue === null) return;
+		const owner = deps.notifyUserId ?? null;
+		const state = deps.issues ? await deps.issues.isOpen(issue) : null;
+		if (state && !state.ok) {
+			log.warn("issue state lookup failed", {
+				issue: issueRefText(issue),
+				reason: state.error.reason,
+			});
+		}
+		const open = state?.ok ? state.value : null;
+		const sent = await deps.system.send(
+			threadId,
+			issueDoneText(owner, issue, open),
+			undefined,
+			[],
+			deps.issues && open !== false ? [CLOSE_ISSUE_BUTTON] : [],
+			owner ? [owner] : [],
+		);
+		if (!sent.ok) {
+			log.error("issue done notice failed", {
+				thread_id: threadId,
+				error: sent.error.type,
+			});
+		}
+	};
+
+	const closeIssuePressed = async (
+		threadId: string,
+		p: ButtonPressEvent["payload"],
+	) => {
+		const issue = deps.seats.issueOf(threadId);
+		if (issue === null || !deps.issues) return;
+		const closed = await deps.issues.close(issue);
+		if (!closed.ok) {
+			log.error("issue close failed", {
+				issue: issueRefText(issue),
+				reason: closed.error.reason,
+			});
+			await deps.system.send(
+				threadId,
+				`issue ${issueRefText(issue)} を閉じられませんでした。少し置いてから、もう一度押してください。`,
+			);
+			return;
+		}
+		log.info("issue closed", {
+			issue: issueRefText(issue),
+			thread_id: threadId,
+		});
+		const current = await deps.system.getMessage(threadId, p.message_id);
+		const edited = current.ok
+			? await deps.system.editMessage(
+					threadId,
+					p.message_id,
+					issueClosedText(current.value.content),
+				)
+			: current;
+		if (!edited.ok) {
+			log.warn("close issue button removal failed", {
+				thread_id: threadId,
+				error: edited.error.type,
+			});
+		}
+	};
+
 	const onDone = async (seat: Seat, msg: SeatMessage) => {
 		const threadId = seat.threadId;
 		expireGrant(threadId);
@@ -1192,6 +1274,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			title,
 		);
 		await closeSeat(seat);
+		if (taken.status === "完了") await announceIssueDone(threadId);
 		// 席は閉じたが、選ばれたモデルは投稿に残り、次に開く席がそれで動く
 		const chosen = deps.seats.modelOf(threadId);
 		if (seat.modelChange && chosen !== null && chosen !== seat.model) {
@@ -1447,6 +1530,10 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		}
 		const { threadId } = post.value;
 		await deps.seats.assign(threadId, partner);
+		await deps.seats.setIssue(threadId, {
+			repo: issue.repo,
+			number: issue.number,
+		});
 		parentOf.set(threadId, deps.workForumChannelId);
 		log.info("forum post created", {
 			issue: `${issue.repo}#${issue.number}`,
@@ -1814,7 +1901,8 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			const p = envelope.payload;
 			const answer = approvalAnswerOf(p.custom_id);
 			const dismissing = isDismissButton(p.custom_id);
-			if (answer === null && !dismissing) return;
+			const closingIssue = isCloseIssueButton(p.custom_id);
+			if (answer === null && !dismissing && !closingIssue) return;
 			// 持ち主以外が押しても何も起きない
 			if (p.user.is_bot || !deps.ownerUserIds.has(p.user.id)) {
 				log.debug("button from non-owner ignored", {
@@ -1824,6 +1912,10 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				return;
 			}
 			const threadId = p.channel_id;
+			if (closingIssue) {
+				await queue.run(threadId, () => closeIssuePressed(threadId, p));
+				return;
+			}
 			if (answer === null) {
 				await queue.run(threadId, () => dismissPressed(threadId, p));
 				return;
