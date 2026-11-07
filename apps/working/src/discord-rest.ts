@@ -115,7 +115,8 @@ export type DiscordApi = {
 		},
 	) => Promise<Result<{ threadId: string }, DomainError>>;
 	/**
-	 * 上限を超える本文は分けて送る。replyTo は最初の 1 件だけに、files と buttons は最後の 1 件だけに付ける。
+	 * 上限を超える本文は分けて送る。replyTo と notify は最初の 1 件だけに、files と buttons は最後の 1 件だけに付ける。
+	 * notify は本文でメンションした人のうち、通知してよい人。ほかのメンションは通知しない。
 	 * 送ったメッセージの ID を順に返す。
 	 */
 	send: (
@@ -124,6 +125,7 @@ export type DiscordApi = {
 		replyTo?: string,
 		files?: readonly Attachment[],
 		buttons?: readonly Button[],
+		notify?: readonly string[],
 	) => Promise<Result<{ messageIds: string[] }, DomainError>>;
 	setTags: (
 		threadId: string,
@@ -351,7 +353,14 @@ export const createDiscordRest = (opts: DiscordRestOptions): DiscordApi => {
 			);
 			return r.ok ? ok({ threadId: r.value.id }) : r;
 		},
-		send: async (channelId, content, replyTo, files = [], buttons = []) => {
+		send: async (
+			channelId,
+			content,
+			replyTo,
+			files = [],
+			buttons = [],
+			notify = [],
+		) => {
 			const split = splitMessage(content);
 			const chunks = split.length === 0 && files.length > 0 ? [""] : split;
 			const messageIds: string[] = [];
@@ -359,7 +368,10 @@ export const createDiscordRest = (opts: DiscordRestOptions): DiscordApi => {
 				const last = i === chunks.length - 1;
 				const payload = {
 					content: chunk,
-					allowed_mentions: noMentions,
+					allowed_mentions:
+						i === 0 && notify.length > 0
+							? { parse: [], users: [...notify] }
+							: noMentions,
 					...(last && buttons.length > 0
 						? { components: toComponents(buttons) }
 						: {}),
