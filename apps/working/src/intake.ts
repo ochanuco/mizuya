@@ -1136,12 +1136,14 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		const working = tags.get("作業中");
 		const post = await bot.createForumPost(deps.workForumChannelId, {
 			name: title,
+			// 依頼者に通知が届くよう、最初の発言の名前をメンションにする
 			content: forumPostBody({
-				authorName: p.author.display_name,
+				authorName: `<@${p.author.id}>`,
 				content: p.content,
 				link,
 			}),
 			tagIds: working ? [working] : [],
+			notify: [p.author.id],
 		});
 		if (!post.ok) {
 			log.error("forum post failed", {

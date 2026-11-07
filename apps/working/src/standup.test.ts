@@ -17,6 +17,7 @@ import {
 	FORUM,
 	fakeDiscord,
 	memoryApprovals,
+	OWNER,
 	TEXT,
 	tempDir,
 	tempLedger,
@@ -85,6 +86,7 @@ const setup = () => {
 	const deps = {
 		discord: discord.api,
 		system: system.api,
+		ownerUserId: OWNER,
 		approvals,
 		ledger,
 		workForumChannelId: FORUM,
@@ -368,6 +370,8 @@ describe("finishStandup", () => {
 		expect(t.discord.posts[0]?.content).toContain("本文1");
 		expect(t.discord.posts[0]?.content).toContain("2026-11-05 の朝会");
 		expect(t.discord.posts[0]?.buttons).toBeUndefined();
+		expect(t.discord.posts[0]?.content.startsWith(`<@${OWNER}> `)).toBe(true);
+		expect(t.discord.posts[0]?.notify).toEqual([OWNER]);
 		expect(t.system.sent[0]).toMatchObject({
 			channelId: "thread1",
 			buttons: ["thread:dismiss"],

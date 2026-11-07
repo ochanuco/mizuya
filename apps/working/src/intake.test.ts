@@ -185,6 +185,15 @@ const openPost = async (
 };
 
 describe("新しい投稿", () => {
+	it("仕事チャンネルの依頼から立てた投稿は、最初の発言で依頼者にメンションして通知する", async () => {
+		const s = await setup();
+		await s.intake.handle(envelope({}));
+		expect(s.d.posts[0]?.content.startsWith(`<@${OWNER}> さんからの依頼`)).toBe(
+			true,
+		);
+		expect(s.d.posts[0]?.notify).toEqual([OWNER]);
+	});
+
 	it("フォーラムの投稿への最初の返事でだけ、依頼者にメンションして通知する", async () => {
 		const s = await setup();
 		const seat = await openPost(s);

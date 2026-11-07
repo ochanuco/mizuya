@@ -94,6 +94,8 @@ export type StandupDeps = {
 	discord: DiscordApi;
 	/** mizuya の bot。投稿に許可と不要のボタンを出す。 */
 	system: DiscordApi;
+	/** 投稿で判断を待つ持ち主。投稿の最初の発言でメンションして通知する。 */
+	ownerUserId: string;
 	approvals: ApprovalStore;
 	ledger: Ledger;
 	workForumChannelId: string;
@@ -156,8 +158,9 @@ export const postDecisions = async (
 			deps.workForumChannelId,
 			{
 				name: d.title,
-				content: `${d.body}${standupPostFooter(from)}`,
+				content: `<@${deps.ownerUserId}> ${d.body}${standupPostFooter(from)}`,
 				tagIds: tagId ? [tagId] : [],
+				notify: [deps.ownerUserId],
 			},
 		);
 		if (!created.ok) {
