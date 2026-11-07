@@ -28,6 +28,7 @@ import { ok, type PartnerId } from "./lib/core.ts";
 import { silentLogger } from "./logger.ts";
 import { openSeatStore } from "./seat-store.ts";
 import {
+	aiCommand,
 	BOT,
 	envelope,
 	FORUM,
@@ -1568,5 +1569,265 @@ describe("不要のボタン", () => {
 			}),
 		);
 		expect(s.d.sent.some((m) => m.buttons !== undefined)).toBe(false);
+	});
+});
+
+describe("/ai コマンド", () => {
+	const request = (
+		agent: "claude" | "codex",
+		model: string,
+		content = "請求書を整理して\n先月分も",
+	) => aiCommand({ type: "request", agent, model, content });
+	const change = (threadId: string, agent: "claude" | "codex", model: string) =>
+		aiCommand({ type: "model", agent, model, channelId: threadId });
+	const replyOf = (
+		s: Awaited<ReturnType<typeof setup>>,
+		e: ReturnType<typeof aiCommand>,
+	) => s.sys.interactionReplies.get(e.payload.token);
+
+	/** 席を決めてほしい（手を止めた）ところまで進める。 */
+	const pause = async (
+		s: Awaited<ReturnType<typeof setup>>,
+		dispatchId: string | null,
+	) => {
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "worker_done",
+				dispatchId,
+				body: "A と B のどちらにしますか\n状態: 決めてほしい",
+			}),
+		);
+	};
+
+	it("投稿の外の依頼は、要約した件名と状態・モデルのタグで投稿を立て、そのモデルで席を開いて本人への返事にリンクを書く", async () => {
+		const s = await setup();
+		const e = request("claude", "sonnet");
+		await s.intake.command(e);
+		expect(s.d.posts).toEqual([
+			{
+				name: "請求書の整理",
+				content: `<@${OWNER}> さんからの依頼\n\n> 請求書を整理して\n> 先月分も`,
+				tagIds: ["tag-working", "tag-sonnet"],
+				notify: [OWNER],
+			},
+		]);
+		expect(replyOf(s, e)).toBe(
+			"フォーラムに立てました → https://discord.com/channels/g/thread1",
+		);
+		expect(s.seats.partnerOf("thread1")).toBe("yukarin");
+		const [start] = s.o.opsOf("startSeat") as {
+			agent: string;
+			model: string | null;
+			spec: string;
+		}[];
+		expect(start).toMatchObject({ agent: "claude", model: "sonnet" });
+		expect(start?.spec).toContain("ちゃぬ さんから依頼があり");
+		expect(start?.spec).not.toContain("元のメッセージ");
+		// チャンネルにはメッセージも受付の絵文字も残さない
+		expect(s.d.sentTo(TEXT)).toEqual([]);
+		expect(s.writes.yukarin.some((w) => w.startsWith("addReaction"))).toBe(
+			false,
+		);
+	});
+
+	it("選んだモデルは、止めた席を起こすときにも渡す", async () => {
+		const s = await setup();
+		await s.intake.command(request("claude", "opus"));
+		const seat = s.seats.get("thread1");
+		await pause(s, seat?.dispatchId ?? null);
+		s.advance(3 * 60 * 60_000);
+		await s.intake.sleepIdle();
+		await s.intake.handle(say("thread1", "A で"));
+		const [resume] = s.o.opsOf("resumeSeat") as { model: string | null }[];
+		expect(resume?.model).toBe("opus");
+	});
+
+	it("メンションで立てた投稿の席は、モデルを渡さない", async () => {
+		const s = await setup();
+		await s.intake.handle(envelope({}));
+		const [start] = s.o.opsOf("startSeat") as { model: string | null }[];
+		expect(start?.model).toBeNull();
+	});
+
+	it("Codex の依頼は Akarin が受け、Codex の席をそのモデルで開く", async () => {
+		const s = await setup({ akarin: true });
+		await s.intake.command(request("codex", "terra"));
+		expect(s.seats.partnerOf("thread1")).toBe("akarin");
+		const [start] = s.o.opsOf("startSeat") as {
+			agent: string;
+			model: string;
+		}[];
+		expect(start).toMatchObject({ agent: "codex", model: "terra" });
+		expect(s.d.posts[0]?.tagIds).toEqual(["tag-working", "tag-terra"]);
+	});
+
+	it("Akarin の席が無ければ、Codex の依頼は投稿を立てずに断る", async () => {
+		const s = await setup();
+		const e = request("codex", "terra");
+		await s.intake.command(e);
+		expect(s.d.posts).toEqual([]);
+		expect(replyOf(s, e)).toBe("あかりちゃんの席はいま開いていません。");
+	});
+
+	it("持ち主以外のコマンドは断り、何もしない", async () => {
+		const s = await setup();
+		const e = aiCommand({
+			type: "request",
+			agent: "claude",
+			model: "opus",
+			content: "依頼",
+			userId: "stranger",
+		});
+		await s.intake.command(e);
+		expect(s.d.posts).toEqual([]);
+		expect(replyOf(s, e)).toBe("このコマンドは持ち主だけが使えます。");
+	});
+
+	it("仕事フォーラムの外のスレッドでは、モデルを変えずに断る", async () => {
+		const s = await setup();
+		s.d.channels.set("elsewhere", {
+			id: "elsewhere",
+			name: "雑談",
+			parentId: TEXT,
+			appliedTagIds: [],
+			availableTags: [],
+		});
+		const e = change("elsewhere", "claude", "opus");
+		await s.intake.command(e);
+		expect(s.seats.modelOf("elsewhere")).toBeNull();
+		expect(replyOf(s, e)).toContain("仕事フォーラムの投稿の中で");
+	});
+
+	it("担当と違う相手のコマンドは、本人にだけ見える返事で断る", async () => {
+		const s = await setup({ akarin: true });
+		await openPost(s);
+		const e = change("p1", "codex", "sol");
+		await s.intake.command(e);
+		expect(replyOf(s, e)).toBe(
+			"この投稿はゆかりさんが担当しています。モデルは `/ai claude …` で変えられます。",
+		);
+		expect(s.seats.modelOf("p1")).toBeNull();
+		expect(s.o.opsOf("switchModel")).toEqual([]);
+	});
+
+	it("手を止めた Claude の席は、端末に /model を送ってすぐ切り替え、投稿に残してモデルのタグを差し替える", async () => {
+		const s = await setup();
+		const seat = await openPost(s);
+		await pause(s, seat.dispatchId);
+		const e = change("p1", "claude", "haiku");
+		await s.intake.command(e);
+		expect(s.o.opsOf("switchModel")).toEqual([
+			{ terminal: seat.terminal, model: "haiku" },
+		]);
+		expect(replyOf(s, e)).toBe("Haiku に切り替えました。");
+		expect(s.sys.sentTo("p1").at(-1)).toBe(
+			"ちゃぬ がモデルを 既定のモデル → Haiku に変えました",
+		);
+		expect(s.seats.get("p1")?.model).toBe("haiku");
+		// モデルのタグを足しても状態のタグは残る
+		expect(s.d.tagsOf("p1")).toEqual(["tag-decide", "tag-haiku"]);
+
+		const again = change("p1", "claude", "opus");
+		await s.intake.command(again);
+		expect(s.sys.sentTo("p1").at(-1)).toBe(
+			"ちゃぬ がモデルを Haiku → Opus に変えました",
+		);
+		expect(s.d.tagsOf("p1")).toEqual(["tag-decide", "tag-opus"]);
+
+		// 状態のタグを差し替えてもモデルのタグは残る
+		await s.intake.handle(say("p1", "A で"));
+		expect(s.d.tagsOf("p1")).toEqual(["tag-opus", "tag-working"]);
+	});
+
+	it("作業中の席は手が止まるまで待ち、止まったら切り替える", async () => {
+		const s = await setup();
+		const seat = await openPost(s);
+		const e = change("p1", "claude", "sonnet");
+		await s.intake.command(e);
+		expect(replyOf(s, e)).toBe("今の手が止まったら Sonnet に切り替えます。");
+		expect(s.o.opsOf("switchModel")).toEqual([]);
+		expect(s.sys.sentTo("p1")).not.toContain(
+			"ちゃぬ がモデルを 既定のモデル → Sonnet に変えました",
+		);
+
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "question",
+				dispatchId: seat.dispatchId,
+				body: "どちらにしますか",
+			}),
+		);
+		expect(s.o.opsOf("switchModel")).toEqual([
+			{ terminal: seat.terminal, model: "sonnet" },
+		]);
+		expect(s.sys.sentTo("p1").at(-1)).toBe(
+			"ちゃぬ がモデルを 既定のモデル → Sonnet に変えました",
+		);
+		expect(s.seats.get("p1")).toMatchObject({
+			status: "asking",
+			model: "sonnet",
+			modelChange: null,
+		});
+	});
+
+	it("作業中に元のモデルを選び直したら、切り替えを取りやめる", async () => {
+		const s = await setup();
+		await s.intake.command(request("claude", "opus"));
+		const seat = s.seats.get("thread1");
+		await s.intake.command(change("thread1", "claude", "sonnet"));
+		const back = change("thread1", "claude", "opus");
+		await s.intake.command(back);
+		expect(replyOf(s, back)).toBe("すでに Opus で動いています。");
+		await pause(s, seat?.dispatchId ?? null);
+		expect(s.o.opsOf("switchModel")).toEqual([]);
+		expect(s.seats.get("thread1")?.model).toBe("opus");
+	});
+
+	it("手を止めた Codex の席は止め、次の返事で選んだモデルのまま起こし直す", async () => {
+		const s = await setup({ akarin: true });
+		await s.intake.command(request("codex", "terra"));
+		const seat = s.seats.get("thread1");
+		await pause(s, seat?.dispatchId ?? null);
+		const e = change("thread1", "codex", "luna");
+		await s.intake.command(e);
+		expect(replyOf(s, e)).toBe("Luna に切り替えました。");
+		expect(s.o.opsOf("switchModel")).toEqual([]);
+		expect(s.o.opsOf("stopSeat")).toHaveLength(1);
+		expect(s.seats.get("thread1")).toMatchObject({
+			status: "sleeping",
+			model: "luna",
+		});
+		expect(s.sys.sentTo("thread1").at(-1)).toBe(
+			"ちゃぬ がモデルを Terra → Luna に変えました",
+		);
+		expect(s.d.tagsOf("thread1")).toEqual(["tag-decide", "tag-luna"]);
+
+		await s.intake.handle(say("thread1", "A で"));
+		const [resume] = s.o.opsOf("resumeSeat") as {
+			agent: string;
+			model: string;
+		}[];
+		expect(resume).toMatchObject({ agent: "codex", model: "luna" });
+	});
+
+	it("席の無い投稿は、選んだモデルを残して次に開く席をそのモデルで動かす", async () => {
+		const s = await setup();
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "worker_done",
+				dispatchId: seat.dispatchId,
+				body: "直しました\n状態: 完了",
+			}),
+		);
+		const e = change("p1", "claude", "opus");
+		await s.intake.command(e);
+		expect(replyOf(s, e)).toBe("Opus に切り替えました。");
+		expect(s.sys.sentTo("p1").at(-1)).toBe(
+			"ちゃぬ がモデルを 既定のモデル → Opus に変えました",
+		);
+		await s.intake.handle(say("p1", "もう一つ直して"));
+		const starts = s.o.opsOf("startSeat") as { model: string | null }[];
+		expect(starts.at(-1)?.model).toBe("opus");
 	});
 });

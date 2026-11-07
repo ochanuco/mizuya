@@ -144,6 +144,12 @@ export type DiscordApi = {
 		messageId: string,
 		content: string,
 	) => Promise<Result<void, DomainError>>;
+	/** `/ai` の interaction に返した、本人にだけ見える返事を書き換える。token は 15 分で切れる。 */
+	editInteractionReply: (
+		applicationId: string,
+		interactionToken: string,
+		content: string,
+	) => Promise<Result<void, DomainError>>;
 	/** 入力中の表示を出す。Discord は約 10 秒で消すので、続けるなら送り直す。 */
 	typing: (channelId: string) => Promise<Result<void, DomainError>>;
 	/** bot 自身のリアクションを付ける。 */
@@ -420,6 +426,18 @@ export const createDiscordRest = (opts: DiscordRestOptions): DiscordApi => {
 					content: content.slice(0, MESSAGE_LIMIT),
 					allowed_mentions: noMentions,
 					components: [],
+				},
+			);
+			return r.ok ? ok(undefined) : r;
+		},
+		editInteractionReply: async (applicationId, interactionToken, content) => {
+			const r = await call(
+				"PATCH",
+				`/webhooks/${applicationId}/${interactionToken}/messages/@original`,
+				null,
+				{
+					content: content.slice(0, MESSAGE_LIMIT),
+					allowed_mentions: noMentions,
 				},
 			);
 			return r.ok ? ok(undefined) : r;

@@ -309,4 +309,186 @@ describe("POST /discord/interactions", () => {
 			expect(inbox.puts).toEqual([]);
 		});
 	});
+
+	describe("/ai コマンド", () => {
+		const GUILD = "400000000000000001";
+		const TEXT_CHANNEL = "400000000000000002";
+		const THREAD = "400000000000000004";
+		const user = {
+			id: OTHER_USER_ID,
+			username: "someone",
+			global_name: "誰か",
+		};
+
+		function command(
+			group: string,
+			model: string,
+			channel: { id: string; type: number; parent_id?: string },
+		) {
+			return {
+				type: 2,
+				application_id: APPLICATION_ID,
+				token: "interaction-token",
+				guild_id: GUILD,
+				channel_id: channel.id,
+				channel,
+				member: { user, nick: null },
+				data: {
+					name: "ai",
+					type: 1,
+					options: [
+						{ type: 2, name: group, options: [{ type: 1, name: model }] },
+					],
+				},
+			};
+		}
+
+		function submit(customId: string, value: string) {
+			return {
+				type: 5,
+				application_id: APPLICATION_ID,
+				token: "interaction-token",
+				guild_id: GUILD,
+				channel_id: TEXT_CHANNEL,
+				member: { user, nick: "ちゃぬ" },
+				data: {
+					custom_id: customId,
+					components: [
+						{
+							type: 1,
+							components: [{ type: 4, custom_id: "request", value }],
+						},
+					],
+				},
+			};
+		}
+
+		it("投稿の外では、依頼を書く modal を返し、受け箱には置かない", async () => {
+			const { response, inbox } = await interaction(
+				command("claude", "sonnet", { id: TEXT_CHANNEL, type: 0 }),
+			);
+			const body = (await response.json()) as {
+				type: number;
+				data: { custom_id: string; components: unknown[] };
+			};
+			expect(body.type).toBe(9);
+			expect(body.data.custom_id).toBe("ai:claude:sonnet");
+			expect(body.data.components).toEqual([
+				{
+					type: 1,
+					components: [
+						{
+							type: 4,
+							custom_id: "request",
+							label: "依頼",
+							style: 2,
+							required: true,
+							max_length: 4000,
+						},
+					],
+				},
+			]);
+			expect(inbox.puts).toEqual([]);
+		});
+
+		it("スレッドの中では、本人にだけ見える deferred を返し、モデルの切り替えを受け箱に置く", async () => {
+			const { response, settled, inbox } = await interaction(
+				command("codex", "luna", {
+					id: THREAD,
+					type: 11,
+					parent_id: "400000000000000005",
+				}),
+			);
+			expect(await response.json()).toEqual({
+				type: 5,
+				data: { flags: 64 },
+			});
+			await settled();
+			expect(inbox.puts).toEqual([
+				{
+					kind: "command",
+					dedupe: null,
+					body: {
+						type: "model",
+						application_id: APPLICATION_ID,
+						token: "interaction-token",
+						guild_id: GUILD,
+						channel_id: THREAD,
+						user: { id: OTHER_USER_ID, display_name: "誰か", is_bot: false },
+						agent: "codex",
+						model: "luna",
+					},
+				},
+			]);
+		});
+
+		it("定義に無い組み合わせは断る", async () => {
+			const { response, inbox } = await interaction(
+				command("claude", "terra", { id: TEXT_CHANNEL, type: 0 }),
+			);
+			expect(await response.json()).toMatchObject({
+				type: 4,
+				data: { flags: 64 },
+			});
+			expect(inbox.puts).toEqual([]);
+		});
+
+		it("サーバーの外のコマンドは断る", async () => {
+			const c = command("claude", "opus", {
+				id: TEXT_CHANNEL,
+				type: 1,
+			}) as Record<string, unknown>;
+			delete c.guild_id;
+			const { response, inbox } = await interaction(c);
+			expect(((await response.json()) as { type: number }).type).toBe(4);
+			expect(inbox.puts).toEqual([]);
+		});
+
+		it("modal の送信には本人にだけ見える受付を返し、依頼を受け箱に置く", async () => {
+			const { response, settled, inbox } = await interaction(
+				submit("ai:claude:opus", "請求書を整理して\n先月分も"),
+			);
+			expect(await response.json()).toEqual({
+				type: 4,
+				data: {
+					content: "受け付けました。投稿を立てています…",
+					flags: 64,
+					allowed_mentions: { parse: [] },
+				},
+			});
+			await settled();
+			expect(inbox.puts).toEqual([
+				{
+					kind: "command",
+					dedupe: null,
+					body: {
+						type: "request",
+						application_id: APPLICATION_ID,
+						token: "interaction-token",
+						guild_id: GUILD,
+						channel_id: TEXT_CHANNEL,
+						user: { id: OTHER_USER_ID, display_name: "ちゃぬ", is_bot: false },
+						agent: "claude",
+						model: "opus",
+						content: "請求書を整理して\n先月分も",
+					},
+				},
+			]);
+		});
+
+		it("空の依頼や知らない modal は受け箱に置かない", async () => {
+			for (const payload of [
+				submit("ai:claude:opus", "  \n "),
+				submit("ai:claude:luna", "請求書"),
+				submit("other", "請求書"),
+			]) {
+				const { response, inbox } = await interaction(payload);
+				expect(await response.json()).toMatchObject({
+					type: 4,
+					data: { flags: 64 },
+				});
+				expect(inbox.puts).toEqual([]);
+			}
+		});
+	});
 });

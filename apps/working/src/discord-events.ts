@@ -32,3 +32,23 @@ export type ButtonPressEvent = {
 		user: { id: string; display_name: string; is_bot: boolean };
 	};
 };
+
+/**
+ * `/ai` コマンド。request は投稿の外の modal で書かれた依頼、model は投稿の中でのモデルの切り替え。
+ * 本人にだけ見える返事は application_id と token で書き換える。
+ */
+export type CommandEvent = {
+	event_id: string;
+	payload: {
+		type: "request" | "model";
+		application_id: string;
+		token: string;
+		guild_id: string;
+		channel_id: string;
+		user: { id: string; display_name: string; is_bot: boolean };
+		agent: "claude" | "codex";
+		model: string;
+		/** request のときだけ持つ。 */
+		content: string | null;
+	};
+};

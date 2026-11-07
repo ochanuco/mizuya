@@ -1,15 +1,16 @@
 import { randomUUID } from "node:crypto";
 import * as v from "valibot";
-import type { ButtonPressEvent } from "./discord-events.ts";
+import type { ButtonPressEvent, CommandEvent } from "./discord-events.ts";
 import {
 	type GithubWorkEvent,
 	githubWorkEventSchema,
 } from "./github-events.ts";
 import type { Logger } from "./logger.ts";
+import { SEAT_MODELS } from "./seat-model.ts";
 import { WORKING_BUTTON_PREFIX } from "./system.ts";
 
 /**
- * mizuya の Worker の受け箱。Worker が受けたボタンと GitHub の出来事を、外向きの WebSocket で受け取る。
+ * mizuya の Worker の受け箱。Worker が受けたボタン、`/ai` コマンドと GitHub の出来事を、外向きの WebSocket で受け取る。
  * 受け取った行は ack し、Worker はそれを消す。ack する前に切れた行は、つなぎ直したときにもう一度来る。
  */
 
@@ -32,6 +33,28 @@ const buttonSchema = v.object({
 	}),
 });
 
+/** Worker が受け箱に置く `/ai` コマンドの形。mizuya の Worker の `interactions.ts` と揃える。 */
+const commandSchema = v.object({
+	type: v.picklist(["request", "model"]),
+	application_id: snowflake,
+	token: v.pipe(v.string(), v.nonEmpty()),
+	guild_id: snowflake,
+	channel_id: snowflake,
+	user: buttonSchema.entries.user,
+	agent: v.picklist(["claude", "codex"]),
+	model: v.string(),
+	content: v.optional(v.string()),
+});
+
+/** モデルは席の起動コマンドと端末への /model に入るので、相手ごとに選べるものだけを通す。 */
+const knownCommandSchema = v.pipe(
+	commandSchema,
+	v.check(
+		(c) => SEAT_MODELS[c.agent].includes(c.model),
+		"相手が選べないモデル",
+	),
+);
+
 const itemSchema = v.object({
 	type: v.literal("item"),
 	id: v.pipe(v.string(), v.nonEmpty()),
@@ -43,6 +66,8 @@ const itemSchema = v.object({
 export type InboxHandlers = {
 	/** 押されたボタン。custom_id は Working の頭を外した形で渡す。 */
 	press: (envelope: ButtonPressEvent) => void;
+	/** `/ai` の依頼とモデルの切り替え。 */
+	command: (envelope: CommandEvent) => void;
 	/** 席を動かす GitHub の出来事。未設定なら受け取って捨てる。 */
 	github?: (event: GithubWorkEvent) => void;
 };
@@ -82,6 +107,18 @@ export const dispatchInboxMessage = (
 				reason: "standup disabled",
 			});
 		}
+		return id;
+	}
+	if (kind === "command") {
+		const command = v.safeParse(knownCommandSchema, body);
+		if (!command.success) {
+			logger.warn("inbox command unreadable", { id });
+			return id;
+		}
+		handlers.command({
+			event_id: randomUUID(),
+			payload: { ...command.output, content: command.output.content ?? null },
+		});
 		return id;
 	}
 	if (kind !== "button") {

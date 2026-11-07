@@ -43,6 +43,8 @@ Orca の Linux 版は GitHub Releases（`stablyai/orca`）の `orca-ide_<版>_<a
 
 席のメッセージに付けたボタンは、mizuya の application の Interactions Endpoint URL、つまり mizuya の Worker に届く。Worker はそれを受け箱に置き、受付は `MIZUYA_INBOX_URL`（`wss://mizuya.chanu.co/working/inbox`）に外向きの WebSocket でつないで受け取る。接続には Access の service token（`MIZUYA_ACCESS_CLIENT_ID` / `MIZUYA_ACCESS_CLIENT_SECRET`）と `Authorization: Bearer <MIZUYA_INBOX_TOKEN>` を付け、30 秒ごとに `ping` を送る。受け取った行は ack する。切れたら 1 秒から 60 秒まで間をのばしながらつなぎ直し、その間に置かれたボタンは次の接続で届く（押してから 15 分まで）。
 
+`/ai` コマンドも同じ受け箱で届く（mizuya の README の「Working の受け箱」）。
+
 `PORT`（既定は `8080`）の `GET /healthz` は生存確認用で、image の HEALTHCHECK が読む。
 
 ### 流れ
@@ -62,21 +64,35 @@ Orca の Linux 版は GitHub Releases（`stablyai/orca`）の `orca-ide_<版>_<a
 | 見張りを頼まれた                                                              | 席が見張りを登録して報告する。タグを `見張り中` にし、席を閉じる。新着は朝会と見回りがこの投稿に書く |
 
 - 仕事テキストチャンネルで Yukarin か Akarin 宛て（「Akarin の席」の節）の依頼が来たら、仕事フォーラムに投稿を立てる。件名は依頼の要約（Claude CLI の haiku で作る。前置きやメタ発言、複数行、40 字超の出力は使わず、依頼の 1 行目にする）、本文は元の依頼と元メッセージへのリンク。テキストチャンネルには投稿へのリンクを返信で返す。
-- 同じ投稿への発言と席からのメッセージは、1 件ずつ順に処理する。
+- 同じ投稿への発言と席からのメッセージは、1 件ずつ順に処理する。`/ai` のモデルの切り替えも同じ順に並ぶ。
 - Discord REST が 2xx 以外を返したときは、経路・ステータス・Discord のエラーコードとメッセージを warn で残す。bot の権限不足（403 の Missing Access / Missing Permissions）は `PermissionDenied` として扱う。
 - `WORKING_OWNER_DISCORD_USER_IDS` に入っている人の発言だけを扱う。mizuya の bot と人格の bot、ほかの人、ほかの bot の発言は、依頼・フォーラムの投稿・投稿内の返事のどれでも無視する。
+
+### `/ai` コマンド
+
+`/ai <相手> <モデル>` で、席の相手とモデルを選んで依頼するか、投稿の席のモデルを変える。相手は `claude`（Yukarin、`opus`・`sonnet`・`haiku`）か `codex`（Akarin、`terra`・`sol`・`luna`）。`WORKING_OWNER_DISCORD_USER_IDS` に入っていない人には、本人にだけ見える返事で断る。返事はすべて本人にだけ見え、チャンネルにはメッセージを残さない。
+
+- 仕事フォーラムの投稿の外で打つと、Worker が依頼を書く modal を返す。送信されたら、受付は依頼を要約した件名で仕事フォーラムに投稿を立て、`作業中` とモデルのタグを付け、選ばれた相手の席をそのモデルで開く。本文は「<依頼者> さんからの依頼」と依頼で、元のメッセージへのリンクと受付の絵文字は無い。本人への返事を「フォーラムに立てました → <リンク>」に書き換える。Akarin の席が無いときに `codex` を選ぶと断る。添付は付けられないので、投稿が立ったあとに投稿の中で付ける。
+- 仕事フォーラムの投稿の中で、担当と同じ相手のコマンドを打つと、モデルを変える。選んだモデルは `seats.json` の `models` に投稿ごとに残し、席を閉じたあとに同じ投稿で開き直す席もそのモデルで動く。
+  - 席が手を止めている（`決めてほしい`）なら、すぐ切り替える。Claude の席は端末に `/model <モデル>` を送り、会話のまま切り替える。Codex の席は止め、次の返事で `codex resume --last -m <モデル>` で起こす。
+  - 席が作業中なら「今の手が止まったら <モデル> に切り替えます」と返し、席の質問・報告・止まった知らせで手が止まったときに切り替える。そのモデルで動いている席で元のモデルを選び直すと、切り替えを取りやめる。
+  - 席が無い・止めている・順番待ちなら、次に起動するときに選んだモデルで起動する。
+  - 切り替えたら、mizuya の bot で投稿に「<打った人> がモデルを Opus → Sonnet に変えました」と 1 行残し、モデルのタグを差し替える。モデルを選んでいなかった席は「既定のモデル」と書く。
+- 担当と違う相手のコマンドは、「この投稿はゆかりさんが担当しています。モデルは `/ai claude …` で変えられます。」のように断る。
+- 仕事フォーラムの外のスレッドで打つと、モデルは変えずに断る。
+- 仕事テキストチャンネルへのメンションの依頼とフォーラムへの直接の投稿は、モデルを選ばずに CLI の既定のモデルで動く。
 
 ### 席
 
 - 受付は起動時に、`SEATS_REPO`（既定は `~/work/seats`）に空の git リポジトリを用意して Orca に登録し、その root に受付の端末（`受付`、中身は `sleep infinity`）を作る。orchestration の送り手と受け手はこの端末になる。Run は `seats.json` に残し、作り直した端末で引き継ぐ（`run-use`）。
-- 席は投稿ごとに作る。`worktree create` で `seat-<投稿の ID>` の worktree を作り、その realpath を Claude CLI の信頼済みの場所（`.claude.json` の `projects[<realpath>].hasTrustDialogAccepted`）に登録してから、その worktree に `claude --permission-mode auto` の端末を作り、15 秒待ってから `worker-start --terminal` で依頼を渡す。待つのは、claude.ai のコネクタ（chimera など）が Claude の起動から遅れて読み込まれ、すぐに渡すと最初のターンに間に合わないため。信頼していない場所の Claude は確認の画面で止まり、Orca は席を始めない。登録は Claude CLI と同じ `.claude.json.lock` のロックを取って書くので、動いている席の Claude の書き込みと混ざらない。10 秒より古いロック（落ちたプロセスの残り）は外して進む。hook は worktree の名前から投稿を引く。Mac の Orca から接続すると、同じ席と Claude の画面が見える。
+- 席は投稿ごとに作る。`worktree create` で `seat-<投稿の ID>` の worktree を作り、その realpath を Claude CLI の信頼済みの場所（`.claude.json` の `projects[<realpath>].hasTrustDialogAccepted`）に登録してから、その worktree に `claude --permission-mode auto`（`/ai` でモデルを選んだ投稿は `--model <モデル>` を足す）の端末を作り、15 秒待ってから `worker-start --terminal` で依頼を渡す。待つのは、claude.ai のコネクタ（chimera など）が Claude の起動から遅れて読み込まれ、すぐに渡すと最初のターンに間に合わないため。信頼していない場所の Claude は確認の画面で止まり、Orca は席を始めない。登録は Claude CLI と同じ `.claude.json.lock` のロックを取って書くので、動いている席の Claude の書き込みと混ざらない。10 秒より古いロック（落ちたプロセスの残り）は外して進む。hook は worktree の名前から投稿を引く。Mac の Orca から接続すると、同じ席と Claude の画面が見える。
 - 席を始められなかったときは、止まった所（作業場所の確認、Claude の起動、Orca の席の作成など）を短く投稿に書く。
 - 受付は `orchestration check --wait` で席からのメッセージを待ち続ける。受付が落ちている間に届いたものも、次に起動したときに受け取る。
 - 席の Claude が `worker_done` を送らずにターンを終えたとき、Orca の知らせ（escalation）に付く端末の末尾に裏で動いている shell やタスク（「1 shell still running」など）が出ていれば、待っているだけとみなして投稿に書かない。それ以外は「作業が途中で止まりました」と書いて `決めてほしい` にする。
 - 裏の作業を待っている席の投稿に持ち主が書くと、受付はすぐ「作業中です。（いまやっていること）」と返す。いまやっていることは席の Claude が最後に送った途中経過（`status`）で、改行を詰めて 200 字で切る。無ければ「作業中です。」だけにする。書き込みは、手が空いたら `status` で答えるよう添えて席に渡す。席が質問か報告を送るか、裏の作業なしでターンを終えるまで、この即答を続ける。
 - 「起動し直して」「再起動して」（全角・末尾の句点は許す）だけの返事は、席の Claude への返事にせず起動し直す。席が無ければふつうの返事として扱う。
 - 同時に Claude を動かしておく席は `SEAT_LIMIT`（既定は 6）まで。上限を超えた投稿には「順番待ち」と書き、空いたら古い順に始める。止めた席と順番待ちの席は数えない。
-- `決めてほしい` のまま `SEAT_SLEEP_AFTER_MINUTES`（既定は 120 分）たった席は、Claude だけ止める（worktree と会話は残す）。返事が来たら、その worktree で `claude --permission-mode auto --continue` の端末を作って `worker-start --terminal` で渡し、前の会話のまま起こす。worktree が無くなっていたら、その席は忘れ、投稿のやりとりを読ませた新しい席で始める。
+- `決めてほしい` のまま `SEAT_SLEEP_AFTER_MINUTES`（既定は 120 分）たった席は、Claude だけ止める（worktree と会話は残す）。返事が来たら、その worktree で `claude --permission-mode auto --continue`（モデルを選んだ投稿は同じ `--model` を付ける）の端末を作って `worker-start --terminal` で渡し、前の会話のまま起こす。worktree が無くなっていたら、その席は忘れ、投稿のやりとりを読ませた新しい席で始める。
 - 席を閉じるときは、席の Claude を止め、worktree を消す。席の Claude には、完了にする前に commit と push を済ませるよう指示してある。
 - 起動時に `seats.json` と Orca の席を突き合わせる。対応表に無い席の端末と worktree（前回の残り）は片付け、対応表にある席は残す。Claude がいなくなっていた席は止めた扱いにし、作業中だったなら投稿で知らせて `決めてほしい` にする。
 
@@ -91,13 +107,15 @@ Orca の Linux 版は GitHub Releases（`stablyai/orca`）の `orca-ide_<版>_<a
 - 投稿の最初の人格の発言では、依頼者にメンションして通知する。仕事テキストチャンネルの依頼から立てた投稿は「<依頼者> さんからの依頼」の発言、フォーラムに直接立てた投稿は席の最初の返事、朝会・見回り・GitHub の出来事の投稿は最初の発言で持ち主（`WORKING_OWNER_DISCORD_USER_IDS` の先頭）にメンションする。通知するのはその人だけ。
 - タグ・リアクション・入力中の表示・読み取りは mizuya の bot で行う。
 - Akarin の席は Codex CLI で動き、前置きの人格は `persona.sh akarin`、記憶の読み書きは Akarin の記憶（`/v1/partners/akarin/working/memory`）にする。
-- Codex は `codex -a never -s danger-full-access` で起動する。止めた席は同じ worktree で `codex resume --last` で起こす。Codex の `resume --last` は作業ディレクトリの最新の会話を選ぶので、投稿ごとの worktree で前の会話のまま続く。
+- Codex は `codex -a never -s danger-full-access` で起動する。止めた席は同じ worktree で `codex resume --last` で起こす。`/ai` でモデルを選んだ投稿は、起動にも再開にも `-m <モデル>` を付ける。Codex の `resume --last` は作業ディレクトリの最新の会話を選ぶので、投稿ごとの worktree で前の会話のまま続く。
 - Codex は worktree の信頼を元のリポジトリで引く。受付は起動時に、席の元のリポジトリ（`SEATS_REPO` の realpath）を `CODEX_HOME/config.toml` の `[projects."<path>"]` に `trust_level = "trusted"` で足す（表が無いときだけ）。
 - 朝会は Yukarin だけが行う。
 
 ### タグ
 
 フォーラムに `決めてほしい`・`作業中`・`引き継ぎ`・`完了`・`見張り中` のタグを作っておく。受付は名前で ID を引く。席を作るときと席に返事を渡すときに `作業中` を付け、席の質問で `決めてほしい` にする。完了報告では本文の最後の行（`状態: …`、投稿には出さない）に合わせて付け替え、書かれていなければ `決めてほしい` にする。人が付けたほかのタグは残す。
+
+モデルのタグ `Opus`・`Sonnet`・`Haiku`・`Terra`・`Sol`・`Luna` も作っておく。`/ai` で立てた投稿とモデルを変えた投稿に、選ばれたモデルのタグを 1 つだけ付ける。状態のタグとモデルのタグは、どちらを付け替えてももう一方を残す。フォーラムに無いタグは warn を残し、タグ無しで進む。
 
 ### 作業中かの見せ方
 

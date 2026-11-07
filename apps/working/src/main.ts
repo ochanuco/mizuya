@@ -526,6 +526,14 @@ const inbox = cfg.inbox
 						});
 					});
 				},
+				command: (envelope) => {
+					void intake.command(envelope).catch((e: unknown) => {
+						logger.error("intake crashed", {
+							event_id: envelope.event_id,
+							error: String(e),
+						});
+					});
+				},
 				...(githubEvents ? { github: githubEvents.push } : {}),
 			},
 			logger,

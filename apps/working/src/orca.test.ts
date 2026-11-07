@@ -399,6 +399,94 @@ describe("createOrcaCli", () => {
 		expect(command).toContain("-a never -s danger-full-access");
 	});
 
+	it("モデルを選んだ席は、起動にも再開にも同じモデルを渡す", async () => {
+		const t = setup({
+			"orchestration worker-start": {
+				stdout: {
+					ok: true,
+					result: {
+						dispatchId: "d9",
+						terminal: "rx",
+						workspace: "r1::/ws/seat-p1",
+					},
+				},
+			},
+		});
+		await t.orca.prepare({ runId: null, reception: null });
+		const seat = join(t.root, "ws", "seat-p1");
+		mkdirSync(seat, { recursive: true });
+		const commandOfLast = () => {
+			const created = t.argsOf("terminal create").at(-1) ?? [];
+			return created[created.indexOf("--command") + 1] ?? "";
+		};
+		await t.orca.startSeat({
+			name: "seat-p1",
+			title: "件名",
+			spec: "依頼",
+			agent: "claude",
+			model: "sonnet",
+		});
+		expect(commandOfLast()).toBe(
+			"claude --permission-mode auto --model sonnet",
+		);
+		await t.orca.resumeSeat({
+			path: seat,
+			title: "件名",
+			spec: "続き",
+			agent: "claude",
+			model: "sonnet",
+		});
+		expect(commandOfLast()).toBe(
+			"claude --permission-mode auto --model sonnet --continue",
+		);
+		await t.orca.startSeat({
+			name: "seat-p1",
+			title: "件名",
+			spec: "依頼",
+			agent: "codex",
+			model: "terra",
+		});
+		expect(commandOfLast()).toMatch(/^codex -m terra -a never /);
+		await t.orca.resumeSeat({
+			path: seat,
+			title: "件名",
+			spec: "続き",
+			agent: "codex",
+			model: "luna",
+		});
+		expect(commandOfLast()).toMatch(/^codex resume --last -m luna -a never /);
+	});
+
+	it("モデルを選んでいない席はモデルを渡さない", async () => {
+		const t = setup({});
+		await t.orca.prepare({ runId: null, reception: null });
+		await t.orca.startSeat({
+			name: "seat-p1",
+			title: "件名",
+			spec: "依頼",
+			agent: "codex",
+			model: null,
+		});
+		const created = t.argsOf("terminal create").at(-1) ?? [];
+		expect(created[created.indexOf("--command") + 1]).not.toContain(" -m ");
+	});
+
+	it("Claude の席のモデルは、端末に /model を送って切り替える", async () => {
+		const t = setup({});
+		const r = await t.orca.switchModel({ terminal: "t7", model: "haiku" });
+		expect(r.ok).toBe(true);
+		expect(t.argsOf("terminal send").at(-1)).toEqual([
+			"terminal",
+			"send",
+			"--terminal",
+			"t7",
+			"--text",
+			"/model haiku",
+			"--enter",
+			"--json",
+		]);
+	});
+
 	it("届いたメッセージを読み、失敗は OrcaFailed にする", async () => {
 		const t = setup({
 			"orchestration check": {

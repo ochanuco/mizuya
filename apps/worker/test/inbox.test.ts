@@ -56,9 +56,10 @@ describe("受け箱", () => {
 		expect(inbox.pending()).toHaveLength(1);
 	});
 
-	it("古すぎるボタンと GitHub の出来事は渡さずに消す", () => {
+	it("古すぎるボタン・コマンドと GitHub の出来事は渡さずに消す", () => {
 		const { inbox, advance } = setup();
 		inbox.put("button", { n: 1 });
+		inbox.put("command", { n: 3 });
 		inbox.put("github", { n: 2 });
 		advance(BUTTON_MAX_AGE_MS + 1);
 		expect(inbox.pending().map((i) => i.kind)).toEqual(["github"]);
