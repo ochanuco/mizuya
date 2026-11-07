@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { GithubWorkEvent } from "./github-events.ts";
 import { dispatchInboxMessage } from "./inbox.ts";
 import type { DiscordButtonPressedEnvelope } from "./lib/protocol.ts";
 import { silentLogger } from "./logger.ts";
@@ -17,11 +18,14 @@ const button = (customId: string) => ({
 	},
 });
 
-const dispatch = (message: unknown) => {
+const dispatch = (message: unknown, github?: GithubWorkEvent[]) => {
 	const pressed: DiscordButtonPressedEnvelope[] = [];
 	const ack = dispatchInboxMessage(
 		typeof message === "string" ? message : JSON.stringify(message),
-		{ press: (e) => pressed.push(e) },
+		{
+			press: (e) => pressed.push(e),
+			...(github ? { github: (e: GithubWorkEvent) => github.push(e) } : {}),
+		},
 		silentLogger,
 		() => new Date("2026-11-07T00:00:01.000Z"),
 	);
@@ -61,5 +65,35 @@ describe("受け箱の行", () => {
 		expect(dispatch("pong")).toEqual({ ack: null, pressed: [] });
 		expect(dispatch("{")).toEqual({ ack: null, pressed: [] });
 		expect(dispatch({ type: "hello" })).toEqual({ ack: null, pressed: [] });
+	});
+
+	it("GitHub の出来事を渡して ack する。渡す先が無ければ捨てて ack する", () => {
+		const event = {
+			kind: "review",
+			repo: "o/r",
+			pr: 3,
+			title: "t",
+			state: "changes_requested",
+			body: "直して",
+			url: "u",
+			actor: "reviewer",
+			actor_is_bot: false,
+		};
+		const item = {
+			type: "item",
+			id: "g1",
+			kind: "github",
+			received_at: "2026-11-07T00:00:00.000Z",
+			body: event,
+		};
+		const got: GithubWorkEvent[] = [];
+		expect(dispatch(item, got).ack).toBe("g1");
+		expect(got).toEqual([event]);
+		expect(dispatch(item).ack).toBe("g1");
+		const broken: GithubWorkEvent[] = [];
+		expect(dispatch({ ...item, body: { kind: "review" } }, broken).ack).toBe(
+			"g1",
+		);
+		expect(broken).toEqual([]);
 	});
 });

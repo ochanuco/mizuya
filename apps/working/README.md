@@ -254,12 +254,12 @@ Renovate の PR は持ち主の許しで、朝会と見回りの席が片付け�
 
 ### GitHub の出来事
 
-CI の失敗、PR のレビュー、issue と PR のコメントがあると、見回りの時刻を待たずに小さな席を立てる。受付は公開していないので、GitHub の webhook は Worker が受けて溜め（yunomi の Worker の README の「GitHub の出来事（webhook）」）、受付が 1 分ごとに取りに行く。朝会が有効で、`YUNOMI_URL` と `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET`（記憶と同じ Worker の service token）がそろっているときだけ動く。
+CI の失敗、PR のレビュー、issue と PR のコメントがあると、見回りの時刻を待たずに小さな席を立てる。受付は公開していないので、GitHub の webhook は mizuya の Worker が受けて受け箱に置き（mizuya の README の「Working の受け箱」）、受付はボタンと同じ WebSocket で受け取る。届いてから 30 秒待ち、その間に届いた分をまとめて回す。朝会が有効なときだけ動き、無効なら受け取って捨てる。
 
 - 自分（`GH_TOKEN` の持ち主。起動時に `gh api user` で引く）と bot のコメント・レビューでは席を立てない。
 - CI の失敗は、見回りが同じ PR の失敗をもう見ていれば拾わない。拾った失敗は `patrol-state.json` の `failing_prs` に足すので、次の見回りでも拾い直さない。見回りと同じ列で回し、`patrol-state.json` を取り合わない。
 - 同じ PR や issue の出来事は 1 つの席（`seat-event-<ID>`）にまとめ、その件の出来事だけを渡す。席の扱いと投稿のしかたは見回りと同じで、判断が要るものだけを仕事フォーラムに投稿する。投稿の最後には「GitHub の知らせ」の時刻が付く。
-- 受付が止まっていて 6 時間より古くなった出来事は渡らない。その件は見回りが拾う。
+- 受付が止まっていて 6 時間より古くなった出来事は、Worker が渡さない。その件は見回りが拾う。
 
 ### 取り消せない操作の許可
 

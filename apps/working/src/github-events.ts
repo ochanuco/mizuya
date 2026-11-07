@@ -1,52 +1,54 @@
 import * as v from "valibot";
-import { err, ok, type Result, toModelJson } from "./lib/core.ts";
-import {
-	GITHUB_EVENTS_PATH,
-	type GithubWorkEvent,
-	githubEventsResponseSchema,
-} from "./lib/protocol.ts";
+import { toModelJson } from "./lib/core.ts";
 import type { Logger } from "./logger.ts";
 import type { PatrolSnapshot, PatrolStore } from "./patrol.ts";
 import { eventPrompt, seatSpec } from "./prompts.ts";
 
-export type GithubEventsClient = {
-	/** Worker に溜まった出来事を取り出す。取り出した分は Worker から消える。 */
-	claim: () => Promise<Result<GithubWorkEvent[], { reason: string }>>;
-};
+const text = v.string();
+const repo = v.pipe(v.string(), v.nonEmpty());
+const number = v.pipe(v.number(), v.integer(), v.minValue(1));
 
-export const createGithubEventsClient = (opts: {
-	baseUrl: string;
-	clientId: string;
-	clientSecret: string;
-	fetch?: typeof fetch;
-}): GithubEventsClient => {
-	const doFetch = opts.fetch ?? fetch;
-	const url = new URL(GITHUB_EVENTS_PATH, opts.baseUrl).toString();
-	return {
-		claim: async () => {
-			let res: Response;
-			try {
-				res = await doFetch(url, {
-					method: "POST",
-					headers: {
-						"CF-Access-Client-Id": opts.clientId,
-						"CF-Access-Client-Secret": opts.clientSecret,
-					},
-					signal: AbortSignal.timeout(30_000),
-				});
-			} catch (e) {
-				return err({ reason: `fetch: ${String(e)}` });
-			}
-			if (!res.ok) return err({ reason: `status ${res.status}` });
-			const parsed = v.safeParse(
-				githubEventsResponseSchema,
-				await res.json().catch(() => null),
-			);
-			if (!parsed.success) return err({ reason: "unreadable" });
-			return ok(parsed.output.events.map((e) => e.event));
-		},
-	};
-};
+/**
+ * mizuya の Worker が webhook の payload から抜き出した、席の材料になる分だけの形。受け箱の行の body として届く。
+ * 形は Worker の `work-events.ts` と揃える。
+ */
+export const githubWorkEventSchema = v.variant("kind", [
+	v.object({
+		kind: v.literal("ci_failed"),
+		repo,
+		/** 落ちた run が属する PR。main など PR の無い branch なら空。 */
+		prs: v.array(number),
+		name: text,
+		branch: v.nullable(text),
+		conclusion: text,
+		url: text,
+		actor: v.nullable(text),
+	}),
+	v.object({
+		kind: v.literal("review"),
+		repo,
+		pr: number,
+		title: text,
+		state: text,
+		body: text,
+		url: text,
+		actor: text,
+		actor_is_bot: v.boolean(),
+	}),
+	v.object({
+		kind: v.literal("comment"),
+		repo,
+		number,
+		is_pr: v.boolean(),
+		title: text,
+		body: text,
+		url: text,
+		actor: text,
+		actor_is_bot: v.boolean(),
+	}),
+]);
+
+export type GithubWorkEvent = v.InferOutput<typeof githubWorkEventSchema>;
 
 /** 見回りの failing_prs と同じ key。席が拾った CI の失敗を、見回りがもう一度拾わないようにする。 */
 const FAILING = "failing_prs";
@@ -149,39 +151,36 @@ export const runGithubEvents = async (
 	return seats;
 };
 
-/** Worker に溜まった出来事を間隔ごとに取りに行く。1 回が終わってから次を予約するので重ならない。 */
-export const startGithubEventPoller = (deps: {
-	client: GithubEventsClient;
+/**
+ * 受け箱から届いた出来事を、少し待ってからまとめて回す。同じ PR の CI の失敗とレビューが続けて届いても、一つの席にまとめる。
+ * 前のまとまりを回している間に届いたものは、次のまとまりに入る。
+ */
+export const createGithubEventBatcher = (deps: {
 	run: (events: GithubWorkEvent[]) => Promise<void>;
-	intervalMs: number;
+	waitMs: number;
 	logger: Logger;
-}): { stop: () => void } => {
+}): { push: (event: GithubWorkEvent) => void; stop: () => void } => {
+	let pending: GithubWorkEvent[] = [];
 	let timer: ReturnType<typeof setTimeout> | null = null;
-	let stopped = false;
-	const tick = async () => {
-		const claimed = await deps.client.claim();
-		if (!claimed.ok) {
-			deps.logger.warn("github events claim failed", {
-				reason: claimed.error.reason,
-			});
-			return;
-		}
-		if (claimed.value.length > 0) await deps.run(claimed.value);
+	const flush = () => {
+		timer = null;
+		const events = pending;
+		pending = [];
+		void deps
+			.run(events)
+			.catch((e: unknown) =>
+				deps.logger.error("github events crashed", { error: String(e) }),
+			);
 	};
-	const schedule = () => {
-		if (stopped) return;
-		timer = setTimeout(() => {
-			void tick()
-				.catch((e: unknown) =>
-					deps.logger.error("github events crashed", { error: String(e) }),
-				)
-				.finally(schedule);
-		}, deps.intervalMs);
-	};
-	schedule();
 	return {
+		push: (event) => {
+			pending.push(event);
+			if (timer === null) {
+				timer = setTimeout(flush, deps.waitMs);
+				timer.unref?.();
+			}
+		},
 		stop: () => {
-			stopped = true;
 			if (timer) clearTimeout(timer);
 		},
 	};

@@ -1,10 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
-	createGithubEventsClient,
+	createGithubEventBatcher,
+	type GithubWorkEvent,
 	runGithubEvents,
 	selectEvents,
 } from "./github-events.ts";
-import type { GithubWorkEvent } from "./lib/protocol.ts";
 import { silentLogger } from "./logger.ts";
 import { diffPatrol, type PatrolSnapshot, type PatrolStore } from "./patrol.ts";
 
@@ -166,36 +166,25 @@ describe("runGithubEvents", () => {
 	});
 });
 
-describe("createGithubEventsClient", () => {
-	it("Worker に service token を付けて取り出し、出来事を読む", async () => {
-		const calls: Request[] = [];
-		const client = createGithubEventsClient({
-			baseUrl: "https://yunomi.example.test",
-			clientId: "id",
-			clientSecret: "secret",
-			fetch: async (input, init) => {
-				calls.push(new Request(input, init));
-				return Response.json({
-					events: [{ id: "1", received_at: "x", event: review(3) }],
-				});
+describe("createGithubEventBatcher", () => {
+	it("待つ間に届いた出来事をまとめて 1 回で回す", async () => {
+		vi.useFakeTimers();
+		const runs: GithubWorkEvent[][] = [];
+		const batcher = createGithubEventBatcher({
+			run: async (events) => {
+				runs.push(events);
 			},
+			waitMs: 30_000,
+			logger: silentLogger,
 		});
-		const r = await client.claim();
-		expect(r).toEqual({ ok: true, value: [review(3)] });
-		expect(calls[0]?.method).toBe("POST");
-		expect(calls[0]?.url).toBe(
-			"https://yunomi.example.test/v1/working/github-events",
-		);
-		expect(calls[0]?.headers.get("CF-Access-Client-Id")).toBe("id");
-	});
-
-	it("読めない応答は失敗にする", async () => {
-		const client = createGithubEventsClient({
-			baseUrl: "https://yunomi.example.test",
-			clientId: "id",
-			clientSecret: "secret",
-			fetch: async () => Response.json({ events: [{ id: "1" }] }),
-		});
-		expect((await client.claim()).ok).toBe(false);
+		batcher.push(ciFailed([3]));
+		await vi.advanceTimersByTimeAsync(10_000);
+		batcher.push(review(3));
+		await vi.advanceTimersByTimeAsync(20_000);
+		expect(runs).toEqual([[ciFailed([3]), review(3)]]);
+		batcher.push(comment("someone"));
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(runs).toHaveLength(2);
+		vi.useRealTimers();
 	});
 });
