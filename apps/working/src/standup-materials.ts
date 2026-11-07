@@ -52,7 +52,10 @@ export type Watch = {
 	id: string;
 	query: string;
 	sources: string[];
-	interval_minutes: number;
+	/** schedule の見張りは null。 */
+	interval_minutes: number | null;
+	/** 日本時間の 5 項目の cron 式（分 時 日 月 曜日）。間隔の見張りは null。 */
+	schedule: string | null;
 	until_at: string | null;
 	last_checked_at: string | null;
 	/** Worker が読んだ時点で、前に調べてから間隔が過ぎているか。 */
@@ -214,7 +217,9 @@ const memoryWatchesSchema = v.object({
 			id: v.string(),
 			query: v.string(),
 			sources: v.array(v.string()),
-			interval_minutes: v.number(),
+			interval_minutes: v.nullable(v.number()),
+			// schedule を返さない Worker もあるので、無ければ間隔の見張りとして読む
+			schedule: v.optional(v.nullable(v.string()), null),
 			until_at: v.nullable(v.string()),
 			last_checked_at: v.nullable(v.string()),
 			due: v.boolean(),

@@ -101,11 +101,16 @@ describe("起こされる口", () => {
 	});
 });
 
-const watch = (id: string, interval: number): Watch => ({
+const watch = (
+	id: string,
+	interval: number | null,
+	schedule: string | null = null,
+): Watch => ({
 	id,
 	query: "中古の GPU",
 	sources: [],
 	interval_minutes: interval,
+	schedule,
 	until_at: null,
 	last_checked_at: null,
 	due: false,
@@ -173,6 +178,31 @@ describe("desiredJobs", () => {
 			partner: "yukarin",
 			watch_id: "W_01.a",
 		});
+	});
+
+	it("cron 式の見張りは秒を足して Asia/Tokyo で回し、時刻の無い見張りはジョブを置かない", () => {
+		const r = desiredJobs({
+			...input,
+			standupAt: null,
+			patrolSchedule: null,
+			watches: [
+				[
+					"yukarin",
+					[
+						watch("w1", null, "0 9-18 * * 1-5"),
+						watch("w2", null),
+						watch("w3", 60),
+					],
+				],
+			],
+		});
+		expect(r.jobs.map((j) => [j.name, j.schedule, j.timezone])).toEqual([
+			["watch-yukarin-w1", "0 0 9-18 * * 1-5", "Asia/Tokyo"],
+			["watch-yukarin-w3", "@every 60m", ""],
+		]);
+		expect(r.unscheduledWatches).toEqual([
+			{ partner: "yukarin", watch_id: "w2" },
+		]);
 	});
 
 	it("ジョブ名は Dkron が受ける文字だけにする", () => {
