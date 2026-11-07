@@ -3,8 +3,14 @@ import type { Logger } from "./logger.ts";
 
 export type TimeOfDay = { hour: number; minute: number };
 
-/** 朝会は決めてほしいことの一覧、見回りは前の回から変わったことだけを見る軽い回。event は GitHub の出来事 1 件を見る回で、timer は回さない。 */
-export type RunKind = "standup" | "patrol" | "event";
+/**
+ * 朝会は決めてほしいことの一覧、見回りは前の回から変わったことだけを見る軽い回。
+ * event は GitHub の出来事 1 件、watch は見張り 1 件を見る回で、timer は回さない。
+ */
+export type RunKind = "standup" | "patrol" | "event" | "watch";
+
+/** 時刻で回す回。 */
+export type HeartbeatKind = Extract<RunKind, "standup" | "patrol">;
 
 /** JST の時刻を 0:00 からの分で持つ。start > end なら日をまたぐ。 */
 export type QuietHours = { startMinute: number; endMinute: number };
@@ -54,6 +60,19 @@ export type HeartbeatPlan = {
 	quiet: QuietHours | null;
 };
 
+/** `at` の見回りは、朝会と材料が重なるだけなので `standup` の朝会に任せるか。 */
+const closeToStandup = (standup: Date, at: Date, intervalMs: number) =>
+	standup.getTime() - at.getTime() < intervalMs / 2;
+
+/**
+ * 外から起こされた見回りを、`now` に回すか。寝ている時間帯と、朝会の直前の回は飛ばす。
+ * 間隔は `nextHeartbeat` と同じく、朝会に寄せる幅を決めるのに使う。
+ */
+export const patrolDue = (now: Date, plan: HeartbeatPlan): boolean =>
+	plan.intervalMs !== null &&
+	!(plan.quiet && inQuietHours(now, plan.quiet)) &&
+	!closeToStandup(nextStandupAt(now, plan.standupAt), now, plan.intervalMs);
+
 /**
  * 次に回す時刻と種類。見回りは間隔ごとに回し、寝ている時間帯は起きる時刻まで飛ばす。
  * 朝会の直前の見回りは朝会と材料が重なるだけなので、間隔の半分より近ければ朝会に寄せる。
@@ -61,7 +80,7 @@ export type HeartbeatPlan = {
 export const nextHeartbeat = (
 	now: Date,
 	plan: HeartbeatPlan,
-): { at: Date; kind: RunKind } => {
+): { at: Date; kind: HeartbeatKind } => {
 	const standup = nextStandupAt(now, plan.standupAt);
 	if (plan.intervalMs === null) return { at: standup, kind: "standup" };
 	let at = new Date(now.getTime() + plan.intervalMs);
@@ -69,14 +88,14 @@ export const nextHeartbeat = (
 		const end = plan.quiet.endMinute;
 		at = nextStandupAt(at, { hour: Math.floor(end / 60), minute: end % 60 });
 	}
-	return standup.getTime() - at.getTime() < plan.intervalMs / 2
+	return closeToStandup(standup, at, plan.intervalMs)
 		? { at: standup, kind: "standup" }
 		: { at, kind: "patrol" };
 };
 
 export type TimerDeps = {
 	plan: HeartbeatPlan;
-	run: (kind: RunKind) => Promise<void>;
+	run: (kind: HeartbeatKind) => Promise<void>;
 	now?: () => Date;
 	setTimer?: (fn: () => void, ms: number) => { cancel: () => void };
 	logger: Logger;

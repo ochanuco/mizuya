@@ -5,7 +5,12 @@ import { err, externalServiceUnavailable } from "./lib/core.ts";
 import { silentLogger } from "./logger.ts";
 import { openMacStateStore } from "./mac-state.ts";
 import type { PatrolSnapshot, PatrolStore } from "./patrol.ts";
-import { finishStandup, parseDecisions, startStandup } from "./standup.ts";
+import {
+	finishStandup,
+	parseDecisions,
+	startStandup,
+	startWatch,
+} from "./standup.ts";
 import {
 	ciOf,
 	gatherStandupMaterials,
@@ -803,5 +808,72 @@ describe("ciOf", () => {
 		["StatusContext の失敗も見る", [{ state: "ERROR" }], "failure"],
 	])("%s", (_name, rollup, want) => {
 		expect(ciOf(rollup)).toBe(want);
+	});
+});
+
+describe("startWatch", () => {
+	const watch = (id: string, thread: string | null = null) => ({
+		id,
+		query: "RTX3090 の中古、24GB",
+		sources: ["https://shop.example/gpu"],
+		interval_minutes: 360,
+		until_at: null,
+		last_checked_at: "2026-11-05 08:00 JST",
+		due: false,
+		seen: [],
+		notify_thread_id: thread,
+		partner: "akarin",
+	});
+
+	it("due でなくても、その見張り 1 件だけを渡して見張りの席を立てる", async () => {
+		const t = setup();
+		const deps = { ...t.deps, watchThreads: new Map<string, string>() };
+		const read = vi.fn(async (_partner: string) => [
+			watch("w1"),
+			watch("w2", "777"),
+		]);
+		const start = vi.fn(async (_spec: string, _kind: string) => "watch-1");
+		const id = await startWatch({
+			deps,
+			partner: "akarin",
+			watchId: "w2",
+			read,
+			preamble: "",
+			start,
+		});
+		expect(id).toBe("watch-1");
+		expect(read).toHaveBeenCalledWith("akarin");
+		const [spec, kind] = start.mock.calls[0] ?? [];
+		expect(kind).toBe("watch");
+		expect(spec).toContain('"id":"w2"');
+		expect(spec).not.toContain('"id":"w1"');
+		expect(spec).not.toContain("notify_thread_id");
+		expect(deps.watchThreads.get("w2")).toBe("777");
+	});
+
+	it("記憶に無い見張りと、記憶を読めなかった回は席を立てない", async () => {
+		const start = vi.fn(async (_spec: string, _kind: string) => "watch-1");
+		for (const read of [
+			async () => [watch("w1")],
+			async () => ({ unavailable: "x" }),
+		]) {
+			expect(
+				await startWatch({
+					deps: setup().deps,
+					partner: "yukarin",
+					watchId: "w9",
+					read,
+					preamble: "",
+					start,
+				}),
+			).toBeNull();
+		}
+		expect(start).not.toHaveBeenCalled();
+	});
+
+	it("見張りの報告の投稿には見張りの回と付ける", async () => {
+		const t = setup();
+		await finishStandup(t.deps, decisionsReply(1), [], "watch");
+		expect(t.discord.posts[0]?.content).toContain("の見張りから");
 	});
 });

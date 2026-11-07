@@ -273,6 +273,16 @@ ${GOAL_RULE} 新しく足された目標は、すぐ始められる一歩が材�
 ${WATCH_RULES}
 ${decisionsContract(input.materials)}`;
 
+/** Dkron が見張り 1 件の時刻に立てる席に渡す指示。その見張りだけを渡す。 */
+export const watchPrompt = (input: { now: Date; materials: string }) =>
+	`${clock(input.now)}
+見張りを 1 件調べる。持ち主はまだ投稿を見ていない。
+
+- 材料: 調べる見張り（due_watches。1 件だけ）。ほかの件は朝会と見回りが見るので触らない。
+${WATCH_RULES}
+- 決めてほしいことは、見張りを続けるかどうかなど持ち主の判断がないと進まないものだけにする。たいていの回は 0 件になる。
+${decisionsContract(input.materials)}`;
+
 /** GitHub の出来事（webhook）で立てる席に渡す指示。その件の出来事だけを渡す。 */
 export const eventPrompt = (input: { now: Date; materials: string }) =>
 	`${clock(input.now)}
@@ -284,7 +294,7 @@ ${SEAT_RULES}
 - 決めてほしいことは、持ち主の判断がないと進まないものだけにする。直せた CI、済ませた返事、様子を見ればよいものは入れない。たいていの回は 0 件になる。
 ${decisionsContract(input.materials)}`;
 
-/** 受付が朝会・見回り・GitHub の知らせの投稿の最後に足す。`from` は「2026-11-06 の朝会」「15:00 の見回り」など。 */
+/** 受付が朝会・見回り・見張り・GitHub の知らせの投稿の最後に足す。`from` は「2026-11-06 の朝会」「15:00 の見回り」など。 */
 export const standupPostFooter = (from: string) =>
 	`\n\n（${from}から。この投稿に返事をすると続きをします）`;
 

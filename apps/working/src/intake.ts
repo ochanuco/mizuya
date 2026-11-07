@@ -157,7 +157,9 @@ const runKindOf = (seat: Seat): RunKind =>
 		? "patrol"
 		: seat.threadId.startsWith("event-")
 			? "event"
-			: "standup";
+			: seat.threadId.startsWith("watch-")
+				? "watch"
+				: "standup";
 
 /**
  * 席を始められなかったときに投稿に書く文。持ち主が次に何をすればよいか分かるよう、止まった所だけを短く書く。

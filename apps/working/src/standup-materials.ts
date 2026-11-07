@@ -236,6 +236,40 @@ export const watchesOf = (
 		: { unavailable: "記憶の見張りを読めなかった" };
 };
 
+/** 1 人のパートナーの記憶から、動いている見張りを読む。Dkron のジョブの同期と、見張り 1 件の回が使う。 */
+export const readWatches = async (
+	deps: Pick<MaterialDeps, "exec" | "env" | "cwd" | "memoryBin" | "logger">,
+	partner: string,
+): Promise<Watch[] | Unavailable> => {
+	const out = await deps.exec(deps.memoryBin, ["read"], {
+		stdin: "",
+		cwd: deps.cwd,
+		timeoutMs: 60_000,
+		env: { ...deps.env, YUNOMI_PARTNER: partner },
+	});
+	if (out.code !== 0) {
+		deps.logger.warn("watches read failed", {
+			partner,
+			code: out.code,
+			stderr: out.stderr.slice(0, 300),
+		});
+		return { unavailable: `${partner} の記憶を取れなかった` };
+	}
+	let json: unknown;
+	try {
+		json = JSON.parse(out.stdout);
+	} catch {
+		json = undefined;
+	}
+	return watchesOf(json, partner);
+};
+
+/** Dkron が見張りを 1 件ずつ起こすときの、朝会と見回りの材料。見張りを外し、二度調べないようにする。 */
+export const withoutWatches = (m: StandupMaterials): StandupMaterials => ({
+	...m,
+	watches: [],
+});
+
 /** パートナーごとの見張りを 1 つにまとめる。読めたパートナーの分だけで回し、どれも読めなければ unavailable にする。 */
 const mergeWatches = (
 	lists: readonly (Watch[] | Unavailable)[],

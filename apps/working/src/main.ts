@@ -26,6 +26,7 @@ import { guardDirOf } from "./guard/env.ts";
 import { createLedger } from "./guard/ledger.ts";
 import { startInbox } from "./inbox.ts";
 import { agentOf, createIntake, type SeatPartner } from "./intake.ts";
+import { PARTNER_IDS } from "./lib/core.ts";
 import { createLogger } from "./logger.ts";
 import { createMacStateServer, openMacStateStore } from "./mac-state.ts";
 import { credentialsPathOf } from "./memory-cli/cli.ts";
@@ -34,12 +35,29 @@ import { openPatrolStore } from "./patrol.ts";
 import { readTypicalSleep } from "./persona-profile.ts";
 import { buildSeatPreamble } from "./prompts.ts";
 import { startRepoMapSync } from "./repo-map/sync.ts";
+import {
+	createDkronClient,
+	createSchedulerServer,
+	desiredJobs,
+	type RunRequest,
+	startSchedulerSync,
+} from "./scheduler.ts";
 import { createSeatStatusServer } from "./seat-status.ts";
 import { openSeatStore } from "./seat-store.ts";
 import { createHealthServer } from "./server.ts";
-import { finishStandup, startStandup } from "./standup.ts";
-import { gatherStandupMaterials } from "./standup-materials.ts";
-import { parseQuietHours, startStandupTimer } from "./standup-timer.ts";
+import { finishStandup, startStandup, startWatch } from "./standup.ts";
+import {
+	gatherStandupMaterials,
+	readWatches,
+	withoutWatches,
+} from "./standup-materials.ts";
+import {
+	type HeartbeatKind,
+	type HeartbeatPlan,
+	parseQuietHours,
+	patrolDue,
+	startStandupTimer,
+} from "./standup-timer.ts";
 import { createSystemPoster } from "./system.ts";
 import {
 	claudeCredentialsPathOf,
@@ -400,37 +418,108 @@ const inPatrolLane = <T>(task: () => Promise<T>): Promise<T> => {
 	return next;
 };
 
-const standupTimer = cfg.standup.enabled
-	? startStandupTimer({
-			plan: {
-				standupAt: cfg.standup.at,
-				intervalMs: cfg.standup.heartbeatIntervalMs,
-				// 朝会と見回りは Yukarin の席で回すので、Yukarin が寝ている時間帯は見回らない
-				quiet: parseQuietHours(typicalSleep.value),
+const heartbeatPlan: HeartbeatPlan = {
+	standupAt: cfg.standup.at,
+	intervalMs: cfg.standup.heartbeatIntervalMs,
+	// 朝会と見回りは Yukarin の席で回すので、Yukarin が寝ている時間帯は見回らない
+	quiet: parseQuietHours(typicalSleep.value),
+};
+const schedulerConfig = cfg.scheduler;
+const memoryDeps = {
+	exec: spawnExec,
+	env,
+	cwd: cfg.workDir,
+	memoryBin: cfg.memoryBin,
+	logger,
+};
+
+const runHeartbeat = (kind: HeartbeatKind) =>
+	inPatrolLane(async () => {
+		await startStandup({
+			deps: standupDeps,
+			kind,
+			store: patrolStore,
+			gather: async () => {
+				const materials = await gatherStandupMaterials({
+					...memoryDeps,
+					claudeBin: cfg.claudeBin,
+					partners: PARTNER_IDS,
+					githubOwner: cfg.standup.githubOwner,
+					macState,
+					now: () => new Date(),
+				});
+				return schedulerConfig ? withoutWatches(materials) : materials;
 			},
-			run: (kind) =>
-				inPatrolLane(async () => {
-					await startStandup({
-						deps: standupDeps,
-						kind,
-						store: patrolStore,
-						gather: () =>
-							gatherStandupMaterials({
-								exec: spawnExec,
-								env,
-								cwd: cfg.workDir,
-								claudeBin: cfg.claudeBin,
-								memoryBin: cfg.memoryBin,
-								partners: ["yukarin", "akarin"],
-								githubOwner: cfg.standup.githubOwner,
-								macState,
-								now: () => new Date(),
-								logger,
-							}),
-						preamble,
-						start: intake.startStandup,
-					});
+			preamble,
+			start: intake.startStandup,
+		});
+	});
+
+const standupTimer = cfg.standup.timer
+	? startStandupTimer({ plan: heartbeatPlan, run: runHeartbeat, logger })
+	: null;
+
+const runScheduled = async (r: RunRequest) => {
+	if (r.kind === "standup") return runHeartbeat("standup");
+	if (r.kind === "patrol") {
+		if (!patrolDue(new Date(), heartbeatPlan)) {
+			logger.info("patrol skipped", { reason: "quiet or near standup" });
+			return;
+		}
+		return runHeartbeat("patrol");
+	}
+	await inPatrolLane(() =>
+		startWatch({
+			deps: standupDeps,
+			partner: r.partner,
+			watchId: r.watchId,
+			read: (partner) => readWatches(memoryDeps, partner),
+			preamble,
+			start: intake.startStandup,
+		}),
+	);
+};
+
+// 朝会を止めているときは起こされる口を開かず、同期で受付のジョブを Dkron から消す
+const schedulerServer =
+	schedulerConfig && cfg.standup.enabled
+		? createSchedulerServer({
+				token: schedulerConfig.token,
+				run: runScheduled,
+				logger,
+			})
+		: null;
+if (schedulerConfig && schedulerServer) {
+	const { port } = schedulerConfig;
+	schedulerServer.listen(port, () => {
+		logger.info("scheduler intake ready", { port });
+	});
+}
+const schedulerSync = schedulerConfig
+	? startSchedulerSync({
+			client: createDkronClient({
+				url: schedulerConfig.url,
+				clientId: schedulerConfig.clientId,
+				clientSecret: schedulerConfig.clientSecret,
+			}),
+			desired: async () =>
+				desiredJobs({
+					standupAt: cfg.standup.enabled ? cfg.standup.at : null,
+					patrolSchedule:
+						cfg.standup.enabled && cfg.standup.heartbeatIntervalMs !== null
+							? schedulerConfig.patrolSchedule
+							: null,
+					watches: cfg.standup.enabled
+						? await Promise.all(
+								PARTNER_IDS.map(
+									async (p) => [p, await readWatches(memoryDeps, p)] as const,
+								),
+							)
+						: [],
+					selfUrl: schedulerConfig.selfUrl,
+					token: schedulerConfig.token,
 				}),
+			intervalMs: schedulerConfig.syncIntervalMs,
 			logger,
 		})
 	: null;
@@ -547,6 +636,8 @@ const shutdown = (signal: string) => {
 	repoMapSync.stop();
 	usage.stop();
 	standupTimer?.stop();
+	schedulerSync?.stop();
+	schedulerServer?.close();
 	activityLogTimer?.stop();
 	githubEvents?.stop();
 	macStateServer?.close();
