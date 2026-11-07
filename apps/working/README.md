@@ -204,6 +204,7 @@ yunomi-memory write --kind done --summary "<1行の要約>"     # 終わった�
 yunomi-memory write --kind goal --summary "<1行の目標>"     # 持ち主の目標。id を返す
 yunomi-memory close --id <目標の id> --status achieved      # 目標を閉じる（やめたら dropped）
 yunomi-memory watch-add --query "<何を>" --source "<どこを>" --interval-hours 6 --until "2026-12-31T23:59:00+09:00"  # 見張りを足す。id と登録した内容を出す
+yunomi-memory watch-add --query "<何を>" --schedule "0 9-18 * * 1-5"  # 時間帯や曜日を決めて見張りを足す
 yunomi-memory watch-stop --id <見張りの id>                  # 見張りを止める
 yunomi-memory watch-checked --id <見張りの id> --seen "<key>" --partner <パートナー>  # 見張りを調べ終えた。--seen は知らせたもの（0 件以上）。--partner は見張りを持つパートナー（省くと YUNOMI_PARTNER か既定）
 ```
@@ -211,7 +212,7 @@ yunomi-memory watch-checked --id <見張りの id> --seen "<key>" --partner <パ
 - 呼ぶ先は yunomi の Worker の `/v1/partners/<パートナー>/working/memory`。パートナーは環境変数 `YUNOMI_PARTNER`（Akarin の席の Codex がコマンドに渡す）、無ければ `yukarin`。受付が完了のときに残す 1 行も、担当のパートナーの記憶に書く。記憶の持ち主は `WORKING_OWNER_DISCORD_USER_IDS` の先頭の人。
 - 受付は起動時に `YUNOMI_URL` と `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` を `STATE_DIR/memory-credentials.json`（権限 600）に書き、`yunomi-memory` はそこから読む。service token は席の Claude の環境変数に載せず、標準出力にも標準エラーにも出さない。3 つのどれかが欠けていれば、ファイルを消して記憶の道具を使えなくする。
 - `summary` は改行を含まない 200 字以内。
-- `watch-add` の項目と検証は Talking の道具 `watch_add` と同じ。`--query` は改行を含まない 200 字以内、`--source` は店やサイトの名前か URL で 1 件 300 字以内・5 件まで（省くと普通の検索）、`--interval-hours` は 1 〜 168 の整数（省くと 24）、`--until` はタイムゾーン付きの ISO 8601（省くと期限なし）。日時の形と過去の期限は Worker が弾き、理由を標準エラーに出す。同じ `--query` の見張りがあるときと、動いている見張りが 10 件あるときは 409 で足さない。
+- `watch-add` の項目と検証は Talking の道具 `watch_add` と同じ。`--query` は改行を含まない 200 字以内、`--source` は店やサイトの名前か URL で 1 件 300 字以内・5 件まで（省くと普通の検索）、`--interval-hours` は 1 〜 168 の整数（省くと 24）、`--schedule` は日本時間の 5 項目の cron 式（分 時 日 月 曜日。曜日は 0 と 7 が日曜）で `--interval-hours` とはどちらか一方、`--until` はタイムゾーン付きの ISO 8601（省くと期限なし）。CLI は cron 式の項目の数と文字種だけを見る。日時の形、過去の期限、cron 式の誤りと発火の間隔が 30 分より短い式は Worker が 400 で弾き、理由を標準エラーに出す。同じ `--query` の見張りがあるときと、動いている見張りが 10 件あるときは 409 で足さない。
 
 ### 席の状態の受け口
 
@@ -245,7 +246,7 @@ Renovate の PR は持ち主の許しで、朝会と見回りの席が片付け�
 持ち主が会話で頼んだ見張り（yunomi の Worker の README の「見張り」）と、仕事の投稿で頼まれて席が `yunomi-memory watch-add` で足した見張りは、朝会と見回りの席が調べる。
 
 - 内蔵のタイマーで回すときは、記憶の `watches` のうち `due`（前に調べてから間隔が過ぎた、まだ調べていない）のものだけを `due_watches` として席に渡す。見回りは GitHub に変わりが無くても、時間が来た見張りがあれば席を立てる。どちらも無い回は席を立てない。
-- Dkron に任せるときは、朝会と見回りに見張りを渡さない。見張りごとのジョブが `interval_minutes` の間隔で受付を起こし、受付はその見張り 1 件だけを `due` によらず見張りの席（`seat-watch-<ID>`）に渡す。起こされた時点で記憶に無い（止められた、期限が切れた）見張りと、記憶を読めなかった回は席を立てない。
+- Dkron に任せるときは、朝会と見回りに見張りを渡さない。見張りごとのジョブが、cron 式（`schedule`）の見張りはその時刻に、間隔の見張りは `interval_minutes` の間隔で受付を起こし、受付はその見張り 1 件だけを `due` によらず見張りの席（`seat-watch-<ID>`）に渡す。起こされた時点で記憶に無い（止められた、期限が切れた）見張りと、記憶を読めなかった回は席を立てない。
 - 席は持ち主に確認せず、WebSearch と WebFetch で調べる（auto モードが通す読み取り）。URL の場所は検索よりそのページを直接読む。
 - 条件に合うもののうち `seen` に無いものだけを新着とし、`worker_done` の JSON の `notices` に見張りの id と 1 行の本文で返す。新着が無ければ何も書かない。
 - 受付は新着を書く先ごとにまとめて 1 件のメッセージで書く。席が仕事の投稿で足した見張りは、`yunomi-memory watch-add` が席の作業場所から読んだ投稿（記憶の `notify_thread_id`）に書く。会話で頼まれた見張りと、受付が再起動して書く先を忘れた回は `WORK_TEXT_CHANNEL_ID` のチャンネルに書く。書けなければ 10 秒後と 60 秒後にやり直す。
@@ -289,15 +290,16 @@ Dkron の API と UI には認証が無いので、Dkron は LAN に口を出さ
 
 受付は起動時、`SCHEDULER_SYNC_INTERVAL_MINUTES`（既定は 10 分）ごと、席が完了か質問を返したときに、あるべきジョブの一覧を作って Dkron の今のジョブと突き合わせ、作成・更新・削除する。
 
-| ジョブ                             | schedule                                                                  | timezone     |
-| ---------------------------------- | ------------------------------------------------------------------------- | ------------ |
-| `standup`                          | `STANDUP_TIME` から作る `0 MM HH * * *`                                   | `Asia/Tokyo` |
-| `patrol`                           | `PATROL_SCHEDULE`（既定は `0 0 */2 * * *`）。見回りを止めていれば置かない | `Asia/Tokyo` |
-| `watch-<パートナー>-<見張りの id>` | `@every <interval_minutes>m`。動いている見張りごとに 1 つ                 | なし         |
+| ジョブ                             | schedule                                                                   | timezone     |
+| ---------------------------------- | -------------------------------------------------------------------------- | ------------ |
+| `standup`                          | `STANDUP_TIME` から作る `0 MM HH * * *`                                    | `Asia/Tokyo` |
+| `patrol`                           | `PATROL_SCHEDULE`（既定は `0 0 */2 * * *`）。見回りを止めていれば置かない  | `Asia/Tokyo` |
+| `watch-<パートナー>-<見張りの id>` | 見張りの `schedule` の前に秒の `0` を足した式。動いている見張りごとに 1 つ | `Asia/Tokyo` |
+| 同上（間隔の見張り）               | `@every <interval_minutes>m`                                               | なし         |
 
 - どのジョブも `concurrency: "forbid"`、`executor: "http"` で、`SCHEDULER_SELF_URL` に `Authorization: Bearer <SCHEDULER_TOKEN>` を付けて POST し、202 を待つ。失敗すれば 2 回までやり直す。
 - 受付のジョブは `metadata.owner` が `mizuya-working`。それ以外のジョブには触らない。
-- 見張りのジョブ名は id を小文字にし、使えない文字を `-` に置き換える。見張りが止められたり期限が切れたりすれば、次の同期でジョブを消す。記憶を読めなかったパートナーの見張りのジョブは消さずに残す。
+- 見張りのジョブ名は id を小文字にし、使えない文字を `-` に置き換える。見張りが止められたり期限が切れたりすれば、次の同期でジョブを消す。記憶を読めなかったパートナーの見張りのジョブは消さずに残す。`schedule` も `interval_minutes` も無い見張りはジョブを置かず、同期のたびに warn のログ（`watch has no schedule`）を残す。
 - `STANDUP_ENABLED=false` なら受付のジョブをすべて消す。
 - Dkron に届かなければログを残して次の回に任せ、受付は止めない。Dkron は止まっている間に過ぎた回を後から実行しないので、その回は飛ぶ。
 

@@ -48,6 +48,8 @@ export const WATCH_SOURCES_MAX = 5;
 export const WATCH_INTERVAL_MIN_HOURS = 1;
 export const WATCH_INTERVAL_MAX_HOURS = 24 * 7;
 export const WATCH_INTERVAL_DEFAULT_HOURS = 24;
+/** 発火の間隔などの細かい検証は Worker に任せ、ここでは 5 項目と文字種だけ見る。 */
+const CRON_FIELD = /^[0-9*,/-]+$/;
 
 export type CliOutput = { code: number; stdout: string; stderr: string };
 
@@ -55,7 +57,7 @@ const USAGE = `使い方:
   yunomi-memory read
   yunomi-memory write --kind decided|done|goal --summary "<1行の要約>"
   yunomi-memory close --id <目標の id> --status achieved|dropped
-  yunomi-memory watch-add --query "<何を>" [--source "<どこを>"]... [--interval-hours <時間>] [--until "<ISO 8601>"]
+  yunomi-memory watch-add --query "<何を>" [--source "<どこを>"]... [--interval-hours <時間> | --schedule "<cron 式>"] [--until "<ISO 8601>"]
   yunomi-memory watch-stop --id <見張りの id>
   yunomi-memory watch-checked --id <見張りの id> [--seen "<知らせたものの key>"]... [--partner <パートナー>]
 `;
@@ -125,6 +127,7 @@ export const runMemoryCli = async (
 		query?: string;
 		source?: string[];
 		"interval-hours"?: string;
+		schedule?: string;
 		until?: string;
 		partner?: string;
 	};
@@ -140,6 +143,7 @@ export const runMemoryCli = async (
 				query: { type: "string" },
 				source: { type: "string", multiple: true },
 				"interval-hours": { type: "string" },
+				schedule: { type: "string" },
 				until: { type: "string" },
 				partner: { type: "string" },
 			},
@@ -156,7 +160,7 @@ export const runMemoryCli = async (
 		read: [],
 		write: ["kind", "summary"],
 		close: ["id", "status"],
-		"watch-add": ["query", "source", "interval-hours", "until"],
+		"watch-add": ["query", "source", "interval-hours", "schedule", "until"],
 		"watch-stop": ["id"],
 		"watch-checked": ["id", "seen", "partner"],
 	};
@@ -184,12 +188,11 @@ export const runMemoryCli = async (
 		values.id = (values.id ?? "").trim();
 	}
 	let watch:
-		| {
+		| ({
 				query: string;
 				sources: string[];
-				interval_hours: number;
 				until: string | null;
-		  }
+		  } & ({ interval_hours: number } | { schedule: string }))
 		| undefined;
 	if (command === "watch-add") {
 		const query = (values.query ?? "").trim();
@@ -209,24 +212,44 @@ export const runMemoryCli = async (
 		if (sources.length > WATCH_SOURCES_MAX) {
 			return fail(2, `--source は ${WATCH_SOURCES_MAX} 件まで`);
 		}
-		const hoursText =
-			values["interval-hours"]?.trim() ?? String(WATCH_INTERVAL_DEFAULT_HOURS);
-		const hours = Number(hoursText);
 		if (
-			!/^\d+$/.test(hoursText) ||
-			hours < WATCH_INTERVAL_MIN_HOURS ||
-			hours > WATCH_INTERVAL_MAX_HOURS
+			values["interval-hours"] !== undefined &&
+			values.schedule !== undefined
 		) {
-			return fail(
-				2,
-				`--interval-hours は ${WATCH_INTERVAL_MIN_HOURS} 〜 ${WATCH_INTERVAL_MAX_HOURS} の整数`,
-			);
+			return fail(2, `--interval-hours と --schedule はどちらか一方\n${USAGE}`);
+		}
+		let timing: { interval_hours: number } | { schedule: string };
+		if (values.schedule !== undefined) {
+			const fields = values.schedule.trim().split(/\s+/);
+			if (fields.length !== 5 || !fields.every((f) => CRON_FIELD.test(f))) {
+				return fail(
+					2,
+					"--schedule は 5 項目の cron 式（分 時 日 月 曜日）で書く。例: 0 9-18 * * 1-5",
+				);
+			}
+			timing = { schedule: fields.join(" ") };
+		} else {
+			const hoursText =
+				values["interval-hours"]?.trim() ??
+				String(WATCH_INTERVAL_DEFAULT_HOURS);
+			const hours = Number(hoursText);
+			if (
+				!/^\d+$/.test(hoursText) ||
+				hours < WATCH_INTERVAL_MIN_HOURS ||
+				hours > WATCH_INTERVAL_MAX_HOURS
+			) {
+				return fail(
+					2,
+					`--interval-hours は ${WATCH_INTERVAL_MIN_HOURS} 〜 ${WATCH_INTERVAL_MAX_HOURS} の整数`,
+				);
+			}
+			timing = { interval_hours: hours };
 		}
 		const until = values.until?.trim();
 		if (until !== undefined && (until === "" || /[\r\n]/.test(until))) {
 			return fail(2, "--until はタイムゾーン付きの ISO 8601 の日時で書く");
 		}
-		watch = { query, sources, interval_hours: hours, until: until ?? null };
+		watch = { query, sources, ...timing, until: until ?? null };
 	}
 	if (command === "watch-stop") {
 		if ((values.id ?? "").trim() === "") return fail(2, USAGE);
@@ -333,7 +356,9 @@ export const runMemoryCli = async (
 			`見張りを足した (id: ${id})`,
 			`何を: ${watch.query}`,
 			`どこを: ${where}`,
-			`間隔: ${watch.interval_hours} 時間おき`,
+			"schedule" in watch
+				? `いつ: ${watch.schedule}（日本時間の cron 式）`
+				: `間隔: ${watch.interval_hours} 時間おき`,
 			`期限: ${watch.until ?? "なし"}`,
 		];
 		return { code: 0, stdout: `${lines.join("\n")}\n`, stderr: "" };

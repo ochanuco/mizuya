@@ -240,6 +240,45 @@ describe("runMemoryCli", () => {
 		expect(out.stdout).toContain("期限: なし");
 	});
 
+	it("watch-add は --schedule の cron 式を間隔の代わりに送る", async () => {
+		const f = respond(201, { id: "w3" });
+		const out = await runMemoryCli(
+			[
+				"watch-add",
+				"--query",
+				"中古の万年筆",
+				"--schedule",
+				" 0  9-18 * * 1-5 ",
+			],
+			setup(),
+			f as typeof fetch,
+		);
+		expect(out.code).toBe(0);
+		expect(JSON.parse(String(f.mock.calls[0]?.[1]?.body)).watch).toEqual({
+			query: "中古の万年筆",
+			sources: [],
+			schedule: "0 9-18 * * 1-5",
+			until: null,
+		});
+		expect(out.stdout).toContain("いつ: 0 9-18 * * 1-5（日本時間の cron 式）");
+		expect(out.stdout).not.toContain("間隔:");
+	});
+
+	it("watch-add の --schedule が Worker に弾かれたら理由を出す", async () => {
+		const out = await runMemoryCli(
+			["watch-add", "--query", "q", "--schedule", "*/5 * * * *"],
+			setup(),
+			respond(400, {
+				error: "validation_failed",
+				message: "schedule: 間隔が短すぎる",
+			}) as typeof fetch,
+		);
+		expect(out.code).toBe(1);
+		expect(out.stderr).toContain(
+			"validation_failed (schedule: 間隔が短すぎる)",
+		);
+	});
+
 	it("watch-add が Worker に弾かれたら理由を出す", async () => {
 		const out = await runMemoryCli(
 			["watch-add", "--query", "q", "--until", "2020-01-01T00:00:00+09:00"],
@@ -311,6 +350,20 @@ describe("runMemoryCli", () => {
 			["watch-add", "--query", "q", "--interval-hours", "1.5"],
 			["watch-add", "--query", "q", "--interval-hours", "毎日"],
 			["watch-add", "--query", "q", "--until", ""],
+			[
+				"watch-add",
+				"--query",
+				"q",
+				"--interval-hours",
+				"6",
+				"--schedule",
+				"0 9 * * *",
+			],
+			["watch-add", "--query", "q", "--schedule", "0 9 * *"],
+			["watch-add", "--query", "q", "--schedule", "0 0 9 * * *"],
+			["watch-add", "--query", "q", "--schedule", "0 9 * * MON"],
+			["watch-add", "--query", "q", "--schedule", "@every 1h"],
+			["watch-add", "--query", "q", "--schedule", ""],
 			["watch-add", "--query", "q", "--id", "w1"],
 			["watch-stop"],
 			["watch-stop", "--id", " "],

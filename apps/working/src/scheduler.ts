@@ -105,6 +105,20 @@ const jobNamePart = (s: string) => s.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
 export const watchJobName = (partner: string, watchId: string) =>
 	`watch-${jobNamePart(partner)}-${jobNamePart(watchId)}`;
 
+/**
+ * 見張りの cron 式は日本時間の 5 項目なので、Dkron の秒を前に足して Asia/Tokyo で回す。
+ * @every には timezone が効かないので空にする。
+ */
+const watchTiming = (
+	w: Watch,
+): { schedule: string; timezone: string } | null => {
+	if (w.schedule !== null)
+		return { schedule: `0 ${w.schedule}`, timezone: TIMEZONE };
+	if (w.interval_minutes !== null)
+		return { schedule: `@every ${w.interval_minutes}m`, timezone: "" };
+	return null;
+};
+
 export type DesiredJobsInput = {
 	/** null なら朝会のジョブを置かない。 */
 	standupAt: TimeOfDay | null;
@@ -121,6 +135,8 @@ export type DesiredJobs = {
 	jobs: DkronJob[];
 	/** 見張りを読めなかったパートナー。そのパートナーの見張りのジョブは消さずに残す。 */
 	unknownPartners: PartnerId[];
+	/** schedule も interval_minutes も無く、ジョブを置けなかった見張り。 */
+	unscheduledWatches: { partner: PartnerId; watch_id: string }[];
 };
 
 /** 受付があるべきとするジョブの一覧。 */
@@ -176,25 +192,30 @@ export const desiredJobs = (input: DesiredJobsInput): DesiredJobs => {
 		);
 	}
 	const unknownPartners: PartnerId[] = [];
+	const unscheduledWatches: DesiredJobs["unscheduledWatches"] = [];
 	for (const [partner, watches] of input.watches) {
 		if (failed(watches)) {
 			unknownPartners.push(partner);
 			continue;
 		}
 		for (const w of watches) {
-			// @every には timezone が効かないので空にする
+			const timing = watchTiming(w);
+			if (timing === null) {
+				unscheduledWatches.push({ partner, watch_id: w.id });
+				continue;
+			}
 			jobs.push(
 				job(
 					watchJobName(partner, w.id),
-					`@every ${w.interval_minutes}m`,
-					"",
+					timing.schedule,
+					timing.timezone,
 					{ kind: "watch", partner, watch_id: w.id },
 					{ kind: "watch", partner },
 				),
 			);
 		}
 	}
-	return { jobs, unknownPartners };
+	return { jobs, unknownPartners, unscheduledWatches };
 };
 
 const stringRecord = v.nullish(v.record(v.string(), v.string()), {});
@@ -354,6 +375,8 @@ export const syncJobs = async (deps: {
 		deps.client.list(),
 	]);
 	if (!current.ok) return current;
+	for (const w of desired.unscheduledWatches)
+		deps.logger.warn("watch has no schedule", w);
 	const plan = planSync(desired, current.value);
 	const report: SyncReport = { created: 0, updated: 0, removed: 0, failed: 0 };
 	const write = async (

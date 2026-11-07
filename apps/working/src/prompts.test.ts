@@ -45,9 +45,13 @@ describe("workingInstructions", () => {
 			expect(text).toContain("yunomi-memory watch-add --query");
 			expect(text).toContain("--source");
 			expect(text).toContain("--interval-hours");
+			expect(text).toContain('--schedule "<cron 式>"');
+			expect(text).toContain("0 9-18 * * 1-5");
 			expect(text).toContain("--until");
 			expect(text).toContain("yunomi-memory watch-stop --id");
-			expect(text).toContain("何を・どこを・何時間おきに見張るか");
+			expect(text).toContain(
+				"何を・どこを・いつ（何時間おきか、cron 式の時間帯と曜日）見張るか",
+			);
 			expect(text).not.toContain("登録と停止は会話のとき");
 		},
 	);

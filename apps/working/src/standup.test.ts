@@ -256,6 +256,7 @@ describe("startStandup の見回り", () => {
 		query: "RTX3090 の中古、24GB",
 		sources: ["https://shop.example/gpu"],
 		interval_minutes: 360,
+		schedule: null,
 		until_at: null,
 		last_checked_at: due ? "2026-11-04 12:00 JST" : "2026-11-05 08:00 JST",
 		due,
@@ -760,11 +761,29 @@ describe("watchesOf", () => {
 			seen: [],
 		};
 		expect(watchesOf({ watches: [w] }, "akarin")).toEqual([
-			{ ...w, notify_thread_id: null, partner: "akarin" },
+			{ ...w, schedule: null, notify_thread_id: null, partner: "akarin" },
 		]);
 		expect(watchesOf({ facts: [] }, "akarin")).toEqual({
 			unavailable: "記憶の見張りを読めなかった",
 		});
+	});
+
+	it("cron 式の見張りは間隔が null でも読む", () => {
+		const w = {
+			id: "w2",
+			query: "q",
+			sources: [],
+			interval_minutes: null,
+			schedule: "0 9-18 * * 1-5",
+			until_at: null,
+			last_checked_at: null,
+			due: false,
+			seen: [],
+			notify_thread_id: null,
+		};
+		expect(watchesOf({ watches: [w] }, "yukarin")).toEqual([
+			{ ...w, partner: "yukarin" },
+		]);
 	});
 });
 
@@ -817,6 +836,7 @@ describe("startWatch", () => {
 		query: "RTX3090 の中古、24GB",
 		sources: ["https://shop.example/gpu"],
 		interval_minutes: 360,
+		schedule: null,
 		until_at: null,
 		last_checked_at: "2026-11-05 08:00 JST",
 		due: false,
