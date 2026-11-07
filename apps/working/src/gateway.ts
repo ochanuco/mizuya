@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import {
-	ActivityType,
 	Client,
 	Events,
 	GatewayIntentBits,
@@ -98,10 +97,6 @@ const canRead = (c: Client<true>, channelId: string): boolean => {
 };
 
 export type WorkGateway = {
-	/** bot のステータスを書き換える。null で消す。 */
-	setActivity: (text: string | null) => void;
-	/** application の説明文（プロフィールの自己紹介欄）を書き換える。失敗したら false。 */
-	setBio: (text: string) => Promise<boolean>;
 	stop: () => Promise<void>;
 };
 
@@ -158,19 +153,6 @@ export const startWorkGateway = async (opts: {
 	await client.login(opts.token);
 	await ready;
 	return {
-		setActivity: (text) => {
-			if (text === null) client.user?.setPresence({ activities: [] });
-			else client.user?.setActivity(text, { type: ActivityType.Custom });
-		},
-		setBio: async (text) => {
-			try {
-				await client.application?.edit({ description: text });
-				return true;
-			} catch (e) {
-				log.warn("usage bio update failed", { error: String(e) });
-				return false;
-			}
-		},
 		stop: () => client.destroy(),
 	};
 };
