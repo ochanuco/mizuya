@@ -8,6 +8,7 @@ import {
 	type Result,
 } from "./lib/core.ts";
 import type { Logger } from "./logger.ts";
+import { partnerName } from "./seat-model.ts";
 import { authorized, readBody, reply } from "./server.ts";
 import { failed, type Unavailable, type Watch } from "./standup-materials.ts";
 import type { TimeOfDay } from "./standup-timer.ts";
@@ -80,6 +81,8 @@ export const createSchedulerServer = (deps: {
 /** Dkron のジョブのうち、受付が書いて突き合わせる項目。 */
 export type DkronJob = {
 	name: string;
+	/** Dkron の画面に出す名前。name は ID を含むので人には読みにくい。 */
+	displayname: string;
 	schedule: string;
 	timezone: string;
 	concurrency: "forbid";
@@ -139,16 +142,28 @@ export type DesiredJobs = {
 	unscheduledWatches: { partner: PartnerId; watch_id: string }[];
 };
 
+const DISPLAY_QUERY_MAX = 40;
+
+export const watchDisplayName = (partner: PartnerId, query: string) => {
+	const q =
+		query.length > DISPLAY_QUERY_MAX
+			? `${query.slice(0, DISPLAY_QUERY_MAX)}…`
+			: query;
+	return `見張り（${partnerName(partner)}）: ${q}`;
+};
+
 /** 受付があるべきとするジョブの一覧。 */
 export const desiredJobs = (input: DesiredJobsInput): DesiredJobs => {
 	const job = (
 		name: string,
+		displayname: string,
 		schedule: string,
 		timezone: string,
 		body: unknown,
 		metadata: Record<string, string>,
 	): DkronJob => ({
 		name,
+		displayname,
 		schedule,
 		timezone,
 		concurrency: "forbid",
@@ -173,6 +188,7 @@ export const desiredJobs = (input: DesiredJobsInput): DesiredJobs => {
 		jobs.push(
 			job(
 				"standup",
+				"朝会",
 				dailyCron(input.standupAt),
 				TIMEZONE,
 				{ kind: "standup" },
@@ -184,6 +200,7 @@ export const desiredJobs = (input: DesiredJobsInput): DesiredJobs => {
 		jobs.push(
 			job(
 				"patrol",
+				"見回り",
 				input.patrolSchedule,
 				TIMEZONE,
 				{ kind: "patrol" },
@@ -207,6 +224,7 @@ export const desiredJobs = (input: DesiredJobsInput): DesiredJobs => {
 			jobs.push(
 				job(
 					watchJobName(partner, w.id),
+					watchDisplayName(partner, w.query),
 					timing.schedule,
 					timing.timezone,
 					{ kind: "watch", partner, watch_id: w.id },
@@ -222,6 +240,7 @@ const stringRecord = v.nullish(v.record(v.string(), v.string()), {});
 
 const currentJobSchema = v.object({
 	name: v.string(),
+	displayname: v.optional(v.string(), ""),
 	schedule: v.optional(v.string(), ""),
 	timezone: v.optional(v.string(), ""),
 	concurrency: v.optional(v.string(), ""),
@@ -242,6 +261,7 @@ const sameRecord = (
 	Object.entries(want).every(([k, val]) => got[k] === val);
 
 const sameJob = (want: DkronJob, got: CurrentJob) =>
+	want.displayname === got.displayname &&
 	want.schedule === got.schedule &&
 	want.timezone === got.timezone &&
 	want.concurrency === got.concurrency &&

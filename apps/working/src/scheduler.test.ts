@@ -205,6 +205,18 @@ describe("desiredJobs", () => {
 		]);
 	});
 
+	it("画面に出す名前は、朝会・見回りと、見張りのパートナーと探しもの", () => {
+		const r = desiredJobs({
+			...input,
+			watches: [["akarin", [{ ...watch("w1", 60), query: "a".repeat(50) }]]],
+		});
+		expect(r.jobs.map((j) => j.displayname)).toEqual([
+			"朝会",
+			"見回り",
+			`見張り（あかりちゃん）: ${"a".repeat(40)}…`,
+		]);
+	});
+
 	it("ジョブ名は Dkron が受ける文字だけにする", () => {
 		expect(watchJobName("yukarin", "01JX ABC/def")).toBe(
 			"watch-yukarin-01jx-abc-def",
@@ -233,6 +245,11 @@ describe("planSync", () => {
 		]);
 		expect(plan.create.map((j) => j.name)).toEqual(["watch-yukarin-w1"]);
 		expect(plan.update.map((j) => j.name)).toEqual(["patrol"]);
+		expect(
+			planSync(d, [asCurrent({ ...standup, displayname: "" })]).update.map(
+				(j) => j.name,
+			),
+		).toEqual(["standup"]);
 		expect(plan.remove).toEqual([]);
 	});
 
