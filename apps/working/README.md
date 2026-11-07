@@ -88,6 +88,7 @@ yunomi の gateway が仕事カテゴリの発言とボタンを `POST /events` 
 - 仕事テキストチャンネルでは、role `ゆかり`（`YUKARIN_ROLE_ID`）、ゆかりんの bot、mizuya の bot のどれかへのメンションで Yukarin 宛てになる。`あかり` と両方なら Akarin。メンションが無ければ、返信した先が人格の bot の発言ならその席宛て。それ以外は依頼とみなさない。
 - 投稿の担当は席を作るときに決めて `seats.json` の `partners` に残す。投稿への返事、止めた席を起こすとき、完了のあとにまた書いたときも、同じ担当が受ける。
 - 人格の作業は担当の席の人格の bot（ゆかりん・あかりん）、システムの介入は mizuya の bot で書く。人格の bot が書くのは、席の返事、投稿（朝会・見回り・GitHub の出来事・活動ログを含む）、タグ、リアクション、入力中の表示。mizuya の bot が書くのは、状態の欄と、許可・却下・不要のボタンが付いたメッセージ。ボタンは、それを求める人格の発言のすぐ後に、押し方を添えて出す。ボタンの custom_id には `working:` を頭に付け、mizuya の Worker がこれで受け箱に回す。
+- 投稿の最初の人格の発言では、依頼者にメンションして通知する。仕事テキストチャンネルの依頼から立てた投稿は「<依頼者> さんからの依頼」の発言、フォーラムに直接立てた投稿は席の最初の返事、朝会・見回り・GitHub の出来事の投稿は最初の発言で持ち主（`WORKING_OWNER_DISCORD_USER_IDS` の先頭）にメンションする。通知するのはその人だけ。
 - タグ・リアクション・入力中の表示・読み取りは mizuya の bot で行う。
 - Akarin の席は Codex CLI で動き、前置きの人格は `persona.sh akarin`、記憶の読み書きは Akarin の記憶（`/v1/partners/akarin/working/memory`）にする。
 - Codex は `codex -a never -s danger-full-access` で起動する。止めた席は同じ worktree で `codex resume --last` で起こす。Codex の `resume --last` は作業ディレクトリの最新の会話を選ぶので、投稿ごとの worktree で前の会話のまま続く。

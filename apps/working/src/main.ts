@@ -185,6 +185,7 @@ const activityLog = openActivityLog(cfg.stateDir);
 const standupDeps = {
 	discord,
 	system,
+	ownerUserId: cfg.ownerDiscordUserId,
 	approvals,
 	ledger,
 	workForumChannelId: cfg.workForumChannelId,

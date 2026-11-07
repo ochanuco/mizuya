@@ -92,6 +92,7 @@ export const fakeDiscord = () => {
 		content: string;
 		tagIds: string[];
 		buttons?: string[];
+		notify?: string[];
 	}[] = [];
 	const history = new Map<string, PostedMessage[]>();
 	/** `${channelId}/${messageId}` ごとの bot のリアクション。 */
@@ -134,12 +135,14 @@ export const fakeDiscord = () => {
 					content: string;
 					tagIds: string[];
 					buttons?: readonly { customId: string }[];
+					notify?: readonly string[];
 				},
 			) => {
 				const id = `thread${nextThread++}`;
-				const { buttons, ...rest } = post;
+				const { buttons, notify, ...rest } = post;
 				posts.push({
 					...rest,
+					...(notify?.length ? { notify: [...notify] } : {}),
 					...(buttons?.length
 						? { buttons: buttons.map((b) => b.customId) }
 						: {}),

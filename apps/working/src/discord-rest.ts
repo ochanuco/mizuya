@@ -112,6 +112,8 @@ export type DiscordApi = {
 			content: string;
 			tagIds: string[];
 			buttons?: readonly Button[];
+			/** 本文でメンションした人のうち、通知してよい人。 */
+			notify?: readonly string[];
 		},
 	) => Promise<Result<{ threadId: string }, DomainError>>;
 	/**
@@ -344,7 +346,9 @@ export const createDiscordRest = (opts: DiscordRestOptions): DiscordApi => {
 					applied_tags: post.tagIds,
 					message: {
 						content: post.content.slice(0, MESSAGE_LIMIT),
-						allowed_mentions: noMentions,
+						allowed_mentions: post.notify?.length
+							? { parse: [], users: [...post.notify] }
+							: noMentions,
 						...(post.buttons?.length
 							? { components: toComponents(post.buttons) }
 							: {}),
