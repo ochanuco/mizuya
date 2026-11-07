@@ -26,6 +26,7 @@ import { guardDirOf } from "./guard/env.ts";
 import { createLedger } from "./guard/ledger.ts";
 import { startInbox } from "./inbox.ts";
 import { agentOf, createIntake, type SeatPartner } from "./intake.ts";
+import { pickupIssues, startIssuePickupTimer } from "./issue-pickup.ts";
 import { PARTNER_IDS } from "./lib/core.ts";
 import { createLogger } from "./logger.ts";
 import { createMacStateServer, openMacStateStore } from "./mac-state.ts";
@@ -605,6 +606,26 @@ const githubEvents = cfg.standup.enabled
 		})()
 	: null;
 
+// label の付いた issue は Discord の依頼と同じく、仕事フォーラムの投稿を立てて席で作業する
+const ISSUE_PICKUP_INTERVAL_MS = 10 * 60_000;
+const issuePickupTimer = cfg.standup.enabled
+	? startIssuePickupTimer({
+			run: () =>
+				pickupIssues({
+					exec: spawnExec,
+					env,
+					cwd: cfg.workDir,
+					owner: cfg.standup.githubOwner,
+					akarinEnabled: akarin !== null,
+					working: () => intake.summary().partners,
+					start: intake.startFromIssue,
+					logger,
+				}),
+			intervalMs: ISSUE_PICKUP_INTERVAL_MS,
+			logger,
+		})
+	: null;
+
 // 受け箱は GitHub の出来事の渡し先ができてからつなぐ。つないだ直後に溜まっていた行が届く
 if (!cfg.inbox) {
 	logger.warn("mizuya inbox disabled; buttons are not received", {
@@ -649,6 +670,7 @@ const shutdown = (signal: string) => {
 	schedulerServer?.close();
 	activityLogTimer?.stop();
 	githubEvents?.stop();
+	issuePickupTimer?.stop();
 	macStateServer?.close();
 	server.close();
 	inbox?.stop();
