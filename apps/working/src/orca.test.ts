@@ -446,7 +446,7 @@ describe("createOrcaCli", () => {
 			agent: "codex",
 			model: "terra",
 		});
-		expect(commandOfLast()).toMatch(/^codex -m terra -a never /);
+		expect(commandOfLast()).toMatch(/^codex -m gpt-5.6-terra -a never /);
 		await t.orca.resumeSeat({
 			path: seat,
 			title: "件名",
@@ -454,7 +454,9 @@ describe("createOrcaCli", () => {
 			agent: "codex",
 			model: "luna",
 		});
-		expect(commandOfLast()).toMatch(/^codex resume --last -m luna -a never /);
+		expect(commandOfLast()).toMatch(
+			/^codex resume --last -m gpt-5.6-luna -a never /,
+		);
 	});
 
 	it("モデルを選んでいない席はモデルを渡さない", async () => {
