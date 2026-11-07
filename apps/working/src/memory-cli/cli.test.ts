@@ -306,7 +306,7 @@ describe("runMemoryCli", () => {
 				"q",
 				...Array.from({ length: 6 }, (_, i) => ["--source", `店${i}`]).flat(),
 			],
-			["watch-add", "--query", "q", "--interval-hours", "1"],
+			["watch-add", "--query", "q", "--interval-hours", "0"],
 			["watch-add", "--query", "q", "--interval-hours", "169"],
 			["watch-add", "--query", "q", "--interval-hours", "1.5"],
 			["watch-add", "--query", "q", "--interval-hours", "毎日"],

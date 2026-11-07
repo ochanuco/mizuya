@@ -211,7 +211,7 @@ yunomi-memory watch-checked --id <見張りの id> --seen "<key>" --partner <パ
 - 呼ぶ先は yunomi の Worker の `/v1/partners/<パートナー>/working/memory`。パートナーは環境変数 `YUNOMI_PARTNER`（Akarin の席の Codex がコマンドに渡す）、無ければ `yukarin`。受付が完了のときに残す 1 行も、担当のパートナーの記憶に書く。記憶の持ち主は `WORKING_OWNER_DISCORD_USER_IDS` の先頭の人。
 - 受付は起動時に `YUNOMI_URL` と `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` を `STATE_DIR/memory-credentials.json`（権限 600）に書き、`yunomi-memory` はそこから読む。service token は席の Claude の環境変数に載せず、標準出力にも標準エラーにも出さない。3 つのどれかが欠けていれば、ファイルを消して記憶の道具を使えなくする。
 - `summary` は改行を含まない 200 字以内。
-- `watch-add` の項目と検証は Talking の道具 `watch_add` と同じ。`--query` は改行を含まない 200 字以内、`--source` は店やサイトの名前か URL で 1 件 300 字以内・5 件まで（省くと普通の検索）、`--interval-hours` は 2 〜 168 の整数（省くと 24）、`--until` はタイムゾーン付きの ISO 8601（省くと期限なし）。日時の形と過去の期限は Worker が弾き、理由を標準エラーに出す。同じ `--query` の見張りがあるときと、動いている見張りが 10 件あるときは 409 で足さない。
+- `watch-add` の項目と検証は Talking の道具 `watch_add` と同じ。`--query` は改行を含まない 200 字以内、`--source` は店やサイトの名前か URL で 1 件 300 字以内・5 件まで（省くと普通の検索）、`--interval-hours` は 1 〜 168 の整数（省くと 24）、`--until` はタイムゾーン付きの ISO 8601（省くと期限なし）。日時の形と過去の期限は Worker が弾き、理由を標準エラーに出す。同じ `--query` の見張りがあるときと、動いている見張りが 10 件あるときは 409 で足さない。
 
 ### 席の状態の受け口
 
