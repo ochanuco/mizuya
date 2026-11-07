@@ -1,0 +1,35 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "mizuya-budget",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-10-01",
+	// 画面は Access の後ろに置くので、Access を通らない入口を作らない
+	"workers_dev": false,
+	"preview_urls": false,
+	"routes": [
+		{
+			"pattern": "budget.chanu.co",
+			"custom_domain": true
+		}
+	],
+	// 毎日 10:00 JST
+	"triggers": {
+		"crons": ["0 1 * * *"]
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "mizuya-budget",
+			"database_id": "2467bc5a-aa12-4593-8f50-b111b6173f97",
+			"migrations_dir": "migrations"
+		}
+	],
+	"vars": {
+		"CLOUDFLARE_ACCOUNT_ID": "0f0afc29667897a1a5452c6e36859467",
+		"BUDGET_MONTHLY_USD": "10",
+		"BUDGET_THRESHOLDS_PERCENT": "50,90,100"
+	},
+	"observability": {
+		"enabled": true
+	}
+}

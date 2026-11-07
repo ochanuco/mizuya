@@ -11,7 +11,7 @@ on:
       - package.json
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
-      - .github/deploy/**
+      - .github/deploy/production.env.op
       - .github/workflows/deploy.yml
   workflow_dispatch:
     inputs:
