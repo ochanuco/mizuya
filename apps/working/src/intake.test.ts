@@ -185,6 +185,29 @@ const openPost = async (
 };
 
 describe("新しい投稿", () => {
+	it("フォーラムの投稿への最初の返事でだけ、依頼者にメンションして通知する", async () => {
+		const s = await setup();
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "status",
+				dispatchId: seat.dispatchId,
+				body: "見ています",
+			}),
+		);
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "status",
+				dispatchId: seat.dispatchId,
+				body: "直しています",
+			}),
+		);
+		expect(s.d.sent.filter((m) => m.channelId === "p1")).toEqual([
+			{ channelId: "p1", content: `<@${OWNER}> 見ています`, notify: [OWNER] },
+			{ channelId: "p1", content: "直しています" },
+		]);
+	});
+
 	it("仕事チャンネルの依頼から投稿を立て、席を作って依頼を渡し、タグを作業中にする", async () => {
 		const s = await setup();
 		await s.intake.handle(envelope({}));
@@ -296,7 +319,9 @@ describe("席の質問", () => {
 			body: "どのブランチに push しますか？",
 		});
 		await s.intake.onSeatMessage(q);
-		expect(s.d.sentTo("p1").at(-1)).toBe("どのブランチに push しますか？");
+		expect(s.d.sentTo("p1").at(-1)).toBe(
+			`<@${OWNER}> どのブランチに push しますか？`,
+		);
 		expect(s.d.tagsOf("p1")).toEqual(["tag-decide"]);
 		expect(s.seats.get("p1")?.status).toBe("asking");
 
@@ -531,7 +556,7 @@ describe("席の完了報告", () => {
 				outcome: "succeeded",
 			}),
 		);
-		expect(s.d.sentTo("p1").at(-1)).toBe("直して PR を出しました");
+		expect(s.d.sentTo("p1").at(-1)).toBe(`<@${OWNER}> 直して PR を出しました`);
 		expect(s.d.tagsOf("p1")).toEqual(["tag-done"]);
 		expect(s.remembered).toEqual(["仕事フォーラムの「README の誤字」を終えた"]);
 		expect(s.activity).toEqual([
@@ -855,7 +880,7 @@ describe("席を始められなかったとき", () => {
 		s.d.addThread("p1", "x");
 		await s.intake.handle(say("p1", "頼みます", { first: true }));
 		expect(s.d.sentTo("p1")).toEqual([
-			"席を始められませんでした（Claude の作業場所の確認で止まった）。返事をくれれば、もう一度始めます。",
+			`<@${OWNER}> 席を始められませんでした（Claude の作業場所の確認で止まった）。返事をくれれば、もう一度始めます。`,
 		]);
 		expect(s.d.tagsOf("p1")).toEqual(["tag-decide"]);
 	});
@@ -940,7 +965,7 @@ describe("裏の作業を待つ席", () => {
 			}),
 		);
 		await s.intake.handle(say("p1", "どう？"));
-		expect(s.d.sentTo("p1")).toEqual(["作業中です。"]);
+		expect(s.d.sentTo("p1")).toEqual([`<@${OWNER}> 作業中です。`]);
 		const current = s.seats.get("p1");
 		await s.intake.onSeatMessage(
 			seatMessage({
@@ -951,7 +976,7 @@ describe("裏の作業を待つ席", () => {
 		);
 		await s.intake.handle(say("p1", "A で"));
 		expect(s.d.sentTo("p1")).toEqual([
-			"作業中です。",
+			`<@${OWNER}> 作業中です。`,
 			"A と B のどちらにしますか",
 		]);
 	});
@@ -998,7 +1023,7 @@ describe("途中経過", () => {
 			}),
 		);
 		expect(s.d.sentTo("p1")).toEqual([
-			"描画を待っています。5 分ほどです。",
+			`<@${OWNER}> 描画を待っています。5 分ほどです。`,
 			"止まってはいません。描き終わったら続けます。",
 		]);
 		expect(s.seats.get("p1")?.status).toBe("working");
@@ -1085,9 +1110,9 @@ describe("席の返事の添付", () => {
 		expect(s.d.sent.filter((m) => m.channelId === "p1")).toEqual([
 			{
 				channelId: "p1",
-				content:
-					"直しました。\n\n添付できなかったもの:\n- out/link.txt（out/ の外を指している）",
+				content: `<@${OWNER}> 直しました。\n\n添付できなかったもの:\n- out/link.txt（out/ の外を指している）`,
 				files: ["shot.png"],
+				notify: [OWNER],
 			},
 		]);
 		expect(s.d.tagsOf("p1")).toEqual(["tag-done"]);
@@ -1119,8 +1144,9 @@ describe("席の返事の添付", () => {
 		const posted = s.d.sent.filter((m) => m.channelId === "p1");
 		expect(posted[0]).toEqual({
 			channelId: "p1",
-			content: "1 枚目です。",
+			content: `<@${OWNER}> 1 枚目です。`,
 			files: ["abc123.png"],
+			notify: [OWNER],
 		});
 		expect(posted[1]?.content).toBe(
 			"どちらにしますか\n\n添付できなかったもの:\n- ../secret.txt（out/ の外のパス）",

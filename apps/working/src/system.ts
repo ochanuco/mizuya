@@ -25,8 +25,8 @@ export const createSystemPoster = (rest: DiscordApi): DiscordApi => ({
 			...post,
 			buttons: prefixed(post.buttons),
 		}),
-	send: (channelId, content, replyTo, files, buttons) =>
-		rest.send(channelId, content, replyTo, files, prefixed(buttons)),
+	send: (channelId, content, replyTo, files, buttons, notify) =>
+		rest.send(channelId, content, replyTo, files, prefixed(buttons), notify),
 });
 
 /**

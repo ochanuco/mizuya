@@ -85,6 +85,7 @@ export const fakeDiscord = () => {
 		replyTo?: string;
 		files?: string[];
 		buttons?: string[];
+		notify?: string[];
 	}[] = [];
 	const posts: {
 		name: string;
@@ -155,7 +156,14 @@ export const fakeDiscord = () => {
 				return ok({ threadId: id });
 			},
 		),
-		send: async (channelId, content, replyTo, files = [], buttons = []) => {
+		send: async (
+			channelId,
+			content,
+			replyTo,
+			files = [],
+			buttons = [],
+			notify = [],
+		) => {
 			if (refuseSendTo.has(channelId)) {
 				return err(
 					permissionDenied({ actor: "discord bot", action: "POST /channels" }),
@@ -169,6 +177,7 @@ export const fakeDiscord = () => {
 				...(buttons.length > 0
 					? { buttons: buttons.map((b) => b.customId) }
 					: {}),
+				...(notify.length > 0 ? { notify: [...notify] } : {}),
 			});
 			const id = `sent${sent.length}`;
 			botMessages.set(id, content);

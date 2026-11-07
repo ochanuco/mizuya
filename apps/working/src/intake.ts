@@ -272,6 +272,27 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	/** 投稿に書き込む bot。読むだけの呼び出しは Yukarin の bot のままにする。 */
 	const botOf = (threadId: string) => speaker(partnerOf(threadId)).discord;
 
+	/** フォーラムの投稿 → 依頼者。最初の返事でだけ依頼者にメンションする。フォーラムは通知が来ないと見落としやすい */
+	const firstReplyTo = new Map<string, string>();
+	/** 担当の席の bot で投稿に書く。 */
+	const sendTo = async (
+		threadId: string,
+		content: string,
+		files: readonly Attachment[] = [],
+	) => {
+		const who = firstReplyTo.get(threadId);
+		const sent = await botOf(threadId).send(
+			threadId,
+			who ? `<@${who}> ${content}` : content,
+			undefined,
+			files,
+			[],
+			who ? [who] : [],
+		);
+		if (sent.ok && who) firstReplyTo.delete(threadId);
+		return sent;
+	};
+
 	const typingTimers = new Map<string, () => void>();
 	const sendTyping = (threadId: string) => {
 		void botOf(threadId)
@@ -607,7 +628,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	) => {
 		if (blocked.length === 0) {
 			if (lead.trim() === "" && files.length === 0) return;
-			const sent = await botOf(threadId).send(threadId, lead, undefined, files);
+			const sent = await sendTo(threadId, lead, files);
 			if (!sent.ok) {
 				log.error("post failed", {
 					thread_id: threadId,
@@ -619,10 +640,9 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			return;
 		}
 		const request = approvalRequestText(blocked);
-		const sent = await botOf(threadId).send(
+		const sent = await sendTo(
 			threadId,
 			lead.trim() === "" ? request : `${lead}\n\n${request}`,
-			undefined,
 			files,
 		);
 		if (!sent.ok) {
@@ -743,7 +763,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				await seats.delete(threadId);
 			}
 			if (!seat.standup) {
-				await botOf(threadId).send(threadId, seatStartFailedText(r.error));
+				await sendTo(threadId, seatStartFailedText(r.error));
 				await setStatus(threadId, "決めてほしい", seat);
 			}
 			return;
@@ -791,7 +811,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		if (!seat.standup && alive().length >= deps.seatLimit) {
 			await seats.set({ ...next, status: "queued", queuedAt: now() });
 			log.info("seat queued", { thread_id: seat.threadId });
-			await botOf(seat.threadId).send(seat.threadId, QUEUED_TEXT);
+			await sendTo(seat.threadId, QUEUED_TEXT);
 			return;
 		}
 		await launch(next);
@@ -871,7 +891,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				if (alive().length >= deps.seatLimit) {
 					await seats.set({ ...woke, status: "queued", queuedAt: now() });
 					await show(threadId, "受付");
-					await botOf(threadId).send(threadId, QUEUED_TEXT);
+					await sendTo(threadId, QUEUED_TEXT);
 					return;
 				}
 				await launch(woke);
@@ -906,10 +926,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		if (seat.dispatchId === null) return;
 		// 裏の作業を待つ席は、手が空くまで返事をしないことがある。受付が先に作業中だと返す
 		if (seat.status === "working" && seat.background) {
-			const busy = await botOf(threadId).send(
-				threadId,
-				busyText(seat.lastStatus),
-			);
+			const busy = await sendTo(threadId, busyText(seat.lastStatus));
 			if (!busy.ok) {
 				log.warn("busy reply failed", {
 					thread_id: threadId,
@@ -930,7 +947,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				thread_id: threadId,
 				reason: sent.error.reason,
 			});
-			await botOf(threadId).send(threadId, FAILURE_TEXT);
+			await sendTo(threadId, FAILURE_TEXT);
 			return;
 		}
 		await seats.set({
@@ -1030,12 +1047,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			await seats.set({ ...seat, lastStatus: reply.text });
 			await refreshPanel(seat.threadId, true);
 		}
-		const sent = await botOf(seat.threadId).send(
-			seat.threadId,
-			reply.body,
-			undefined,
-			reply.files,
-		);
+		const sent = await sendTo(seat.threadId, reply.body, reply.files);
 		if (!sent.ok) {
 			log.error("status post failed", {
 				thread_id: seat.threadId,
@@ -1056,12 +1068,12 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 					thread_id: threadId,
 					reason: stopped.error.reason,
 				});
-				await botOf(threadId).send(threadId, FAILURE_TEXT);
+				await sendTo(threadId, FAILURE_TEXT);
 				return true;
 			}
 		}
 		const asked = seat.status === "asking" ? seat.question : null;
-		await botOf(threadId).send(threadId, RESTARTING_TEXT);
+		await sendTo(threadId, RESTARTING_TEXT);
 		await launch({
 			...seat,
 			status: "sleeping",
@@ -1178,6 +1190,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		const partner: PartnerId =
 			deps.akarin && mentionsPartner(p, "akarin") ? "akarin" : "yukarin";
 		await deps.seats.assign(threadId, partner);
+		firstReplyTo.set(threadId, p.author.id);
 		log.info("forum post received", { thread_id: threadId, partner });
 		await openSeat(
 			{
@@ -1552,7 +1565,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 					background: false,
 				});
 				if (seat.status === "working") {
-					await botOf(seat.threadId).send(seat.threadId, RESTARTED_TEXT);
+					await sendTo(seat.threadId, RESTARTED_TEXT);
 					await setStatus(seat.threadId, "決めてほしい");
 				}
 				log.info("seat lost its claude", { thread_id: seat.threadId });
