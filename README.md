@@ -2,12 +2,13 @@
 
 水屋（みずや）は、茶室の裏にある準備の場所。表で話す yunomi に対して、mizuya は裏で仕事と運用を受け持つ窓口で、人が操作し許可する仕組みを置く。
 
-機能は 2 つあり、それぞれ `apps/` の下に置く。
+機能は 3 つあり、それぞれ `apps/` の下に置く。
 
 | 場所           | 中身                                                                                                                                                                                                                                                                                 |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `apps/worker`  | GitHub Actions のデプロイ承認。Environment の required reviewers で止まった run を Discord に知らせ、ボタンで承認・却下できるようにする Cloudflare Worker。Working 向けのボタン、`/ai` コマンドと GitHub の出来事を受け箱に置いて Working に渡す。この README の以下の節はこれの説明 |
 | `apps/working` | Working（仕事）。Discord の仕事フォーラムの依頼を Orca の席で Claude CLI と Codex CLI に作業させる、docker01 のコンテナ。記憶と人格は yunomi のものを使う。説明は [apps/working/README.md](apps/working/README.md)                                                                   |
+| `apps/budget`  | Cloudflare の利用額の見張り。毎日の利用額と予算に対する累計・月末の予測を Discord に報告し、閾値を越えたら承認者に知らせる Cloudflare Worker。説明は [apps/budget/README.md](apps/budget/README.md)                                                                                  |
 
 ## 動き
 

@@ -1,0 +1,52 @@
+name: deploy-budget
+run-name: deploy mizuya-budget @ ${{ inputs.ref || github.sha }}
+
+# main への push で本番に出す。承認は deploy-plan が危ないと判定したとき（前回の記録なし・ロールバック・migration の変更）だけ、
+# Environment production-approval で止まる。手動実行はロールバック用。
+# 前回の記録は deploy-plan がこの workflow ファイルの直近の成功 run から読むので、deploy（apps/worker）とは混ざらない
+on:
+  push:
+    branches: [main]
+    paths:
+      - apps/budget/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - .github/deploy/budget.env.op
+      - .github/workflows/deploy-budget.yml
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: デプロイする ref（main、または main 上のコミット SHA。古い SHA はロールバック）
+        required: true
+        default: main
+
+permissions:
+  contents: read
+
+# run 全体を直列にする。名前は deploy.yml のジョブの concurrency（deploy-production）と、deploy の run（deploy-run-production）と変える
+concurrency:
+  group: deploy-run-budget
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    uses: ochanuco/.github/.github/workflows/deploy-plan.yml@336944e6c5548c749312671795a28803c5d975da # v1.6.0
+    permissions:
+      contents: read
+      actions: read
+    with:
+      ref: ${{ inputs.ref || 'main' }}
+      approval-environment: production-approval
+      # migration はデプロイで当てないので、変わったら承認で止めて、先に手で当てたかを確かめる
+      notices: |
+        apps/budget/migrations/=D1 migration を手で apply する（apps/budget/README.md）
+  deploy:
+    needs: plan
+    uses: ochanuco/.github/.github/workflows/deploy.yml@336944e6c5548c749312671795a28803c5d975da # v1.6.0
+    with:
+      ref: ${{ needs.plan.outputs.sha }}
+      approval-environment: ${{ needs.plan.outputs.approval-environment }}
+      op-env-file: .github/deploy/budget.env.op
+      run: apps/budget/scripts/deploy.sh production
+    secrets: inherit

@@ -1,0 +1,22 @@
+{
+	"name": "@mizuya/budget",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"postinstall": "wrangler types",
+		"dev": "wrangler dev",
+		"build": "wrangler deploy --dry-run --outdir dist",
+		"typecheck": "tsc",
+		"test": "vitest run"
+	},
+	"dependencies": {
+		"valibot": "^1.5.0"
+	},
+	"devDependencies": {
+		"@types/node": "^24.19.2",
+		"typescript": "^7.0.2",
+		"vitest": "^5.0.0",
+		"wrangler": "^4.151.0"
+	}
+}

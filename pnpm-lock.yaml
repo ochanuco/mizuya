@@ -173,6 +173,25 @@ importers:
         specifier: ^7.0.2
         version: 7.0.2
 
+  apps/budget:
+    dependencies:
+      valibot:
+        specifier: ^1.5.0
+        version: 1.5.0(typescript@7.0.2)
+    devDependencies:
+      '@types/node':
+        specifier: ^24.19.2
+        version: 24.19.2
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+      vitest:
+        specifier: ^5.0.0
+        version: 5.1.0(@types/node@24.19.2)(vite@8.3.6(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))
+      wrangler:
+        specifier: ^4.151.0
+        version: 4.158.0(@types/node@24.19.2)
+
   apps/worker:
     dependencies:
       valibot:
