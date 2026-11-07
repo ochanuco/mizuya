@@ -6,6 +6,7 @@ const PendingDeploymentsSchema = v.array(
 	v.object({
 		environment: v.object({ id: v.number(), name: v.string() }),
 		current_user_can_approve: v.boolean(),
+		reviewers: v.optional(v.array(v.unknown()), []),
 	}),
 );
 

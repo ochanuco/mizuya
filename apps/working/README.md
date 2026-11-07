@@ -39,7 +39,7 @@ Orca の Linux 版は GitHub Releases（`stablyai/orca`）の `orca-ide_<版>_<a
 
 ## Working 受付
 
-受付は mizuya の bot（`DISCORD_TOKEN`）で Discord の Gateway につなぎ、仕事テキストチャンネルと仕事フォーラムの投稿に書かれたメッセージを読む（Message Content intent）。webhook の発言（席の話し手が書いたもの）は読まない。
+受付は mizuya の bot（`DISCORD_TOKEN`）で Discord の Gateway につなぎ、仕事テキストチャンネルと仕事フォーラムの投稿に書かれたメッセージを読む（Message Content intent）。人格の bot（`YUKARIN_DISCORD_TOKEN` / `AKARIN_DISCORD_TOKEN`）は REST だけで使い、Gateway にはつながない。webhook の発言は読まない。
 
 席のメッセージに付けたボタンは、mizuya の application の Interactions Endpoint URL、つまり mizuya の Worker に届く。Worker はそれを受け箱に置き、受付は `MIZUYA_INBOX_URL`（`wss://mizuya.chanu.co/working/inbox`）に外向きの WebSocket でつないで受け取る。接続には Access の service token（`MIZUYA_ACCESS_CLIENT_ID` / `MIZUYA_ACCESS_CLIENT_SECRET`）と `Authorization: Bearer <MIZUYA_INBOX_TOKEN>` を付け、30 秒ごとに `ping` を送る。受け取った行は ack する。切れたら 1 秒から 60 秒まで間をのばしながらつなぎ直し、その間に置かれたボタンは次の接続で届く（押してから 15 分まで）。
 
@@ -64,7 +64,7 @@ yunomi の gateway が仕事カテゴリの発言とボタンを `POST /events` 
 - 仕事テキストチャンネルで Yukarin か Akarin 宛て（「Akarin の席」の節）の依頼が来たら、仕事フォーラムに投稿を立てる。件名は依頼の要約（Claude CLI の haiku で作る。前置きやメタ発言、複数行、40 字超の出力は使わず、依頼の 1 行目にする）、本文は元の依頼と元メッセージへのリンク。テキストチャンネルには投稿へのリンクを返信で返す。
 - 同じ投稿への発言と席からのメッセージは、1 件ずつ順に処理する。
 - Discord REST が 2xx 以外を返したときは、経路・ステータス・Discord のエラーコードとメッセージを warn で残す。bot の権限不足（403 の Missing Access / Missing Permissions）は `PermissionDenied` として扱う。
-- `WORKING_OWNER_DISCORD_USER_IDS` に入っている人の発言だけを扱う。mizuya の bot と席の話し手（webhook）、ほかの人、ほかの bot の発言は、依頼・フォーラムの投稿・投稿内の返事のどれでも無視する。
+- `WORKING_OWNER_DISCORD_USER_IDS` に入っている人の発言だけを扱う。mizuya の bot と人格の bot、ほかの人、ほかの bot の発言は、依頼・フォーラムの投稿・投稿内の返事のどれでも無視する。
 
 ### 席
 
@@ -84,10 +84,11 @@ yunomi の gateway が仕事カテゴリの発言とボタンを `POST /events` 
 
 受付は Akarin 宛ての依頼に Akarin の席を作る。Discord には mizuya の bot 1 つで出るので、宛先は role で決める。
 
-- 依頼（仕事テキストチャンネルの発言、フォーラムの新しい投稿）で role `あかり`（`AKARIN_ROLE_ID`）がメンションされていれば Akarin の席を作る。フォーラムの新しい投稿は、それ以外なら Yukarin の席。
-- 仕事テキストチャンネルでは、role `ゆかり`（`YUKARIN_ROLE_ID`）か mizuya の bot へのメンションで Yukarin 宛てになる。`あかり` と両方なら Akarin。メンションが無ければ、返信した先が席の話し手の発言（webhook で、席の名前を名乗ったもの）ならその席宛て。それ以外は依頼とみなさない。
+- 依頼（仕事テキストチャンネルの発言、フォーラムの新しい投稿）で role `あかり`（`AKARIN_ROLE_ID`）か、あかりんの bot がメンションされていれば Akarin の席を作る。フォーラムの新しい投稿は、それ以外なら Yukarin の席。
+- 仕事テキストチャンネルでは、role `ゆかり`（`YUKARIN_ROLE_ID`）、ゆかりんの bot、mizuya の bot のどれかへのメンションで Yukarin 宛てになる。`あかり` と両方なら Akarin。メンションが無ければ、返信した先が人格の bot の発言ならその席宛て。それ以外は依頼とみなさない。
 - 投稿の担当は席を作るときに決めて `seats.json` の `partners` に残す。投稿への返事、止めた席を起こすとき、完了のあとにまた書いたときも、同じ担当が受ける。
-- 投稿・返事・状態の欄は、担当の席の話し手で書く。話し手は mizuya の application が作った webhook（チャンネルごとに 1 つ、名前 `mizuya-working`。スレッドには親のフォーラムの webhook で `thread_id` を添える）で、書くたびに席の名前（`ゆかりん` / `あかりん`）と画像（`YUKARIN_AVATAR_URL` / `AKARIN_AVATAR_URL`）を名乗る。webhook では返信の形にできないので、普通のメッセージで書く。ボタンの custom_id には `working:` を頭に付け、Worker がこれで受け箱に回す。
+- 人格の作業は担当の席の人格の bot（ゆかりん・あかりん）、システムの介入は mizuya の bot で書く。人格の bot が書くのは、席の返事、投稿（朝会・見回り・GitHub の出来事・活動ログを含む）、タグ、リアクション、入力中の表示。mizuya の bot が書くのは、状態の欄と、許可・却下・不要のボタンが付いたメッセージ。ボタンは、それを求める人格の発言のすぐ後に、押し方を添えて出す。ボタンの custom_id には `working:` を頭に付け、mizuya の Worker がこれで受け箱に回す。
+- 投稿の最初の人格の発言では、依頼者にメンションして通知する。仕事テキストチャンネルの依頼から立てた投稿は「<依頼者> さんからの依頼」の発言、フォーラムに直接立てた投稿は席の最初の返事、朝会・見回り・GitHub の出来事の投稿は最初の発言で持ち主（`WORKING_OWNER_DISCORD_USER_IDS` の先頭）にメンションする。通知するのはその人だけ。
 - タグ・リアクション・入力中の表示・読み取りは mizuya の bot で行う。
 - Akarin の席は Codex CLI で動き、前置きの人格は `persona.sh akarin`、記憶の読み書きは Akarin の記憶（`/v1/partners/akarin/working/memory`）にする。
 - Codex は `codex -a never -s danger-full-access` で起動する。止めた席は同じ worktree で `codex resume --last` で起こす。Codex の `resume --last` は作業ディレクトリの最新の会話を選ぶので、投稿ごとの worktree で前の会話のまま続く。
@@ -244,7 +245,7 @@ Renovate の PR は持ち主の許しで、朝会と見回りの席が片付け�
 
 ### 活動ログ
 
-`ACTIVITY_LOG_THREAD_ID` を設定すると、受付は毎日 `ACTIVITY_LOG_TIME`（既定は `23:30`、Asia/Tokyo）に、前の回からその時刻までに席がしたことを、そのスレッドへ Yukarin の話し手で 1 投稿にまとめる。設定しなければまとめない。
+`ACTIVITY_LOG_THREAD_ID` を設定すると、受付は毎日 `ACTIVITY_LOG_TIME`（既定は `23:30`、Asia/Tokyo）に、前の回からその時刻までに席がしたことを、そのスレッドへ Yukarin の bot で 1 投稿にまとめる。設定しなければまとめない。
 
 - 席が完了・引き継ぎで閉じたときと、hook が止めた操作の許可を求めたとき（朝会・見回り・GitHub の知らせの席が止められた操作の投稿を含む）に、受付が `STATE_DIR/activity-log.jsonl` に 1 行ずつ残す。行には投稿の件名、担当、止めた道具の名前だけを書き、コマンドの本文や席の出力は残さない。
 - 投稿には、終えた仕事、Mac に引き継いだ仕事、止められた操作（投稿ごとに道具の名前と件数）、Working が出した PR（`GH_TOKEN` の人が `STANDUP_GITHUB_OWNER` の repo に `dev/` ブランチから出したもの）のうち、その範囲でマージされたものと新しく出したものを並べる。
@@ -263,9 +264,9 @@ CI の失敗、PR のレビュー、issue と PR のコメントがあると、�
 ### 取り消せない操作の許可
 
 1. hook と auto モードが止めた操作は `STATE_DIR/guard/pending/` に投稿ごとに残る。席の Claude は止められると `ask` で許可を求める。受付は席から質問か報告が届くとそれを取り出し、席の言葉に続けて「決めてほしいこと」としてコマンドそのものを投稿に書き、タグを `決めてほしい` にする。止めた操作が残っていれば、完了の報告でも完了にしない。
-2. 「決めてほしいこと」のメッセージ（朝会と見回りでは投稿の最初のメッセージ）には「許可」と「却下」のボタンが付く。持ち主（`WORKING_OWNER_DISCORD_USER_IDS`）が押したときだけ効き、ほかの人が押しても何も起きない。
-   - 持ち主がその投稿に `OK`・`許可`・`許可します` のどれか（全角・末尾の句点は許す）だけを返しても許可になる。返信の形で送るときは「決めてほしいこと」のメッセージへの返信にする。ほかの返事が来たら、待っていた操作は取りやめる。
-   - ボタンでも返事でも、片付いた時点で待っていた操作を消し、メッセージのボタンを外して頼みの文を「許可済み」か「却下済み」に書き換える。二度押しや、ボタンを押したあとの返事では重ねて許可しない。
+2. 「決めてほしいこと」のすぐ後に、mizuya の bot が「許可」と「却下」のボタンの付いたメッセージを出す（朝会と見回りでは投稿の最初のメッセージの後）。持ち主（`WORKING_OWNER_DISCORD_USER_IDS`）が押したときだけ効き、ほかの人が押しても何も起きない。
+   - 持ち主がその投稿に `OK`・`許可`・`許可します` のどれか（全角・末尾の句点は許す）だけを返しても許可になる。返信の形で送るときは「決めてほしいこと」かボタンのメッセージへの返信にする。ほかの返事が来たら、待っていた操作は取りやめる。
+   - ボタンでも返事でも、片付いた時点で待っていた操作を消し、ボタンのメッセージのボタンを外して頼みの文を「許可済み」か「却下済み」に書き換える。二度押しや、ボタンを押したあとの返事では重ねて許可しない。
    - 却下のボタンでは席を起こさない。続きは返事で頼む。
 3. 許可すると、受付はその操作を `STATE_DIR/guard/grants/<投稿の ID>.json` に書き、許可したことを席への答えにする。hook はその投稿の席でだけ、同じ道具・同じ内容（Bash 以外はキーの順によらない引数の JSON）の操作を、auto モードの判定によらず 1 回だけ通す。席から次の質問か報告が届いた時点で、使わなかった許可は失効し、次に同じ操作をするとまた止まる。
 
@@ -275,9 +276,10 @@ CI の失敗、PR のレビュー、issue と PR のコメントがあると、�
 
 | 変数                                                              | 必須   | 内容                                                                                                                        |
 | ----------------------------------------------------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------- |
-| `DISCORD_TOKEN`                                                   | はい   | mizuya の bot トークン。Gateway、Discord REST、webhook の作成に使う                                                         |
+| `DISCORD_TOKEN`                                                   | はい   | mizuya の bot トークン。Gateway での受信、状態の欄、ボタンに使う                                                            |
+| `YUKARIN_DISCORD_TOKEN`                                           | はい   | ゆかりんの bot トークン。Yukarin の席の発言・投稿・リアクション・入力中の表示に REST で使う                                 |
+| `AKARIN_DISCORD_TOKEN`                                            | いいえ | あかりんの bot トークン。無ければ Akarin の席を作らず、Akarin 宛ての依頼も Yukarin が受ける                                 |
 | `YUKARIN_ROLE_ID` / `AKARIN_ROLE_ID`                              | いいえ | 依頼の宛先の席を決める role（chabatake の `discord/chanuco` の output `working_role_ids`）                                  |
-| `YUKARIN_AVATAR_URL` / `AKARIN_AVATAR_URL`                        | いいえ | 席の話し手の画像の URL。無ければ webhook の既定の画像                                                                       |
 | `MIZUYA_INBOX_URL`                                                | いいえ | mizuya の Worker の受け箱（`wss://mizuya.chanu.co/working/inbox`）。下の 3 つとそろわなければつながず、ボタンを受け取れない |
 | `MIZUYA_INBOX_TOKEN`                                              | いいえ | 受け箱の token。Worker の `WORKING_INBOX_TOKEN` と同じ値                                                                    |
 | `MIZUYA_ACCESS_CLIENT_ID` / `MIZUYA_ACCESS_CLIENT_SECRET`         | いいえ | 受け箱につなぐ Access の service token（`mizuya-working-inbox`）                                                            |
@@ -318,7 +320,7 @@ CI の失敗、PR のレビュー、issue と PR のコメントがあると、�
 | `SEAT_SLEEP_AFTER_MINUTES`                                        | いいえ | `決めてほしい` のままこれだけたった席の Claude を止める。既定は `120`                                                       |
 | `LOG_LEVEL`                                                       | いいえ | `debug` / `info` / `warn` / `error`。既定は `info`                                                                          |
 
-mizuya の bot には、仕事チャンネルと仕事フォーラムで、読む・送る・スレッドでの送信・公開スレッドの作成・スレッドの管理（タグの付け替え）・webhook の管理・埋め込み・ファイル・履歴の読み取り・リアクションの権限が要る（chabatake の `discord/chanuco` の上書き）。application では Message Content intent を有効にする。
+mizuya の bot には、仕事チャンネルと仕事フォーラムで、読む・送る・スレッドでの送信・履歴の読み取りの権限が要る。人格の bot には、読む・送る・スレッドでの送信・公開スレッドの作成・スレッドの管理（タグの付け替え）・埋め込み・ファイル・履歴の読み取り・リアクションの権限が要る（どちらも chabatake の `discord/chanuco` の上書き）。mizuya の application では Message Content intent を有効にする。
 
 ## 配備
 

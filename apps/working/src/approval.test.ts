@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	APPROVAL_ASK,
 	APPROVAL_BUTTONS,
 	approvalAnswerOf,
 	approvalRequestText,
@@ -7,6 +8,7 @@ import {
 	settledApprovalText,
 	uniquePending,
 } from "./approval.ts";
+import { DISMISS_ASK } from "./dismiss.ts";
 
 const request = { messageIds: ["req1", "req2"], operations: [] };
 
@@ -57,7 +59,7 @@ describe("approvalRequestText", () => {
 		expect(text).toContain(
 			"2. 作業場所の外への書き込み\n```\nWrite: /home/worker/.bashrc\n```",
 		);
-		expect(text).toContain("「OK」か「許可」");
+		expect(text).not.toContain("「OK」か「許可」");
 	});
 });
 
@@ -70,11 +72,10 @@ describe("許可のボタン", () => {
 		expect(approvalAnswerOf("other:grant")).toBeNull();
 	});
 
-	it("片付いた依頼は、頼みの文を結果に置き換え、操作の一覧は残す", () => {
-		const op = { tool: "Bash", target: "git push origin main" };
-		const text = approvalRequestText([{ operation: op, reason: "push" }]);
+	it("片付いた依頼は、頼みの文を結果に置き換える", () => {
+		const text = `${APPROVAL_ASK}\n${DISMISS_ASK}`;
 		const granted = settledApprovalText(text, "grant");
-		expect(granted).toContain("git push origin main");
+		expect(granted).toContain(DISMISS_ASK);
 		expect(granted).toContain("許可済み");
 		expect(granted).not.toContain("「OK」か「許可」");
 		expect(settledApprovalText(text, "deny")).toContain("却下済み");

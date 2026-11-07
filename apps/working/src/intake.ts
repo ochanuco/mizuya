@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ActivityEntry, ActivityKind } from "./activity-log.ts";
 import {
-	APPROVAL_BUTTONS,
 	type ApprovalAnswer,
 	approvalAnswerOf,
 	approvalRequestText,
@@ -19,7 +18,7 @@ import {
 } from "./attachments.ts";
 import type { Summarizer } from "./claude-cli.ts";
 import type { Attachment, DiscordApi, PostedMessage } from "./discord-rest.ts";
-import { DISMISS_BUTTON, dismissedText, isDismissButton } from "./dismiss.ts";
+import { dismissedText, isDismissButton } from "./dismiss.ts";
 import { seatNameOf } from "./guard/env.ts";
 import type { Ledger, Pending } from "./guard/ledger.ts";
 import type { Operation } from "./guard/operation.ts";
@@ -53,6 +52,7 @@ import {
 	type SeatStore,
 } from "./seat-store.ts";
 import type { RunKind } from "./standup-timer.ts";
+import { buttonMessage } from "./system.ts";
 import {
 	replaceStatusTag,
 	takeStatus,
@@ -60,18 +60,22 @@ import {
 	type WorkStatus,
 } from "./work-status.ts";
 
-/** 席を受け持つパートナーの話し手と、その席に渡す前置き。 */
+/** 席を受け持つパートナーの bot と、その席に渡す前置き。 */
 export type SeatPartner = {
-	/** 返事・タグ・リアクション・状態の欄・入力中の表示をこの話し手で書く。 */
+	/** 返事・投稿・タグ・リアクション・入力中の表示をこの bot で書く。 */
 	discord: DiscordApi;
-	/** 話し手が名乗る名前。どの席の発言かをこの名前で見分ける。 */
-	name: string;
+	botUserId: string;
 	/** 新しい席に最初に渡す前置き（人格、仕事のしかた、引き継ぎの指示）。 */
 	preamble: string;
 };
 
 export type IntakeDeps = {
+	/** Yukarin の bot。読むのもこの bot で行う。 */
 	discord: DiscordApi;
+	/** mizuya の bot。許可と不要のボタン、状態の欄を書く。 */
+	system: DiscordApi;
+	/** mizuya の bot のユーザー。メンションされたら Yukarin 宛てとみなす。 */
+	systemUserId: string;
 	orca: Orca;
 	seats: SeatStore;
 	/** 投稿で許可を待っている操作。 */
@@ -93,10 +97,8 @@ export type IntakeDeps = {
 	) => Promise<void>;
 	/** 新しい席に最初に渡す前置き（人格、仕事のしかた、引き継ぎの指示）。 */
 	preamble: string;
-	/** mizuya の bot のユーザー。メンションされたら Yukarin 宛てとみなす。 */
+	/** Yukarin の bot のユーザー。 */
 	botUserId: string;
-	/** Yukarin の話し手が名乗る名前。 */
-	yukarinName: string;
 	/** Akarin の席。あれば Akarin 宛ての依頼に Codex CLI の席を作る。無ければすべて Yukarin が受ける。 */
 	akarin?: SeatPartner | null;
 	/** 依頼の宛先の席を決める role。メンションされた role の席に渡す。 */
@@ -242,7 +244,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 
 	const yukarin: SeatPartner = {
 		discord: deps.discord,
-		name: deps.yukarinName,
+		botUserId: deps.botUserId,
 		preamble: deps.preamble,
 	};
 	/** 投稿の担当。Akarin の bot が無ければ、Akarin の投稿も Yukarin が受ける。 */
@@ -252,16 +254,44 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			: "yukarin";
 	const speaker = (partner: PartnerId): SeatPartner =>
 		partner === "akarin" && deps.akarin ? deps.akarin : yukarin;
-	/** どの席の話し手が書いたメッセージか。webhook で席の名前を名乗ったものだけを数える。 */
+	/** どの席の bot が書いたメッセージか。 */
 	const spokenBy = (m: PostedMessage): PartnerId | null => {
-		if (!m.isWebhook) return null;
-		if (deps.akarin && m.authorName === deps.akarin.name) return "akarin";
-		return m.authorName === yukarin.name ? "yukarin" : null;
+		if (deps.akarin && m.authorId === deps.akarin.botUserId) return "akarin";
+		return m.authorId === deps.botUserId ? "yukarin" : null;
 	};
-	const mentionsRole = (p: Payload, roleId: string | null) =>
-		roleId !== null && (p.mention_roles ?? []).includes(roleId);
-	/** 投稿に書き込む話し手。読むだけの呼び出しは Yukarin の話し手のままにする（読むのはどちらも mizuya の bot）。 */
+	/** その席の role か bot へのメンションがあるか。 */
+	const mentionsPartner = (p: Payload, partner: PartnerId) => {
+		const roleId = deps.roleIds[partner];
+		const userId =
+			partner === "akarin" ? deps.akarin?.botUserId : deps.botUserId;
+		return (
+			(roleId !== null && (p.mention_roles ?? []).includes(roleId)) ||
+			(userId !== undefined && p.mentions.includes(userId))
+		);
+	};
+	/** 投稿に書き込む bot。読むだけの呼び出しは Yukarin の bot のままにする。 */
 	const botOf = (threadId: string) => speaker(partnerOf(threadId)).discord;
+
+	/** フォーラムの投稿 → 依頼者。最初の返事でだけ依頼者にメンションする。フォーラムは通知が来ないと見落としやすい */
+	const firstReplyTo = new Map<string, string>();
+	/** 担当の席の bot で投稿に書く。 */
+	const sendTo = async (
+		threadId: string,
+		content: string,
+		files: readonly Attachment[] = [],
+	) => {
+		const who = firstReplyTo.get(threadId);
+		const sent = await botOf(threadId).send(
+			threadId,
+			who ? `<@${who}> ${content}` : content,
+			undefined,
+			files,
+			[],
+			who ? [who] : [],
+		);
+		if (sent.ok && who) firstReplyTo.delete(threadId);
+		return sent;
+	};
 
 	const typingTimers = new Map<string, () => void>();
 	const sendTyping = (threadId: string) => {
@@ -374,11 +404,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		) {
 			return seat;
 		}
-		const r = await botOf(seat.threadId).editMessage(
-			seat.threadId,
-			seat.panelId,
-			text,
-		);
+		const r = await deps.system.editMessage(seat.threadId, seat.panelId, text);
 		if (!r.ok) {
 			log.warn("panel update failed", {
 				thread_id: seat.threadId,
@@ -427,7 +453,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	const placePanel = async (seat: Seat): Promise<Seat> => {
 		if (seat.standup || seat.panelId !== null) return seat;
 		const text = panelText({ label: "受付", elapsedMs: null, doing: null });
-		const r = await botOf(seat.threadId).createMessage(seat.threadId, text);
+		const r = await deps.system.createMessage(seat.threadId, text);
 		if (!r.ok) {
 			log.warn("panel post failed", {
 				thread_id: seat.threadId,
@@ -498,14 +524,14 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	};
 
 	/**
-	 * 仕事チャンネルの依頼の宛先。Akarin の role へのメンションがあれば Akarin、Yukarin の role か mizuya の bot へのメンションがあれば Yukarin。
+	 * 仕事チャンネルの依頼の宛先。Akarin へのメンションがあれば Akarin、Yukarin か mizuya の bot へのメンションがあれば Yukarin。
 	 * メンションが無ければ、返信した先のメッセージを書いた席にする。
 	 */
 	const addresseeOf = async (p: Payload): Promise<PartnerId | null> => {
-		if (deps.akarin && mentionsRole(p, deps.roleIds.akarin)) return "akarin";
+		if (deps.akarin && mentionsPartner(p, "akarin")) return "akarin";
 		if (
-			mentionsRole(p, deps.roleIds.yukarin) ||
-			p.mentions.includes(deps.botUserId)
+			mentionsPartner(p, "yukarin") ||
+			p.mentions.includes(deps.systemUserId)
 		) {
 			return "yukarin";
 		}
@@ -566,6 +592,29 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			);
 	};
 
+	/** 席の発言のすぐ後に、mizuya の bot で許可や不要のボタンを出す。押した操作は mizuya の Worker に届く。 */
+	const postButtons = async (
+		threadId: string,
+		approval: boolean,
+		dismiss: boolean,
+	) => {
+		const m = buttonMessage({ approval, dismiss });
+		const sent = await deps.system.send(
+			threadId,
+			m.content,
+			undefined,
+			[],
+			m.buttons,
+		);
+		if (!sent.ok) {
+			log.error("buttons post failed", {
+				thread_id: threadId,
+				error: sent.error.type,
+			});
+		}
+		return sent;
+	};
+
 	/**
 	 * hook が止めた操作を投稿に書き、許可を待つ。lead は同じメッセージの頭に置く文。
 	 * waiting なら持ち主の判断を待つ投稿なので、席を通さずに閉じるボタンも付ける。
@@ -577,31 +626,24 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		files: readonly Attachment[] = [],
 		waiting = false,
 	) => {
-		const closeButtons = waiting ? [DISMISS_BUTTON] : [];
 		if (blocked.length === 0) {
 			if (lead.trim() === "" && files.length === 0) return;
-			const sent = await botOf(threadId).send(
-				threadId,
-				lead,
-				undefined,
-				files,
-				closeButtons,
-			);
+			const sent = await sendTo(threadId, lead, files);
 			if (!sent.ok) {
 				log.error("post failed", {
 					thread_id: threadId,
 					error: sent.error.type,
 				});
+				return;
 			}
+			if (waiting) await postButtons(threadId, false, true);
 			return;
 		}
 		const request = approvalRequestText(blocked);
-		const sent = await botOf(threadId).send(
+		const sent = await sendTo(
 			threadId,
 			lead.trim() === "" ? request : `${lead}\n\n${request}`,
-			undefined,
 			files,
-			[...APPROVAL_BUTTONS, ...closeButtons],
 		);
 		if (!sent.ok) {
 			log.error("approval request failed", {
@@ -610,6 +652,8 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			});
 			return;
 		}
+		// ボタンが出せなくても、返事の OK で許可できるよう依頼は残す
+		const buttons = await postButtons(threadId, true, waiting);
 		const operations = blocked.map((b) => b.operation);
 		await record(
 			threadId,
@@ -617,7 +661,10 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			operations.map((o) => o.tool),
 		);
 		await deps.approvals.set(threadId, {
-			messageIds: sent.value.messageIds,
+			messageIds: [
+				...sent.value.messageIds,
+				...(buttons.ok ? buttons.value.messageIds : []),
+			],
 			operations,
 		});
 		deps.ledger.log({
@@ -660,7 +707,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			now: now(),
 			title,
 			history: history.ok ? history.value : [],
-			isSelf: (m) => spokenBy(m) === partnerOf(threadId),
+			isSelf: (m) => m.authorId === speaker(partnerOf(threadId)).botUserId,
 		});
 	};
 
@@ -716,7 +763,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				await seats.delete(threadId);
 			}
 			if (!seat.standup) {
-				await botOf(threadId).send(threadId, seatStartFailedText(r.error));
+				await sendTo(threadId, seatStartFailedText(r.error));
 				await setStatus(threadId, "決めてほしい", seat);
 			}
 			return;
@@ -764,7 +811,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		if (!seat.standup && alive().length >= deps.seatLimit) {
 			await seats.set({ ...next, status: "queued", queuedAt: now() });
 			log.info("seat queued", { thread_id: seat.threadId });
-			await botOf(seat.threadId).send(seat.threadId, QUEUED_TEXT);
+			await sendTo(seat.threadId, QUEUED_TEXT);
 			return;
 		}
 		await launch(next);
@@ -844,7 +891,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				if (alive().length >= deps.seatLimit) {
 					await seats.set({ ...woke, status: "queued", queuedAt: now() });
 					await show(threadId, "受付");
-					await botOf(threadId).send(threadId, QUEUED_TEXT);
+					await sendTo(threadId, QUEUED_TEXT);
 					return;
 				}
 				await launch(woke);
@@ -879,10 +926,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		if (seat.dispatchId === null) return;
 		// 裏の作業を待つ席は、手が空くまで返事をしないことがある。受付が先に作業中だと返す
 		if (seat.status === "working" && seat.background) {
-			const busy = await botOf(threadId).send(
-				threadId,
-				busyText(seat.lastStatus),
-			);
+			const busy = await sendTo(threadId, busyText(seat.lastStatus));
 			if (!busy.ok) {
 				log.warn("busy reply failed", {
 					thread_id: threadId,
@@ -903,7 +947,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				thread_id: threadId,
 				reason: sent.error.reason,
 			});
-			await botOf(threadId).send(threadId, FAILURE_TEXT);
+			await sendTo(threadId, FAILURE_TEXT);
 			return;
 		}
 		await seats.set({
@@ -1003,12 +1047,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			await seats.set({ ...seat, lastStatus: reply.text });
 			await refreshPanel(seat.threadId, true);
 		}
-		const sent = await botOf(seat.threadId).send(
-			seat.threadId,
-			reply.body,
-			undefined,
-			reply.files,
-		);
+		const sent = await sendTo(seat.threadId, reply.body, reply.files);
 		if (!sent.ok) {
 			log.error("status post failed", {
 				thread_id: seat.threadId,
@@ -1029,12 +1068,12 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 					thread_id: threadId,
 					reason: stopped.error.reason,
 				});
-				await botOf(threadId).send(threadId, FAILURE_TEXT);
+				await sendTo(threadId, FAILURE_TEXT);
 				return true;
 			}
 		}
 		const asked = seat.status === "asking" ? seat.question : null;
-		await botOf(threadId).send(threadId, RESTARTING_TEXT);
+		await sendTo(threadId, RESTARTING_TEXT);
 		await launch({
 			...seat,
 			status: "sleeping",
@@ -1097,12 +1136,14 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		const working = tags.get("作業中");
 		const post = await bot.createForumPost(deps.workForumChannelId, {
 			name: title,
+			// 依頼者に通知が届くよう、最初の発言の名前をメンションにする
 			content: forumPostBody({
-				authorName: p.author.display_name,
+				authorName: `<@${p.author.id}>`,
 				content: p.content,
 				link,
 			}),
 			tagIds: working ? [working] : [],
+			notify: [p.author.id],
 		});
 		if (!post.ok) {
 			log.error("forum post failed", {
@@ -1149,10 +1190,9 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	const startFromForumPost = async (p: Payload) => {
 		const threadId = p.channel_id;
 		const partner: PartnerId =
-			deps.akarin && mentionsRole(p, deps.roleIds.akarin)
-				? "akarin"
-				: "yukarin";
+			deps.akarin && mentionsPartner(p, "akarin") ? "akarin" : "yukarin";
 		await deps.seats.assign(threadId, partner);
+		firstReplyTo.set(threadId, p.author.id);
 		log.info("forum post received", { thread_id: threadId, partner });
 		await openSeat(
 			{
@@ -1169,7 +1209,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	};
 
 	/**
-	 * 片付いた許可の依頼を書き換え、ボタンを外す。ボタンは分けて送った本文の最後のメッセージに付いている。
+	 * 片付いた許可の依頼を書き換え、ボタンを外す。ボタンは最後に mizuya の bot が出したメッセージに付いている。
 	 * 書き換えに失敗しても、依頼はもう片付いているので、残ったボタンを押されても何もしない。
 	 */
 	const settle = async (
@@ -1179,10 +1219,9 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	) => {
 		const messageId = request.messageIds.at(-1);
 		if (messageId === undefined) return;
-		const bot = botOf(threadId);
-		const current = await bot.getMessage(threadId, messageId);
+		const current = await deps.system.getMessage(threadId, messageId);
 		const edited = current.ok
-			? await bot.editMessage(
+			? await deps.system.editMessage(
 					threadId,
 					messageId,
 					settledApprovalText(current.value.content, answer),
@@ -1312,10 +1351,9 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		p: DiscordButtonPressedEnvelope["payload"],
 	) => {
 		await dismissThread(threadId);
-		const bot = botOf(threadId);
-		const current = await bot.getMessage(threadId, p.message_id);
+		const current = await deps.system.getMessage(threadId, p.message_id);
 		const edited = current.ok
-			? await bot.editMessage(
+			? await deps.system.editMessage(
 					threadId,
 					p.message_id,
 					dismissedText(current.value.content),
@@ -1397,10 +1435,15 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	return {
 		handle: async (envelope) => {
 			const p = envelope.payload;
-			if (p.author.id === deps.botUserId) return;
+			if (
+				p.author.id === deps.botUserId ||
+				p.author.id === deps.akarin?.botUserId ||
+				p.author.id === deps.systemUserId
+			)
+				return;
 			// 持ち主以外の人やほかの bot の発言で席を動かさない
 			if (p.author.is_bot || !deps.ownerUserIds.has(p.author.id)) {
-				log.debug("message from non-owner ignored", {
+				log.info("message from non-owner ignored", {
 					message_id: p.message_id,
 					author_id: p.author.id,
 				});
@@ -1409,7 +1452,14 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 
 			if (p.channel_id === deps.workTextChannelId) {
 				const partner = await addresseeOf(p);
-				if (partner === null) return;
+				if (partner === null) {
+					log.info("work message without addressee", {
+						message_id: p.message_id,
+						mentions: p.mentions.length,
+						mention_roles: (p.mention_roles ?? []).length,
+					});
+					return;
+				}
 				await startFromRequest(p, partner);
 				return;
 			}
@@ -1517,7 +1567,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 					background: false,
 				});
 				if (seat.status === "working") {
-					await botOf(seat.threadId).send(seat.threadId, RESTARTED_TEXT);
+					await sendTo(seat.threadId, RESTARTED_TEXT);
 					await setStatus(seat.threadId, "決めてほしい");
 				}
 				log.info("seat lost its claude", { thread_id: seat.threadId });

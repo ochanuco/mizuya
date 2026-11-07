@@ -17,6 +17,7 @@ import {
 	FORUM,
 	fakeDiscord,
 	memoryApprovals,
+	OWNER,
 	TEXT,
 	tempDir,
 	tempLedger,
@@ -78,11 +79,14 @@ const decisionsReply = (n: number) =>
 
 const setup = () => {
 	const discord = fakeDiscord();
+	const system = fakeDiscord();
 	const approvals = memoryApprovals();
 	const ledger = tempLedger();
 	const activity: ActivityEntry[] = [];
 	const deps = {
 		discord: discord.api,
+		system: system.api,
+		ownerUserId: OWNER,
 		approvals,
 		ledger,
 		workForumChannelId: FORUM,
@@ -93,7 +97,7 @@ const setup = () => {
 		now: () => NOW,
 		logger: silentLogger,
 	};
-	return { deps, discord, approvals, ledger, activity };
+	return { deps, discord, system, approvals, ledger, activity };
 };
 
 describe("startStandup", () => {
@@ -365,7 +369,13 @@ describe("finishStandup", () => {
 		);
 		expect(t.discord.posts[0]?.content).toContain("本文1");
 		expect(t.discord.posts[0]?.content).toContain("2026-11-05 の朝会");
-		expect(t.discord.posts[0]?.buttons).toEqual(["thread:dismiss"]);
+		expect(t.discord.posts[0]?.buttons).toBeUndefined();
+		expect(t.discord.posts[0]?.content.startsWith(`<@${OWNER}> `)).toBe(true);
+		expect(t.discord.posts[0]?.notify).toEqual([OWNER]);
+		expect(t.system.sent[0]).toMatchObject({
+			channelId: "thread1",
+			buttons: ["thread:dismiss"],
+		});
 	});
 
 	it("読めない返事なら投稿しない", async () => {
@@ -382,12 +392,16 @@ describe("finishStandup", () => {
 		]);
 		expect(r.posted).toEqual(["thread1"]);
 		expect(t.discord.posts[0]?.content).toContain("gh pr merge 3");
-		expect(t.discord.posts[0]?.buttons).toEqual([
-			"approval:grant",
-			"approval:deny",
-			"thread:dismiss",
+		expect(t.system.sent).toEqual([
+			expect.objectContaining({
+				channelId: "thread1",
+				buttons: ["approval:grant", "approval:deny", "thread:dismiss"],
+			}),
 		]);
-		expect(t.approvals.get("thread1")?.operations).toEqual([op]);
+		expect(t.approvals.get("thread1")).toEqual({
+			messageIds: ["thread1", "sent1"],
+			operations: [op],
+		});
 	});
 
 	it("見張りの新着は仕事チャンネルに 1 件 1 行で書き、投稿は立てない", async () => {

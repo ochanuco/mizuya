@@ -14,10 +14,10 @@ const timeOfDay = v.pipe(v.string(), v.regex(/^([01]\d|2[0-3]):[0-5]\d$/));
 
 const envSchema = v.object({
 	DISCORD_TOKEN: nonEmpty,
+	YUKARIN_DISCORD_TOKEN: nonEmpty,
+	AKARIN_DISCORD_TOKEN: v.optional(nonEmpty),
 	YUKARIN_ROLE_ID: v.optional(nonEmpty),
 	AKARIN_ROLE_ID: v.optional(nonEmpty),
-	YUKARIN_AVATAR_URL: v.optional(v.pipe(v.string(), v.url())),
-	AKARIN_AVATAR_URL: v.optional(v.pipe(v.string(), v.url())),
 	MIZUYA_INBOX_URL: v.optional(v.pipe(v.string(), v.url())),
 	MIZUYA_INBOX_TOKEN: v.optional(nonEmpty),
 	MIZUYA_ACCESS_CLIENT_ID: v.optional(nonEmpty),
@@ -62,12 +62,12 @@ const envSchema = v.object({
 });
 
 export type WorkingConfig = {
-	/** mizuya の bot トークン。Gateway で仕事チャンネルを読み、REST で読み書きし、席ごとに名乗る webhook を作る。 */
+	/** mizuya の bot トークン。Gateway で仕事チャンネルを読み、ボタンと状態の欄を書く。 */
 	discordToken: string;
+	/** 席の発言・投稿・リアクション・入力中の表示に使う人格の bot の token。REST だけで使い、Gateway にはつながない。 */
+	personaTokens: { yukarin: string; akarin: string | null };
 	/** 依頼の宛先の席を決める role。無ければその role では選べない。 */
 	roleIds: { yukarin: string | null; akarin: string | null };
-	/** 席の話し手の画像。無ければ webhook の既定の画像になる。 */
-	avatarUrls: { yukarin: string | null; akarin: string | null };
 	/** mizuya の Worker の受け箱。4 つそろったときだけつなぎ、ボタンを受け取る。 */
 	inbox: {
 		url: string;
@@ -160,13 +160,13 @@ export const loadConfig = (
 	};
 	return ok({
 		discordToken: e.DISCORD_TOKEN,
+		personaTokens: {
+			yukarin: e.YUKARIN_DISCORD_TOKEN,
+			akarin: e.AKARIN_DISCORD_TOKEN ?? null,
+		},
 		roleIds: {
 			yukarin: e.YUKARIN_ROLE_ID ?? null,
 			akarin: e.AKARIN_ROLE_ID ?? null,
-		},
-		avatarUrls: {
-			yukarin: e.YUKARIN_AVATAR_URL ?? null,
-			akarin: e.AKARIN_AVATAR_URL ?? null,
 		},
 		inbox:
 			e.MIZUYA_INBOX_URL &&

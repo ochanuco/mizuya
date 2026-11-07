@@ -39,8 +39,6 @@ export const tempDir = (prefix = "mizuya-working-") =>
 export const tempLedger = (dir = tempDir()) => createLedger(dir);
 
 export const BOT = "bot";
-/** Yukarin の話し手が名乗る名前。 */
-export const YUKARIN_NAME = "ゆかりん";
 export const OWNER = "u1";
 export const TEXT = "text";
 export const FORUM = "forum";
@@ -60,7 +58,6 @@ export const fakeDiscord = () => {
 			FORUM,
 			{
 				id: FORUM,
-				isThread: false,
 				name: "仕事",
 				parentId: "cat",
 				appliedTagIds: [],
@@ -71,7 +68,6 @@ export const fakeDiscord = () => {
 			TEXT,
 			{
 				id: TEXT,
-				isThread: false,
 				name: "仕事",
 				parentId: "cat",
 				appliedTagIds: [],
@@ -89,12 +85,14 @@ export const fakeDiscord = () => {
 		replyTo?: string;
 		files?: string[];
 		buttons?: string[];
+		notify?: string[];
 	}[] = [];
 	const posts: {
 		name: string;
 		content: string;
 		tagIds: string[];
 		buttons?: string[];
+		notify?: string[];
 	}[] = [];
 	const history = new Map<string, PostedMessage[]>();
 	/** `${channelId}/${messageId}` ごとの bot のリアクション。 */
@@ -119,10 +117,9 @@ export const fakeDiscord = () => {
 			return own !== undefined
 				? ok({
 						id,
-						authorId: "webhook",
-						authorName: YUKARIN_NAME,
+						authorId: BOT,
+						authorName: "ゆかり",
 						isBot: true,
-						isWebhook: true,
 						content: own,
 					})
 				: err(externalServiceUnavailable({ service: "discord" }));
@@ -138,12 +135,14 @@ export const fakeDiscord = () => {
 					content: string;
 					tagIds: string[];
 					buttons?: readonly { customId: string }[];
+					notify?: readonly string[];
 				},
 			) => {
 				const id = `thread${nextThread++}`;
-				const { buttons, ...rest } = post;
+				const { buttons, notify, ...rest } = post;
 				posts.push({
 					...rest,
+					...(notify?.length ? { notify: [...notify] } : {}),
 					...(buttons?.length
 						? { buttons: buttons.map((b) => b.customId) }
 						: {}),
@@ -152,7 +151,6 @@ export const fakeDiscord = () => {
 				botMessages.set(id, post.content);
 				channels.set(id, {
 					id,
-					isThread: true,
 					name: post.name,
 					parentId: forumId,
 					appliedTagIds: post.tagIds,
@@ -161,7 +159,14 @@ export const fakeDiscord = () => {
 				return ok({ threadId: id });
 			},
 		),
-		send: async (channelId, content, replyTo, files = [], buttons = []) => {
+		send: async (
+			channelId,
+			content,
+			replyTo,
+			files = [],
+			buttons = [],
+			notify = [],
+		) => {
 			if (refuseSendTo.has(channelId)) {
 				return err(
 					permissionDenied({ actor: "discord bot", action: "POST /channels" }),
@@ -175,6 +180,7 @@ export const fakeDiscord = () => {
 				...(buttons.length > 0
 					? { buttons: buttons.map((b) => b.customId) }
 					: {}),
+				...(notify.length > 0 ? { notify: [...notify] } : {}),
 			});
 			const id = `sent${sent.length}`;
 			botMessages.set(id, content);
@@ -223,7 +229,6 @@ export const fakeDiscord = () => {
 	const addThread = (id: string, name: string) =>
 		channels.set(id, {
 			id,
-			isThread: true,
 			name,
 			parentId: FORUM,
 			appliedTagIds: [],

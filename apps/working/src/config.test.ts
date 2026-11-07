@@ -4,6 +4,7 @@ import { loadConfig } from "./config.ts";
 const base = {
 	HOME: "/home/w",
 	DISCORD_TOKEN: "t",
+	YUKARIN_DISCORD_TOKEN: "ty",
 	WORKING_TOKEN: "shared",
 	WORK_TEXT_CHANNEL_ID: "100",
 	WORK_FORUM_CHANNEL_ID: "200",
@@ -16,8 +17,8 @@ describe("loadConfig", () => {
 			ok: true,
 			value: {
 				discordToken: "t",
+				personaTokens: { yukarin: "ty", akarin: null },
 				roleIds: { yukarin: null, akarin: null },
-				avatarUrls: { yukarin: null, akarin: null },
 				inbox: null,
 				codexHome: "/home/w/.codex",
 				sharedToken: "shared",
@@ -72,18 +73,23 @@ describe("loadConfig", () => {
 		expect(loadConfig({ ...base, ACTIVITY_LOG_TIME: "8:00" }).ok).toBe(false);
 	});
 
-	it("席の role と画像を読む", () => {
+	it("席の role と人格の bot の token を読む", () => {
 		const r = loadConfig({
 			...base,
 			YUKARIN_ROLE_ID: "501",
 			AKARIN_ROLE_ID: "502",
-			AKARIN_AVATAR_URL: "https://example.com/akarin.png",
+			AKARIN_DISCORD_TOKEN: "ta",
 		});
 		expect(r.ok && r.value.roleIds).toEqual({ yukarin: "501", akarin: "502" });
-		expect(r.ok && r.value.avatarUrls).toEqual({
-			yukarin: null,
-			akarin: "https://example.com/akarin.png",
+		expect(r.ok && r.value.personaTokens).toEqual({
+			yukarin: "ty",
+			akarin: "ta",
 		});
+	});
+
+	it("Yukarin の bot の token が無ければ読めない", () => {
+		const { YUKARIN_DISCORD_TOKEN: _, ...rest } = base;
+		expect(loadConfig(rest).ok).toBe(false);
 	});
 
 	it("受け箱は 4 つそろったときだけ読む", () => {
