@@ -4,14 +4,18 @@ import { approvalRequestText } from "./approval.ts";
 import type { ApprovalStore } from "./approval-store.ts";
 import type { DiscordApi } from "./discord-rest.ts";
 import type { Ledger, Pending } from "./guard/ledger.ts";
-import { formatJstForPrompt, toModelJson } from "./lib/core.ts";
+import {
+	formatJstForPrompt,
+	PARTNER_IDS,
+	type PartnerId,
+	toModelJson,
+} from "./lib/core.ts";
 import type { Logger } from "./logger.ts";
 import { diffPatrol, type PatrolStore, patrolSources } from "./patrol.ts";
 import {
 	loginExpiryDecision,
 	patrolPrompt,
 	STANDUP_TITLE_LIMIT,
-	seatSpec,
 	standupPostFooter,
 	standupPrompt,
 	watchPrompt,
@@ -27,6 +31,9 @@ import type { RunKind } from "./standup-timer.ts";
 import { buttonMessage } from "./system.ts";
 
 export type Decision = { title: string; body: string };
+
+/** 見張りの新着を書く投稿（無ければ仕事チャンネル）と、書く名義のパートナー。 */
+export type WatchTarget = { threadId: string | null; partner: string };
 
 const noticeLine = v.pipe(
 	v.string(),
@@ -92,7 +99,7 @@ export const parseDecisions = (text: string): Decision[] | null =>
 	parseReport(text)?.decisions ?? null;
 
 export type StandupDeps = {
-	/** Yukarin の bot。投稿を立て、知らせを書く。 */
+	/** Yukarin の bot。投稿を立て、知らせを書く。ほかのパートナーの bot が無いときは代わりに書く。 */
 	discord: DiscordApi;
 	/** mizuya の bot。投稿に許可と不要のボタンを出す。 */
 	system: DiscordApi;
@@ -106,11 +113,15 @@ export type StandupDeps = {
 	/** 朝会・見回り・GitHub の知らせの席が止められた操作を、活動ログに 1 行残す。 */
 	recordActivity?: (entry: ActivityEntry) => Promise<void>;
 	now?: () => Date;
+	/** Yukarin 以外のパートナーの bot。見張りの持ち主の名で書く。無いパートナーは Yukarin の bot で書く。 */
+	speakers?: Partial<Record<PartnerId, DiscordApi>>;
+	/** 立てた投稿の担当を決める。返事を、投稿を書いたパートナーの席が受けるようにする。 */
+	assign?: (threadId: string, partner: PartnerId) => Promise<void>;
 	/**
-	 * 見張りの id → 新着を書く投稿。朝会と見回りを始めるときに覚え、終わったときに引く。
-	 * 再起動で消えたら仕事チャンネルに書く。
+	 * 見張りの id → 新着を書く先と持ち主。朝会と見回りを始めるときに覚え、終わったときに引く。
+	 * 再起動で消えたら、仕事チャンネルに回の持ち主の名で書く。
 	 */
-	watchThreads?: Map<string, string>;
+	watchThreads?: Map<string, WatchTarget>;
 	/** 見張りの知らせをやり直すまで待つ。テストで差し替える。 */
 	sleep?: (ms: number) => Promise<void>;
 	logger: Logger;
@@ -136,19 +147,33 @@ const runLabel = (kind: RunKind, now: Date) => {
 	return `${kind === "standup" ? jst.slice(0, 10) : jst.slice(11, 16)} の${RUN_NAME[kind]}`;
 };
 
+/** そのパートナーの名で書く bot。bot が無いパートナーは Yukarin が代わりに書き、担当も Yukarin にする。 */
+const voiceOf = (
+	deps: StandupDeps,
+	partner: string,
+): { partner: PartnerId; discord: DiscordApi } => {
+	const id = PARTNER_IDS.find((p) => p === partner);
+	const discord = id === undefined ? undefined : deps.speakers?.[id];
+	return id !== undefined && discord !== undefined
+		? { partner: id, discord }
+		: { partner: "yukarin", discord: deps.discord };
+};
+
 /** 決めてほしいこと 1 件ごとに仕事フォーラムへ投稿する。投稿への返事は、その投稿の新しい席が受ける。 */
 export const postDecisions = async (
 	deps: StandupDeps,
 	decisions: readonly Decision[],
 	blocked: readonly Pending[],
 	kind: RunKind = "standup",
+	partner = "yukarin",
 ): Promise<StandupReport> => {
 	const log = deps.logger;
 	const now = (deps.now ?? (() => new Date()))();
 	const report: StandupReport = { posted: [], failed: 0 };
 	if (decisions.length === 0 && blocked.length === 0) return report;
+	const voice = voiceOf(deps, partner);
 
-	const forum = await deps.discord.getChannel(deps.workForumChannelId);
+	const forum = await voice.discord.getChannel(deps.workForumChannelId);
 	const tagId = forum.ok
 		? forum.value.availableTags.find((t) => t.name === DECIDE_TAG)?.id
 		: undefined;
@@ -157,7 +182,7 @@ export const postDecisions = async (
 
 	/** 投稿を立て、その中に mizuya の bot でボタンを出す。ボタンのメッセージの ID も返す。 */
 	const post = async (d: Decision, approval = false) => {
-		const created = await deps.discord.createForumPost(
+		const created = await voice.discord.createForumPost(
 			deps.workForumChannelId,
 			{
 				name: d.title,
@@ -173,6 +198,9 @@ export const postDecisions = async (
 		}
 		const threadId = created.value.threadId;
 		report.posted.push(threadId);
+		// 担当の無い投稿は Yukarin が受けるので、ほかのパートナーの投稿だけ担当を決める
+		if (voice.partner !== "yukarin")
+			await deps.assign?.(threadId, voice.partner);
 		const m = buttonMessage({ approval, dismiss: true });
 		const buttons = await deps.system.send(
 			threadId,
@@ -210,7 +238,7 @@ export const postDecisions = async (
 					kind: "blocked",
 					threadId,
 					title,
-					partner: "yukarin",
+					partner: voice.partner,
 					tools: operations.map((o) => o.tool),
 				})
 				.catch((e: unknown) =>
@@ -236,11 +264,13 @@ export const postDecisions = async (
 export const dueWatches = (m: StandupMaterials): Watch[] =>
 	failed(m.watches) ? [] : m.watches.filter((w) => w.due);
 
-/** 新着を書く先を、席の報告が届くまで覚えておく。 */
+/** 新着を書く先と名義を、席の報告が届くまで覚えておく。 */
 const rememberThreads = (deps: StandupDeps, watches: readonly Watch[]) => {
 	for (const w of watches) {
-		if (w.notify_thread_id !== null)
-			deps.watchThreads?.set(w.id, w.notify_thread_id);
+		deps.watchThreads?.set(w.id, {
+			threadId: w.notify_thread_id,
+			partner: w.partner,
+		});
 	}
 };
 /** 書く先は受付が決めるので、席には渡さない。 */
@@ -248,16 +278,16 @@ const forSeat = ({ notify_thread_id: _omit, ...w }: Watch) => w;
 
 /**
  * 見張り 1 件の席を、`due` によらず立てる。Dkron がその見張りの間隔で起こす。
+ * 席は見張りの持ち主のパートナーが受け持つ。
  * 記憶に無い（止められた、期限が切れた）見張りと、記憶を読めなかった回は席を立てない。
  * 席を立てたら席の ID、立てなかったら null を返す。
  */
 export const startWatch = async (input: {
 	deps: StandupDeps;
-	partner: string;
+	partner: PartnerId;
 	watchId: string;
 	read: (partner: string) => Promise<Watch[] | Unavailable>;
-	preamble: string;
-	start: (spec: string, kind: RunKind) => Promise<string>;
+	start: (spec: string, kind: RunKind, partner: PartnerId) => Promise<string>;
 }): Promise<string | null> => {
 	const { deps, partner, watchId } = input;
 	const now = (deps.now ?? (() => new Date()))();
@@ -277,14 +307,12 @@ export const startWatch = async (input: {
 	}
 	rememberThreads(deps, [watch]);
 	const id = await input.start(
-		seatSpec(
-			input.preamble,
-			watchPrompt({
-				now,
-				materials: toModelJson({ due_watches: [forSeat(watch)] }),
-			}),
-		),
+		watchPrompt({
+			now,
+			materials: toModelJson({ due_watches: [forSeat(watch)] }),
+		}),
 		"watch",
+		partner,
 	);
 	deps.logger.info("watch started", {
 		seat: id,
@@ -305,7 +333,6 @@ export const startStandup = async (input: {
 	kind: RunKind;
 	gather: () => Promise<StandupMaterials>;
 	store: PatrolStore;
-	preamble: string;
 	start: (spec: string, kind: RunKind) => Promise<string>;
 }): Promise<string | null> => {
 	const { deps, kind } = input;
@@ -328,18 +355,15 @@ export const startStandup = async (input: {
 			return null;
 		}
 		const id = await input.start(
-			seatSpec(
-				input.preamble,
-				patrolPrompt({
-					now,
-					materials: toModelJson({
-						changes: seen,
-						due_watches: watches,
-						memory: memoryForSeat(materials.memory),
-						mac_state: materials.mac_state,
-					}),
+			patrolPrompt({
+				now,
+				materials: toModelJson({
+					changes: seen,
+					due_watches: watches,
+					memory: memoryForSeat(materials.memory),
+					mac_state: materials.mac_state,
 				}),
-			),
+			}),
 			kind,
 		);
 		await input.store.save(next);
@@ -364,18 +388,15 @@ export const startStandup = async (input: {
 		);
 	}
 	const id = await input.start(
-		seatSpec(
-			input.preamble,
-			standupPrompt({
-				now,
-				materials: toModelJson({
-					...materials,
-					memory: memoryForSeat(materials.memory),
-					watches: undefined,
-					due_watches: watches,
-				}),
+		standupPrompt({
+			now,
+			materials: toModelJson({
+				...materials,
+				memory: memoryForSeat(materials.memory),
+				watches: undefined,
+				due_watches: watches,
 			}),
-		),
+		}),
 		kind,
 	);
 	await input.store.save(next);
@@ -384,36 +405,50 @@ export const startStandup = async (input: {
 };
 
 /**
- * 見張りの新着を 1 件 1 行で書く。席から登録した見張りはその投稿に、ほかは仕事チャンネルに書く。
+ * 見張りの新着を 1 件 1 行で、見張りの持ち主の名で書く。席から登録した見張りはその投稿に、ほかは仕事チャンネルに書く。
+ * 持ち主が分からない新着は、回を受け持ったパートナーの名で書く。
  * 無ければ何も書かない。全部書けたら true。
  */
 export const postNotices = async (
 	deps: StandupDeps,
 	notices: readonly Notice[],
+	partner = "yukarin",
 ): Promise<boolean> => {
-	const byChannel = new Map<string, string[]>();
+	const groups = new Map<
+		string,
+		{ discord: DiscordApi; channelId: string; lines: string[] }
+	>();
 	for (const n of notices) {
-		const to =
-			(n.watchId === null ? undefined : deps.watchThreads?.get(n.watchId)) ??
-			deps.workTextChannelId;
-		byChannel.set(to, [...(byChannel.get(to) ?? []), n.text]);
+		const target =
+			n.watchId === null ? undefined : deps.watchThreads?.get(n.watchId);
+		const voice = voiceOf(deps, target?.partner ?? partner);
+		const channelId = target?.threadId ?? deps.workTextChannelId;
+		const key = `${voice.partner}/${channelId}`;
+		const group = groups.get(key) ?? {
+			discord: voice.discord,
+			channelId,
+			lines: [],
+		};
+		group.lines.push(n.text);
+		groups.set(key, group);
 	}
 	let ok = true;
-	for (const [channelId, lines] of byChannel) {
-		if (!(await sendNotice(deps, channelId, lines))) ok = false;
+	for (const g of groups.values()) {
+		if (!(await sendNotice(deps, g.discord, g.channelId, g.lines))) ok = false;
 	}
 	return ok;
 };
 
 const sendNotice = async (
 	deps: StandupDeps,
+	discord: DiscordApi,
 	channelId: string,
 	lines: readonly string[],
 ): Promise<boolean> => {
 	const sleep =
 		deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
 	for (let attempt = 0; ; attempt++) {
-		const sent = await deps.discord.send(channelId, lines.join("\n"));
+		const sent = await discord.send(channelId, lines.join("\n"));
 		if (sent.ok) return true;
 		const wait = NOTICE_RETRY_MS[attempt];
 		if (wait === undefined || !sent.error.retryable) {
@@ -429,23 +464,25 @@ const sendNotice = async (
 	}
 };
 
-/** 朝会か見回りの席の報告を読み、決めてほしいことを投稿にし、見張りの新着を知らせる。 */
+/** 朝会か見回りの席の報告を読み、決めてほしいことを回を受け持ったパートナーの名で投稿にし、見張りの新着を知らせる。 */
 export const finishStandup = async (
 	deps: StandupDeps,
 	text: string,
 	blocked: readonly Pending[],
 	kind: RunKind = "standup",
+	partner: PartnerId = "yukarin",
 ): Promise<StandupReport> => {
 	const parsed = parseReport(text);
 	if (parsed === null) {
 		deps.logger.error("standup decisions unreadable", {});
 	}
-	const notified = await postNotices(deps, parsed?.notices ?? []);
+	const notified = await postNotices(deps, parsed?.notices ?? [], partner);
 	const report = await postDecisions(
 		deps,
 		parsed?.decisions ?? [],
 		blocked,
 		kind,
+		partner,
 	);
 	deps.logger.info("standup done", {
 		kind,

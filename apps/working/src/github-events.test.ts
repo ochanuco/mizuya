@@ -112,7 +112,6 @@ describe("runGithubEvents", () => {
 		const seats = await runGithubEvents(
 			{
 				store,
-				preamble: "PRE",
 				selfLogin: "working-me",
 				start: async (spec, kind) => {
 					specs.push(spec);

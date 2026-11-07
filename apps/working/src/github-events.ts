@@ -2,7 +2,7 @@ import * as v from "valibot";
 import { toModelJson } from "./lib/core.ts";
 import type { Logger } from "./logger.ts";
 import type { PatrolSnapshot, PatrolStore } from "./patrol.ts";
-import { eventPrompt, seatSpec } from "./prompts.ts";
+import { eventPrompt } from "./prompts.ts";
 
 const text = v.string();
 const repo = v.pipe(v.string(), v.nonEmpty());
@@ -98,7 +98,6 @@ export const selectEvents = (
 
 export type EventRunDeps = {
 	store: PatrolStore;
-	preamble: string;
 	selfLogin: string | null;
 	start: (spec: string, kind: "event") => Promise<string>;
 	now?: () => Date;
@@ -136,13 +135,10 @@ export const runGithubEvents = async (
 	const seats: string[] = [];
 	for (const [subject, group] of bySubject) {
 		const id = await deps.start(
-			seatSpec(
-				deps.preamble,
-				eventPrompt({
-					now,
-					materials: toModelJson({ subject, events: group }),
-				}),
-			),
+			eventPrompt({
+				now,
+				materials: toModelJson({ subject, events: group }),
+			}),
 			"event",
 		);
 		log.info("github event seat started", { seat: id, subject });

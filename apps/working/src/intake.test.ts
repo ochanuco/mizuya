@@ -99,7 +99,12 @@ const setup = async (
 		akarin: [] as string[],
 		system: [] as string[],
 	};
-	const standup: { text: string; blocked: number; kind: string }[] = [];
+	const standup: {
+		text: string;
+		blocked: number;
+		kind: string;
+		partner: PartnerId;
+	}[] = [];
 	const seats = await openSeatStore(stateDir);
 	const ledger = createLedger(guardDirOf(stateDir));
 	let g = 0;
@@ -129,8 +134,8 @@ const setup = async (
 		recordActivity: async (e) => {
 			activity.push(e);
 		},
-		standupDone: async (text, blocked, kind) => {
-			standup.push({ text, blocked: blocked.length, kind });
+		standupDone: async (text, blocked, kind, partner) => {
+			standup.push({ text, blocked: blocked.length, kind, partner });
 		},
 		preamble: PREAMBLE,
 		botUserId: BOT,
@@ -863,7 +868,12 @@ describe("朝会の席", () => {
 			}),
 		);
 		expect(s.standup).toEqual([
-			{ text: "```json\n{}\n```", blocked: 1, kind: "standup" },
+			{
+				text: "```json\n{}\n```",
+				blocked: 1,
+				kind: "standup",
+				partner: "yukarin",
+			},
 		]);
 		expect(s.seats.get(id)).toBeNull();
 		expect(s.o.opsOf("removeWorktree")).toEqual([`/seats/seat-${id}`]);
@@ -880,7 +890,9 @@ describe("朝会の席", () => {
 				body: "x",
 			}),
 		);
-		expect(s.standup).toEqual([{ text: "x", blocked: 0, kind: "patrol" }]);
+		expect(s.standup).toEqual([
+			{ text: "x", blocked: 0, kind: "patrol", partner: "yukarin" },
+		]);
 	});
 
 	it("見張りの席の報告は見張りとして返す", async () => {
@@ -894,7 +906,30 @@ describe("朝会の席", () => {
 				body: "x",
 			}),
 		);
-		expect(s.standup).toEqual([{ text: "x", blocked: 0, kind: "watch" }]);
+		expect(s.standup).toEqual([
+			{ text: "x", blocked: 0, kind: "watch", partner: "yukarin" },
+		]);
+	});
+
+	it("見張りの席は持ち主の Akarin が Codex で受け持ち、報告も Akarin の名で返す", async () => {
+		const s = await setup({ akarin: true });
+		const id = await s.intake.startStandup("見張りの spec", "watch", "akarin");
+		const [start] = s.o.opsOf("startSeat") as { spec: string; agent: string }[];
+		expect(start?.agent).toBe("codex");
+		expect(start?.spec.startsWith(AKARIN_PREAMBLE)).toBe(true);
+		expect(start?.spec).not.toContain(PREAMBLE);
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "worker_done",
+				dispatchId: s.seats.get(id)?.dispatchId ?? null,
+				body: "x",
+			}),
+		);
+		expect(s.standup).toEqual([
+			{ text: "x", blocked: 0, kind: "watch", partner: "akarin" },
+		]);
+		// 投稿を持たない席なので、閉じたら担当も残さない
+		expect(s.seats.partnerOf(id)).toBeNull();
 	});
 
 	it("GitHub の出来事の席の報告は event として返す", async () => {
@@ -910,7 +945,9 @@ describe("朝会の席", () => {
 				body: "x",
 			}),
 		);
-		expect(s.standup).toEqual([{ text: "x", blocked: 0, kind: "event" }]);
+		expect(s.standup).toEqual([
+			{ text: "x", blocked: 0, kind: "event", partner: "yukarin" },
+		]);
 	});
 });
 
