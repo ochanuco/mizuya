@@ -49,6 +49,9 @@ done
 
 pnpm exec wrangler deploy --secrets-file "$secrets_file"
 
+# コマンドの定義は Worker の解釈と揃っている必要があるので、Worker を出したあとに登録する
+node scripts/register-commands.ts
+
 for attempt in $(seq 1 10); do
   if curl -fsS --max-time 10 "https://$host/health" > /dev/null; then
     echo "mizuya: https://$host/health OK"

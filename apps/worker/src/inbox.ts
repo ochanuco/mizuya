@@ -1,11 +1,11 @@
 import * as v from "valibot";
 
 /**
- * Working の受け箱。Worker が受けた仕事向けの出来事（ボタン、GitHub の出来事）を置き、
+ * Working の受け箱。Worker が受けた仕事向けの出来事（ボタン、`/ai` コマンド、GitHub の出来事）を置き、
  * 外向きの WebSocket でつないだ Working に渡す。Working は受け取った行を ack し、ack した行だけを消す。
  */
 
-export const INBOX_KINDS = ["button", "github"] as const;
+export const INBOX_KINDS = ["button", "command", "github"] as const;
 export type InboxKind = (typeof INBOX_KINDS)[number];
 
 export type InboxItem = {
@@ -22,7 +22,7 @@ export const INBOX_PONG = "pong";
 /** Worker から Working に送る形。 */
 export type InboxPush = { type: "item" } & InboxItem;
 
-/** ボタンの interaction の token は 15 分で切れ、その後に効いても押した人には何も返せない。 */
+/** ボタンとコマンドの interaction の token は 15 分で切れ、その後に効いても押した人には何も返せない。 */
 export const BUTTON_MAX_AGE_MS = 15 * 60_000;
 /** これより古い GitHub の出来事は渡さない。Working が長く止まっていた分は見回りが拾う。 */
 export const GITHUB_MAX_AGE_MS = 6 * 60 * 60_000;
@@ -30,7 +30,7 @@ export const GITHUB_MAX_AGE_MS = 6 * 60 * 60_000;
 export const RETENTION_MS = 24 * 60 * 60_000;
 
 const maxAgeOf = (kind: InboxKind) =>
-	kind === "button" ? BUTTON_MAX_AGE_MS : GITHUB_MAX_AGE_MS;
+	kind === "github" ? GITHUB_MAX_AGE_MS : BUTTON_MAX_AGE_MS;
 
 /** Durable Object の SQLite のうち、受け箱が使う分。 */
 export type Sql = {
