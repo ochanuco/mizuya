@@ -80,6 +80,11 @@ export type SeatPartner = {
 };
 
 export type IntakeDeps = {
+	/**
+	 * 席が返事（完了か質問）を書いた後に呼ぶ。席は作業中に記憶の見張りを足したり止めたりするので、
+	 * スケジューラのジョブをその場で合わせ、返事と Dkron の表示がずれないようにする。
+	 */
+	seatReplied?: () => void;
 	/** Yukarin の bot。読むのもこの bot で行う。 */
 	discord: DiscordApi;
 	/** mizuya の bot。許可と不要のボタン、状態の欄を書く。 */
@@ -1823,6 +1828,8 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				else if (msg.type === "escalation") await onEscalation(current, msg);
 				else if (msg.type === "status") await onStatus(current, msg);
 			});
+			if (msg.type === "question" || msg.type === "worker_done")
+				deps.seatReplied?.();
 		},
 		startStandup: async (spec, kind = "standup") => {
 			const threadId = `${kind}-${randomUUID()}`;

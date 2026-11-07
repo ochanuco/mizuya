@@ -82,6 +82,7 @@ const setup = async (
 		seatsDir?: string;
 		chimera?: ChimeraImages;
 		akarin?: boolean;
+		seatReplied?: () => void;
 	} = {},
 ) => {
 	const stateDir = opts.stateDir ?? tempDir();
@@ -148,6 +149,7 @@ const setup = async (
 			return () => timers.delete(fn);
 		},
 		logger: silentLogger,
+		seatReplied: opts.seatReplied,
 	};
 	return {
 		d,
@@ -292,6 +294,28 @@ describe("新しい投稿", () => {
 });
 
 describe("投稿への返事", () => {
+	it("席が完了か質問を返したら seatReplied を呼び、途中経過では呼ばない", async () => {
+		let replied = 0;
+		const s = await setup({ seatReplied: () => replied++ });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "status",
+				dispatchId: seat.dispatchId,
+				body: "調べています",
+			}),
+		);
+		expect(replied).toBe(0);
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "worker_done",
+				dispatchId: seat.dispatchId,
+				body: "見張りを止めました\n状態: 完了",
+			}),
+		);
+		expect(replied).toBe(1);
+	});
+
 	it("作業中の席には send で渡し、続きの Dispatch を覚える", async () => {
 		const s = await setup();
 		const seat = await openPost(s);
