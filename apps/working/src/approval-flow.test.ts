@@ -49,7 +49,8 @@ const setup = async () => {
 		standupDone: async () => {},
 		preamble: "",
 		botUserId: BOT,
-		yukarinName: "ゆかりん",
+		system: d.api,
+		systemUserId: "mizuya-bot",
 		roleIds: { yukarin: null, akarin: null },
 		ownerUserIds: new Set([OWNER]),
 		workTextChannelId: TEXT,
@@ -170,7 +171,7 @@ describe("席の Claude の操作と hook", { timeout: 20_000 }, () => {
 				body: "main に push してよいですか",
 			}),
 		);
-		const asked = s.d.sentTo("p1").at(-1) ?? "";
+		const asked = s.d.sentTo("p1").at(-2) ?? "";
 		expect(asked).toContain("main に push してよいですか");
 		expect(asked).toContain("git push origin HEAD:main");
 		expect(asked).toContain("auto モードが止めた");
@@ -197,7 +198,7 @@ describe("席の Claude の操作と hook", { timeout: 20_000 }, () => {
 				body: "メールを送ってよいですか",
 			}),
 		);
-		expect(s.d.sentTo("p1").at(-1)).toContain(
+		expect(s.d.sentTo("p1").at(-2)).toContain(
 			"mcp__claude_ai_Gmail__send_message",
 		);
 		await s.intake.handle(say("p1", "OK"));

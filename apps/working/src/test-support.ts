@@ -39,8 +39,6 @@ export const tempDir = (prefix = "mizuya-working-") =>
 export const tempLedger = (dir = tempDir()) => createLedger(dir);
 
 export const BOT = "bot";
-/** Yukarin の話し手が名乗る名前。 */
-export const YUKARIN_NAME = "ゆかりん";
 export const OWNER = "u1";
 export const TEXT = "text";
 export const FORUM = "forum";
@@ -60,7 +58,6 @@ export const fakeDiscord = () => {
 			FORUM,
 			{
 				id: FORUM,
-				isThread: false,
 				name: "仕事",
 				parentId: "cat",
 				appliedTagIds: [],
@@ -71,7 +68,6 @@ export const fakeDiscord = () => {
 			TEXT,
 			{
 				id: TEXT,
-				isThread: false,
 				name: "仕事",
 				parentId: "cat",
 				appliedTagIds: [],
@@ -119,10 +115,9 @@ export const fakeDiscord = () => {
 			return own !== undefined
 				? ok({
 						id,
-						authorId: "webhook",
-						authorName: YUKARIN_NAME,
+						authorId: BOT,
+						authorName: "ゆかり",
 						isBot: true,
-						isWebhook: true,
 						content: own,
 					})
 				: err(externalServiceUnavailable({ service: "discord" }));
@@ -152,7 +147,6 @@ export const fakeDiscord = () => {
 				botMessages.set(id, post.content);
 				channels.set(id, {
 					id,
-					isThread: true,
 					name: post.name,
 					parentId: forumId,
 					appliedTagIds: post.tagIds,
@@ -223,7 +217,6 @@ export const fakeDiscord = () => {
 	const addThread = (id: string, name: string) =>
 		channels.set(id, {
 			id,
-			isThread: true,
 			name,
 			parentId: FORUM,
 			appliedTagIds: [],
