@@ -266,7 +266,11 @@ const collectAttachments = createAttachmentCollector({
 	logger,
 });
 
+// 同期は intake より後に作るので、席の返事の時点で決まっている方を呼ぶ
+let syncScheduler: (() => void) | null = null;
+
 const intake = createIntake({
+	seatReplied: () => syncScheduler?.(),
 	discord,
 	orca,
 	seats,
@@ -523,6 +527,7 @@ const schedulerSync = schedulerConfig
 			logger,
 		})
 	: null;
+if (schedulerSync) syncScheduler = () => void schedulerSync.syncNow();
 
 const activityLogConfig = cfg.activityLog;
 const activityLogTimer = activityLogConfig
