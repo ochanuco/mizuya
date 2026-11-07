@@ -143,6 +143,13 @@ const secretCommand = (cmd: SimpleCommand): Reason => {
 	return null;
 };
 
+/**
+ * 文字列がパスを、名前の切れ目まで含むか。報告の本文にある URL の `/processors` を `/proc` と取り違えないよう、
+ * 直後が `/` か語の終わりのときだけ数える。
+ */
+const mentions = (text: string, path: string) =>
+	new RegExp(`${escapeRegExp(path)}(?![^/\\s'"\`;|&<>()])`).test(text);
+
 const touchesProtected = (
 	raw: string,
 	cmds: readonly SimpleCommand[],
@@ -152,8 +159,8 @@ const touchesProtected = (
 		.replace(/\$\{HOME\}|\$HOME/g, ctx.home)
 		.replace(/(^|[\s=:'"])~(?=\/|$|[\s'"])/g, `$1${ctx.home}`);
 	const rest = withoutToolResults(expanded, ctx);
-	if (ctx.protectedDirs.some((d) => rest.includes(d))) return true;
-	if (SECRET_FILES.some((f) => raw.includes(f))) return true;
+	if (ctx.protectedDirs.some((d) => mentions(rest, d))) return true;
+	if (SECRET_FILES.some((f) => mentions(raw, f))) return true;
 	const cwd: CwdRef = { cwd: ctx.workDir };
 	for (const c of cmds) {
 		const start = commandStart(c.args);
