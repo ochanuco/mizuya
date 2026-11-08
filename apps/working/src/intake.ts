@@ -183,6 +183,11 @@ export type IntakeDeps = {
 	seatLimit: number;
 	/** 決めてほしいままこれだけたった席は Claude を止める。 */
 	sleepAfterMs: number;
+	/**
+	 * 完了か見張り中で手を止めた投稿の席を、これだけ閉じずに残す。
+	 * 起こし直すと system prompt が変わってキャッシュが効かないので、すぐ続きを書かれたら同じ Claude に渡す。
+	 */
+	doneLingerMs: number;
 	newGrantId?: () => string;
 	now?: () => Date;
 	/** ms ごとに fn を呼び、止める関数を返す。入力中の表示を送り続けるのに使う。 */
@@ -307,7 +312,7 @@ export type Intake = {
 		issue: PickedIssue,
 		partner: PartnerId,
 	) => Promise<Result<{ threadId: string }, { type: string }>>;
-	/** 決めてほしいまま時間がたった席の Claude を止める。 */
+	/** 決めてほしいまま時間がたった席の Claude を止め、完了したあと残していた席を時間がたったら閉じる。 */
 	sleepIdle: () => Promise<void>;
 	/** 起動時に、対応表と Orca の席を突き合わせる。 */
 	reconcile: () => Promise<void>;
@@ -964,6 +969,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		questionId: null,
 		expectStop: false,
 		waitingSince: null,
+		doneAt: null,
 		pending: [],
 		queuedAt: null,
 		background: false,
@@ -1329,6 +1335,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			question: null,
 			expectStop: false,
 			waitingSince: null,
+			doneAt: null,
 			pending: [],
 			queuedAt: null,
 			background: false,
@@ -1378,6 +1385,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			reaction,
 			pending: [...seat.pending, text],
 		});
+		if (!seat.standup) await makeRoom(seat.threadId);
 		if (!seat.standup && alive().length >= deps.seatLimit) {
 			await seats.set({ ...next, status: "queued", queuedAt: now() });
 			log.info("seat queued", { thread_id: seat.threadId });
@@ -1416,6 +1424,34 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		return released;
 	};
 
+	/** 完了したあと残している、Claude が動いたままの席。 */
+	const lingering = () =>
+		seats.all().filter((s) => s.doneAt !== null && s.status === "waiting");
+
+	/**
+	 * 席が上限まで埋まっていれば、完了したあと残している席を古い順に閉じて空ける。
+	 * 残している席は続きが来るかもしれないだけなので、新しい仕事を順番待ちにしてまで残さない。
+	 */
+	const makeRoom = async (self: string) => {
+		while (alive().length >= deps.seatLimit) {
+			const [oldest] = lingering()
+				.filter((s) => s.threadId !== self)
+				.sort(
+					(a, b) => (a.doneAt?.getTime() ?? 0) - (b.doneAt?.getTime() ?? 0),
+				);
+			if (oldest === undefined) return;
+			await queue.run(oldest.threadId, async () => {
+				const seat = seats.get(oldest.threadId);
+				if (seat?.doneAt == null || seat.status !== "waiting") return;
+				log.info("lingering seat closed for room", {
+					thread_id: seat.threadId,
+					for: self,
+				});
+				await closeSeat(seat);
+			});
+		}
+	};
+
 	/** 席の返事から添付の行を外し、ファイルを集める。 */
 	const seatReply = async (seat: Seat, text: string) => {
 		const { body, refs } = takeAttachRefs(text);
@@ -1433,6 +1469,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		question: ask?.text ?? seat.question,
 		expectStop: ask !== null,
 		waitingSince: now(),
+		doneAt: null,
 		background: false,
 		lastStatus: null,
 	});
@@ -1474,6 +1511,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 					...seat,
 					pending: [`${wakeNote(seat.question)}\n\n${text}`],
 				};
+				await makeRoom(threadId);
 				if (alive().length >= deps.seatLimit) {
 					await seats.set({ ...woke, status: "queued", queuedAt: now() });
 					await show(threadId, "受付");
@@ -1555,6 +1593,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				: [...seat.dispatchIds, sent.value.dispatchId],
 			questionId: null,
 			waitingSince: null,
+			doneAt: null,
 		});
 		await setStatus(threadId, "作業中");
 	};
@@ -1671,6 +1710,15 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			return;
 		}
 		await postWithApproval(threadId, reply.body, [], reply.files);
+		// 順番待ちの投稿があれば、残さずに閉じて席を譲る
+		const linger = !seats.all().some((s) => s.status === "queued");
+		if (linger) {
+			await seats.set({
+				...toWaiting(seat, null),
+				expectStop: false,
+				doneAt: now(),
+			});
+		}
 		await setStatus(threadId, taken.status);
 		const title = (await titleOf(threadId)) ?? "仕事フォーラムの投稿";
 		await deps.remember(
@@ -1680,6 +1728,15 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			partnerOf(threadId),
 		);
 		await record(threadId, "done", [], title);
+		if (linger) {
+			await applyModelChange(threadId);
+			log.info("seat done; lingering", {
+				thread_id: threadId,
+				status: taken.status,
+			});
+			await lendIfRequested(threadId);
+			return;
+		}
 		await closeSeat(seat);
 		// 席は閉じたが、選ばれたモデルは投稿に残り、次に開く席がそれで動く
 		const chosen = deps.seats.modelOf(threadId);
@@ -1832,6 +1889,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				status: "sleeping",
 				pending: [words.join("\n\n---\n\n")],
 			};
+			await makeRoom(threadId);
 			if (alive().length >= deps.seatLimit) {
 				await seats.set({ ...woke, status: "queued", queuedAt: now() });
 				await show(threadId, "受付");
@@ -2532,6 +2590,21 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		dequeue();
 	};
 
+	/**
+	 * 完了したあと残していた席を閉じる。止めた席にはせず、完了したときに閉じるのと同じく worktree ごと消す。
+	 * モデルの切り替えなどで Claude だけ止まった席も、同じく閉じる。
+	 */
+	const closeLingering = async (threadId: string) => {
+		const seat = seats.get(threadId);
+		if (
+			seat?.doneAt == null ||
+			(seat.status !== "waiting" && seat.status !== "sleeping")
+		)
+			return;
+		log.info("lingering seat expired", { thread_id: threadId });
+		await closeSeat(seat);
+	};
+
 	return {
 		handle: async (envelope) => {
 			const p = envelope.payload;
@@ -2673,12 +2746,20 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 					(s) =>
 						(s.status === "asking" || s.status === "waiting") &&
 						!s.standup &&
+						s.doneAt === null &&
 						s.waitingSince !== null &&
 						s.waitingSince.getTime() <= limit,
 				);
-			await Promise.all(
-				idle.map((s) => queue.run(s.threadId, () => sleep(s.threadId))),
-			);
+			const doneLimit = now().getTime() - deps.doneLingerMs;
+			const expired = seats
+				.all()
+				.filter((s) => s.doneAt !== null && s.doneAt.getTime() <= doneLimit);
+			await Promise.all([
+				...idle.map((s) => queue.run(s.threadId, () => sleep(s.threadId))),
+				...expired.map((s) =>
+					queue.run(s.threadId, () => closeLingering(s.threadId)),
+				),
+			]);
 		},
 		reconcile: async () => {
 			await statusTagsOf();
@@ -2701,6 +2782,8 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				return;
 			}
 			const before = seats.all();
+			// 閉じた席の worktree は residue にまだ載っているので、残りとして消し直さない
+			const closed = new Set<string>();
 			for (const seat of before) {
 				if (!ALIVE.has(seat.status)) continue;
 				if (seat.terminal && live.value.has(seat.terminal)) continue;
@@ -2711,6 +2794,12 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				});
 				if (seat.standup || seat.path === null) {
 					await seats.delete(seat.threadId);
+					continue;
+				}
+				// 完了して残していた席は、Claude がいなければ残す意味がないので閉じる
+				if (seat.doneAt !== null) {
+					await closeSeat({ ...seat, terminal: null });
+					closed.add(seat.path);
 					continue;
 				}
 				// agent は止まっているので、手元に残った会話を預けて貸し出しを返す
@@ -2739,7 +2828,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				log.info("stray seat terminal closed", { terminal: t.handle });
 			}
 			for (const path of residue.value.worktrees) {
-				if (known.has(path)) continue;
+				if (known.has(path) || closed.has(path)) continue;
 				const r = await deps.orca.removeWorktree(path);
 				log.info("stray seat worktree removed", { path, ok: r.ok });
 			}

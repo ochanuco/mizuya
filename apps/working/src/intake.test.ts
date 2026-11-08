@@ -158,6 +158,7 @@ const setup = async (
 		workForumChannelId: FORUM,
 		seatLimit: opts.seatLimit ?? 6,
 		sleepAfterMs: 2 * 60 * 60_000,
+		doneLingerMs: 60 * 60_000,
 		newGrantId: () => `g${++g}`,
 		now: () => new Date(clock),
 		every: (_ms, fn) => {
@@ -196,6 +197,12 @@ const setup = async (
 			for (const fn of timers) fn();
 		},
 	};
+};
+
+/** 完了したあと残している席が、残す時間（setup では 60 分）を過ぎて閉じるところまで進める。 */
+const expireLinger = async (s: Awaited<ReturnType<typeof setup>>) => {
+	s.advance(60 * 60_000);
+	await s.intake.sleepIdle();
 };
 
 /** 人が仕事フォーラムに直接投稿し、席ができたところまで進める。 */
@@ -603,7 +610,7 @@ describe("取り消せない操作で止まったとき", () => {
 });
 
 describe("席の完了報告", () => {
-	it("投稿に書いてタグを完了にし、記憶に 1 行残し、席を閉じる", async () => {
+	it("投稿に書いてタグを完了にし、記憶に 1 行残し、しばらく残した席を時間がたったら閉じる", async () => {
 		const s = await setup();
 		const seat = await openPost(s);
 		await s.intake.onSeatMessage(
@@ -627,6 +634,15 @@ describe("席の完了報告", () => {
 				tools: [],
 			},
 		]);
+		expect(s.seats.get("p1")).toMatchObject({ status: "waiting", doneAt: T0 });
+		expect(s.o.opsOf("stopSeat")).toEqual([]);
+		expect(s.o.live.has(seat.terminal ?? "")).toBe(true);
+
+		s.advance(59 * 60_000);
+		await s.intake.sleepIdle();
+		expect(s.o.opsOf("stopSeat")).toEqual([]);
+		s.advance(60_000);
+		await s.intake.sleepIdle();
 		expect(s.o.opsOf("stopSeat")).toEqual([
 			expect.objectContaining({
 				dispatchId: seat.dispatchId,
@@ -654,7 +670,7 @@ describe("席の完了報告", () => {
 		expect(s.seats.get("p1")).toBeNull();
 	});
 
-	it("見張りを登録したら、タグを見張り中にして席を閉じる", async () => {
+	it("見張りを登録したら、タグを見張り中にして席をしばらく残す", async () => {
 		const s = await setup();
 		const seat = await openPost(s);
 		await s.intake.onSeatMessage(
@@ -667,7 +683,10 @@ describe("席の完了報告", () => {
 		expect(s.d.tagsOf("p1")).toEqual(["tag-watching"]);
 		expect(s.remembered[0]).toContain("見張りを始めた");
 		expect(s.activity.map((e) => e.kind)).toEqual(["done"]);
+		expect(s.seats.get("p1")?.doneAt).toEqual(T0);
+		await expireLinger(s);
 		expect(s.seats.get("p1")).toBeNull();
+		expect(s.d.tagsOf("p1")).toEqual(["tag-watching"]);
 	});
 
 	it("フォーラムに後から足したタグも、次に付け替えるときに使う", async () => {
@@ -708,7 +727,7 @@ describe("席の完了報告", () => {
 		expect(s.d.tagsOf("p1")).toEqual(["tag-working"]);
 	});
 
-	it("完了のあとにまた書くと、同じ投稿に新しい席を作ってこれまでのやりとりを渡す", async () => {
+	it("完了して席を閉じたあとにまた書くと、同じ投稿に新しい席を作ってこれまでのやりとりを渡す", async () => {
 		const s = await setup();
 		const seat = await openPost(s);
 		await s.intake.onSeatMessage(
@@ -718,6 +737,7 @@ describe("席の完了報告", () => {
 				body: "直しました\n状態: 完了",
 			}),
 		);
+		await expireLinger(s);
 		s.d.history.set("p1", [
 			{
 				id: "p1",
@@ -749,6 +769,177 @@ describe("席の完了報告", () => {
 		expect(starts[1]?.spec).toContain("[あなた] 直しました");
 		expect(starts[1]?.spec).toContain("[ちゃぬ] もう一か所あった");
 		expect(s.d.tagsOf("p1")).toEqual(["tag-working"]);
+	});
+});
+
+describe("完了したあと残している席", () => {
+	const done = (dispatchId: string | null, body: string) =>
+		seatMessage({ type: "worker_done", dispatchId, body });
+	const MAC = "mac-example";
+
+	it("残している間に書かれた続きは、生きている席にそのまま渡す", async () => {
+		const s = await setup();
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "直しました\n状態: 完了"),
+		);
+		expect(s.d.tagsOf("p1")).toEqual(["tag-done"]);
+		s.advance(30 * 60_000);
+		await s.intake.handle(say("p1", "もう一か所あった"));
+		expect(s.o.opsOf("send")).toEqual([
+			expect.objectContaining({
+				dispatchId: seat.dispatchId,
+				body: expect.stringContaining("もう一か所あった"),
+			}),
+		]);
+		expect(s.o.opsOf("startSeat")).toHaveLength(1);
+		expect(s.o.opsOf("resumeSeat")).toEqual([]);
+		expect(s.seats.get("p1")).toMatchObject({
+			status: "working",
+			doneAt: null,
+		});
+		expect(s.d.tagsOf("p1")).toEqual(["tag-working"]);
+
+		// 続きを受けた席は、残す時間を過ぎても閉じない
+		s.advance(60 * 60_000);
+		await s.intake.sleepIdle();
+		expect(s.seats.get("p1")?.status).toBe("working");
+		expect(s.o.opsOf("stopSeat")).toEqual([]);
+	});
+
+	it("残す時間を過ぎたら止めた席にせず、会話を預けて返し worktree ごと閉じる", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "直しました\n状態: 完了"),
+		);
+		await expireLinger(s);
+		expect(h.opsOf("push")).toEqual([
+			{ number: 1234, generation: 1, cwd: "/seats/seat-p1", release: true },
+		]);
+		expect(s.o.opsOf("removeWorktree")).toEqual(["/seats/seat-p1"]);
+		expect(s.seats.get("p1")).toBeNull();
+		expect(s.d.tagsOf("p1")).toEqual(["tag-done"]);
+	});
+
+	it("席が上限なら、いちばん前に終えた残している席を閉じて新しい投稿を始める", async () => {
+		const s = await setup({ seatLimit: 2 });
+		const first = await openPost(s, "p1");
+		const second = await openPost(s, "p2");
+		await s.intake.onSeatMessage(
+			done(first.dispatchId, "直しました\n状態: 完了"),
+		);
+		s.advance(60_000);
+		await s.intake.onSeatMessage(
+			done(second.dispatchId, "直しました\n状態: 完了"),
+		);
+		await openPost(s, "p3");
+		expect(s.seats.get("p3")?.status).toBe("working");
+		expect(s.d.sentTo("p3").join()).not.toContain("順番待ち");
+		expect(s.seats.get("p1")).toBeNull();
+		expect(s.o.opsOf("removeWorktree")).toEqual(["/seats/seat-p1"]);
+		expect(s.seats.get("p2")?.status).toBe("waiting");
+	});
+
+	it("止めた席を起こすときも、残している席を閉じて空ける", async () => {
+		const s = await setup({ seatLimit: 1 });
+		const first = await openPost(s, "p1");
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "question",
+				dispatchId: first.dispatchId,
+				body: "?",
+			}),
+		);
+		s.advance(3 * 60 * 60_000);
+		await s.intake.sleepIdle();
+		const second = await openPost(s, "p2");
+		await s.intake.onSeatMessage(
+			done(second.dispatchId, "直しました\n状態: 完了"),
+		);
+		await s.intake.handle(say("p1", "B で"));
+		expect(s.o.opsOf("resumeSeat")).toHaveLength(1);
+		expect(s.seats.get("p1")?.status).toBe("working");
+		expect(s.seats.get("p2")).toBeNull();
+	});
+
+	it("朝会・見回りの席は残さず、すぐ閉じる", async () => {
+		const s = await setup();
+		const id = await s.intake.startStandup("見回りの spec", "patrol");
+		await s.intake.onSeatMessage(
+			done(s.seats.get(id)?.dispatchId ?? null, "```json\n{}\n```"),
+		);
+		expect(s.standup.map((x) => x.kind)).toEqual(["patrol"]);
+		expect(s.seats.get(id)).toBeNull();
+		expect(s.o.opsOf("removeWorktree")).toEqual([`/seats/seat-${id}`]);
+	});
+
+	it("残している席を Mac に頼まれたら、すぐ預けて返し貸し出し中にする", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "直しました\n状態: 完了"),
+		);
+		h.behavior.renew = () => ok({ releaseRequestedBy: MAC });
+		await s.intake.renewLeases();
+		expect(h.opsOf("push")).toEqual([
+			{ number: 1234, generation: 1, cwd: "/seats/seat-p1", release: true },
+		]);
+		expect(s.seats.get("p1")).toMatchObject({ status: "lent", doneAt: null });
+		expect(s.d.tagsOf("p1")).toEqual(["tag-handoff"]);
+	});
+
+	it("作業中に Mac に頼まれていれば、完了したところで残さずに渡す", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		const seat = await openPost(s);
+		h.behavior.renew = () => ok({ releaseRequestedBy: MAC });
+		await s.intake.renewLeases();
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "直しました\n状態: 完了"),
+		);
+		expect(h.opsOf("push")).toHaveLength(1);
+		expect(s.seats.get("p1")?.status).toBe("lent");
+	});
+
+	it("受付を作り直しても終えた時刻を覚えていて、時間がたったら閉じる", async () => {
+		const s = await setup();
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "直しました\n状態: 完了"),
+		);
+		const reopened = await openSeatStore(s.stateDir);
+		expect(reopened.get("p1")).toMatchObject({ status: "waiting", doneAt: T0 });
+
+		const again = await setup({
+			stateDir: s.stateDir,
+			orca: s.o,
+			d: s.d,
+			sys: s.sys,
+		});
+		await again.intake.reconcile();
+		expect(again.seats.get("p1")).toMatchObject({
+			status: "waiting",
+			doneAt: T0,
+		});
+		await expireLinger(again);
+		expect(again.seats.get("p1")).toBeNull();
+		expect(s.o.opsOf("removeWorktree")).toEqual(["/seats/seat-p1"]);
+	});
+
+	it("受付を作り直して席の Claude がいなくなっていたら、止めた席にせず閉じる", async () => {
+		const s = await setup();
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "直しました\n状態: 完了"),
+		);
+		s.o.live.delete(seat.terminal ?? "");
+		await s.intake.reconcile();
+		expect(s.seats.get("p1")).toBeNull();
+		expect(s.o.opsOf("removeWorktree")).toEqual(["/seats/seat-p1"]);
+		expect(s.d.tagsOf("p1")).toEqual(["tag-done"]);
 	});
 });
 
@@ -1553,6 +1744,7 @@ describe("Akarin の席", () => {
 			}),
 		);
 		expect(s.rememberedBy).toEqual(["akarin"]);
+		await expireLinger(s);
 		expect(s.seats.get("p1")).toBeNull();
 
 		await s.intake.handle(say("p1", "もう一か所お願い"));
@@ -1914,6 +2106,7 @@ describe("/ai コマンド", () => {
 				body: "直しました\n状態: 完了",
 			}),
 		);
+		await expireLinger(s);
 		const e = change("p1", "claude", "opus");
 		await s.intake.command(e);
 		expect(replyOf(s, e)).toBe("Opus に切り替えました。");
@@ -2080,6 +2273,8 @@ describe("hishaku の番号", () => {
 		await s.intake.onSeatMessage(
 			done(seat.dispatchId, "直しました\n状態: 完了"),
 		);
+		expect(h.opsOf("push")).toEqual([]);
+		await expireLinger(s);
 		expect(h.opsOf("push")).toEqual([
 			{ number: 1234, generation: 1, cwd: "/seats/seat-p1", release: true },
 		]);
@@ -2095,6 +2290,7 @@ describe("hishaku の番号", () => {
 		await s.intake.onSeatMessage(
 			done(seat.dispatchId, "直しました\n状態: 完了"),
 		);
+		await expireLinger(s);
 		h.behavior.prepare = () =>
 			ok({ agent: "claude", sessionId: ID, resume: true, generation: 2 });
 		await s.intake.handle(say("p1", "もう一か所あった"));
@@ -2113,6 +2309,7 @@ describe("hishaku の番号", () => {
 		await s.intake.onSeatMessage(
 			done(seat.dispatchId, "直しました\n状態: 完了"),
 		);
+		await expireLinger(s);
 		h.behavior.prepare = () =>
 			err({ type: "HishakuFailed", reason: "hs: Manager に届きません" });
 		await s.intake.handle(say("p1", "もう一か所あった"));
