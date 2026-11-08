@@ -93,7 +93,7 @@ RUN arch="$(dpkg --print-architecture)" \
 # 受付が席の agent のセッションを hishaku の Manager に預ける CLI。版はここだけで上げ、Renovate が Releases に追従する。
 # 版ごとの sha256 を持たず、その版の checksums.txt で確かめる。Renovate が版だけを上げても検証が外れないように。
 # renovate: datasource=github-releases depName=ochanuco/hishaku
-ARG HS_VERSION=0.1.0
+ARG HS_VERSION=0.2.0
 RUN arch="$(dpkg --print-architecture)" \
 	&& case "$arch" in \
 		amd64|arm64) ;; \
