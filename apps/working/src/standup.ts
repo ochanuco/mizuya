@@ -13,6 +13,7 @@ import {
 import type { Logger } from "./logger.ts";
 import { diffPatrol, type PatrolStore, patrolSources } from "./patrol.ts";
 import {
+	composeTitle,
 	loginExpiryDecision,
 	patrolPrompt,
 	STANDUP_TITLE_LIMIT,
@@ -174,9 +175,10 @@ export const postDecisions = async (
 	const voice = voiceOf(deps, partner);
 
 	const forum = await voice.discord.getChannel(deps.workForumChannelId);
-	const tagId = forum.ok
-		? forum.value.availableTags.find((t) => t.name === DECIDE_TAG)?.id
+	const tag = forum.ok
+		? forum.value.availableTags.find((t) => t.name === DECIDE_TAG)
 		: undefined;
+	const tagId = tag?.id;
 	if (!tagId) log.warn("forum tag missing", { tag: DECIDE_TAG });
 	const from = runLabel(kind, now);
 
@@ -185,7 +187,8 @@ export const postDecisions = async (
 		const created = await voice.discord.createForumPost(
 			deps.workForumChannelId,
 			{
-				name: d.title,
+				// 決めてほしいタグで立てるので、件名の頭にもその絵文字を付ける
+				name: composeTitle(tag?.emoji ?? null, null, d.title),
 				content: `<@${deps.ownerUserId}> ${d.body}${standupPostFooter(from)}`,
 				tagIds: tagId ? [tagId] : [],
 				notify: [deps.ownerUserId],

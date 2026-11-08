@@ -75,6 +75,19 @@ export const TAGS = [
 	{ id: "tag-luna", name: "Luna" },
 ];
 
+/** 状態のタグに絵文字を付けたフォーラムのタグ。件名の頭の絵文字を見るテストで使う。 */
+export const EMOJI_OF: Record<string, string> = {
+	完了: "🎉",
+	決めてほしい: "🤔",
+	見張り中: "👀",
+	引き継ぎ: "👨‍💼",
+	作業中: "👷",
+};
+export const EMOJI_TAGS = TAGS.map((t) => ({
+	...t,
+	emoji: EMOJI_OF[t.name] ?? null,
+}));
+
 /** Discord REST のモック。投稿・送信・タグを手元に残す。 */
 export const fakeDiscord = () => {
 	const channels = new Map<string, ChannelInfo>([

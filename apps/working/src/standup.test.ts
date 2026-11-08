@@ -20,6 +20,7 @@ import {
 	watchesOf,
 } from "./standup-materials.ts";
 import {
+	EMOJI_TAGS,
 	FORUM,
 	fakeDiscord,
 	memoryApprovals,
@@ -358,6 +359,15 @@ describe("finishStandup", () => {
 		const r = await finishStandup(t.deps, decisionsReply(0), []);
 		expect(r.posted).toEqual([]);
 		expect(t.discord.api.createForumPost).not.toHaveBeenCalled();
+	});
+
+	it("決めてほしいのタグに絵文字があれば、件名の頭にも付ける", async () => {
+		const t = setup();
+		const forum = t.discord.channels.get(FORUM);
+		if (!forum) throw new Error("no forum");
+		t.discord.channels.set(FORUM, { ...forum, availableTags: EMOJI_TAGS });
+		await finishStandup(t.deps, decisionsReply(2), []);
+		expect(t.discord.posts.map((p) => p.name)).toEqual(["🤔 件1", "🤔 件2"]);
 	});
 
 	it("N 件なら N 投稿を立ててタグを決めてほしいにする", async () => {
