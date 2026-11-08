@@ -160,6 +160,8 @@ Orca の Linux 版は GitHub Releases（`stablyai/orca`）の `orca-ide_<版>_<a
 
 席の Claude は、持ち主が手元で使うセッションと同じく Claude Code の auto モード（`--permission-mode auto`）で動く。取り消せない操作や外に出る操作を止めるかは、Claude Code の自動の判定が決める。席に話しかけられるのは持ち主だけ（`WORKING_OWNER_DISCORD_USER_IDS`）なので、投稿で明示的に頼んだ操作は持ち主の意思として扱われ、main への push やマージも聞かずに実行される。`main` への push やマージを止めたいときは、GitHub のブランチ保護とトークンの権限で止める。
 
+`GH_TOKEN` は fine-grained PAT で、席が GitHub でできることはこの権限で決まる。Contents・Pull requests・Issues・Actions を Read and write、Metadata を Read-only にする。Actions の書き込みが無いと、席は `gh workflow run`（workflow_dispatch）が 403 になり、workflow の起動を持ち主に頼むことになる。`.github/workflows/` を変える PR を push するなら Workflows の Read and write も要る。Environment の承認は PAT の権限では通らず、mizuya の承認ボタンで持ち主が出す。
+
 managed settings（`/etc/claude-code/managed-settings.json`、root の持ち物）で次を決める。作業場所の `.claude/settings.json` や Claude CLI 自身の書き換えでは外せない。
 
 - PreToolUse hook（`src/guard/hook.ts`）: 秘密情報の読み出し（`printenv`、トークンの変数、`gh auth token`、`~/.claude`・`~/.config`・`STATE_DIR`・`.credentials.json` など）と、秘密情報や許可の記録の場所への書き込みを止める。Claude CLI が大きな道具の応答を書き出す `~/.claude/projects/<場所>/<セッション>/tool-results/` は、読むだけなら止めない。持ち主が投稿で許可した操作は、auto モードの判定によらず 1 回だけ通す。それ以外は何も返さず auto モードに任せる。
@@ -368,7 +370,7 @@ CI の失敗、PR のレビュー、issue と PR のコメントがあると、�
 | `PERSONA_SCRIPT`                                                  | いいえ | 人格を出力するスクリプト。既定は `~/bin/persona.sh`                                                                         |
 | `PERSONA_DIR`                                                     | いいえ | 人格の元ファイルの置き場。既定は `~/persona`                                                                                |
 | `HANDOFF_DIR`                                                     | いいえ | `prompt.md` と `issue-template.md` の置き場所。既定は `~/handoff`                                                           |
-| `GH_TOKEN`                                                        | いいえ | 席の Claude の `gh` と `git push` が使う書き込みトークン                                                                    |
+| `GH_TOKEN`                                                        | いいえ | 席の Claude の `gh` と `git push` が使う fine-grained PAT。要る権限は「席の Claude の権限」                                 |
 | `GIT_AUTHOR_NAME` など                                            | いいえ | 席の Claude の commit の作者。`GIT_AUTHOR_*` と `GIT_COMMITTER_*` を渡す                                                    |
 | `YUNOMI_URL`                                                      | いいえ | Worker の URL。`yunomi-memory` が Working の記憶の口（`/v1/partners/:partnerId/working/memory`）を呼ぶ                      |
 | `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET`                 | いいえ | Working 用の Access service token。yunomi の Worker の `accessCallers` で `working` に引かれる。席の Claude には渡さない    |
