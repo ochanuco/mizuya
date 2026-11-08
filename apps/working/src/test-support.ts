@@ -507,7 +507,10 @@ export const fakeHishaku = () => {
 				generation: generation,
 				leaseExpiresAt: null,
 				pushedAt: null,
+				repo: null,
+				branch: null,
 			}),
+		update: (): Result<void, HishakuError> => ok(undefined),
 	};
 	const hishaku: Hishaku = {
 		holder: "box01",
@@ -530,6 +533,10 @@ export const fakeHishaku = () => {
 		meta: vi.fn(async (number: number) => {
 			calls.push({ op: "meta", args: number });
 			return behavior.meta();
+		}),
+		update: vi.fn(async (number: number, input) => {
+			calls.push({ op: "update", args: { number, ...input } });
+			return behavior.update();
 		}),
 	};
 	const opsOf = (op: string) =>

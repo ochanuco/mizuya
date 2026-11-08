@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# pickup.sh のテスト用。引数と標準入力のヘッダーを記録し、$STATE/meta.json があれば meta として返す。
+set -euo pipefail
+printf 'curl %s\n' "$*" >>"$STATE/calls"
+cat >>"$STATE/curl-stdin"
+[ -e "$STATE/meta.json" ] || {
+	echo "curl: (22) The requested URL returned error: 404" >&2
+	exit 22
+}
+cat "$STATE/meta.json"

@@ -267,8 +267,8 @@ describe("hishaku", () => {
 						agent: "claude",
 						session_id: null,
 						title: "件名",
-						repo: null,
-						branch: null,
+						repo: "example/app",
+						branch: "dev/fix",
 						holder: "mac-example",
 						generation: 3,
 						lease_expires_at: "2026-11-05T08:02:00.000Z",
@@ -287,6 +287,8 @@ describe("hishaku", () => {
 				generation: 3,
 				leaseExpiresAt: new Date("2026-11-05T08:02:00.000Z"),
 				pushedAt: new Date("2026-11-05T07:40:00.000Z"),
+				repo: "example/app",
+				branch: "dev/fix",
 			},
 		});
 		const [url, init] = f.mock.calls[0] ?? [];
@@ -315,11 +317,42 @@ describe("hishaku", () => {
 				generation: 2,
 				leaseExpiresAt: null,
 				pushedAt: null,
+				repo: null,
+				branch: null,
 			},
 		});
 		const odd = await make(hs, {}, reply({ holder: 1 })).meta(1234);
 		expect(!odd.ok && odd.error.reason).toBe("unexpected meta");
 		const gone = await make(hs, {}, reply({}, 404)).meta(1234);
 		expect(!gone.ok && gone.error.reason).toBe("GET /v1/sessions/1234 404");
+	});
+
+	it("update は PATCH で repo と branch を送り、200 でなければ失敗にする", async () => {
+		const hs = fakeHs();
+		const f = vi.fn(
+			async (_url: string | URL | Request, _init?: RequestInit) =>
+				new Response("{}", { status: 200 }),
+		);
+		const r = await make(hs, {}, f as unknown as typeof fetch).update(1234, {
+			repo: "example/app",
+			branch: "dev/fix",
+		});
+		expect(r.ok).toBe(true);
+		const [url, init] = f.mock.calls[0] ?? [];
+		expect(url).toBe("https://hishaku.example.com/v1/sessions/1234");
+		expect(init?.method).toBe("PATCH");
+		expect(JSON.parse(String(init?.body))).toEqual({
+			repo: "example/app",
+			branch: "dev/fix",
+		});
+		expect(init?.headers).toMatchObject({ "CF-Access-Client-Id": "cid" });
+		const gone = await make(
+			hs,
+			{},
+			vi.fn(
+				async () => new Response("{}", { status: 404 }),
+			) as unknown as typeof fetch,
+		).update(1234, { repo: "example/app", branch: "dev/fix" });
+		expect(!gone.ok && gone.error.reason).toBe("PATCH /v1/sessions/1234 404");
 	});
 });

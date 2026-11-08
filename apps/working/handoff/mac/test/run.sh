@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # pickup.sh を、gh・orca・git をモックに差し替えて確かめる。
 set -euo pipefail
+# Mac の接続情報を拾うと本物の Manager を指すので、テストの値だけを使う
+unset HISHAKU_URL HISHAKU_ACCESS_CLIENT_ID HISHAKU_ACCESS_CLIENT_SECRET
 
 here="$(cd "$(dirname "$0")" && pwd)"
 pickup="$here/../pickup.sh"
@@ -35,6 +37,7 @@ add_issue() {
 
 pickup() {
 	PATH="$here/mock:$PATH" HISHAKU_URL="${HISHAKU_URL-https://hishaku.example.com}" \
+		HISHAKU_ACCESS_CLIENT_ID=cid.example HISHAKU_ACCESS_CLIENT_SECRET=secret-example \
 		"${PICKUP_BASH:-bash}" "$pickup" "$@" 2>"$STATE/log"
 }
 
@@ -175,7 +178,74 @@ t_hs_unconfigured() {
 	expect "unconfigured: 今の動き" 1 "$(calls 'orca worktree create --repo id:repo-a --name handoff-7 --base-branch origin/dev/feature-a --branch dev/feature-a --issue 7 --agent claude')"
 }
 
-for t in t_orca_down t_pick t_idempotent t_already_picked t_worktree_exists t_repo_missing t_bad_branch t_dry_run t_hs_open t_hs_open_fail t_hs_bad_number t_hs_unconfigured; do
+hs_session_issue() {
+	add_issue ochanuco/alpha 7 '- 作業ブランチ: `dev/feature-a`
+- hishaku の番号: `4321`'
+}
+
+t_meta_branch() {
+	setup
+	hs_session_issue
+	echo 0.2.4 >"$STATE/hs-version"
+	echo '{"number":4321,"repo":"ochanuco/alpha","branch":"dev/feature-a"}' >"$STATE/meta.json"
+	pickup
+	expect "meta: meta を読む" 1 "$(calls 'curl -fsS --max-time 20 -H @- https://hishaku.example.com/v1/sessions/4321')"
+	expect "meta: secret を引数に載せない" 0 "$(calls 'secret-example')"
+	expect "meta: ヘッダーは標準入力" 1 "$(grep -c -F 'CF-Access-Client-Secret: secret-example' "$STATE/curl-stdin")"
+	expect "meta: hs open だけ" 1 "$(calls 'hs open -y 4321')"
+	expect "meta: worktree を先に作らない" 0 "$(calls 'orca worktree create')"
+	expect "meta: fetch しない" 0 "$(calls 'git ')"
+	expect "meta: label" 1 "$(calls 'gh issue edit 7 --repo ochanuco/alpha --add-label working-handoff-picked')"
+}
+
+t_meta_branch_old_hs() {
+	setup
+	hs_session_issue
+	echo v0.2.3 >"$STATE/hs-version"
+	echo '{"number":4321,"repo":"ochanuco/alpha","branch":"dev/feature-a"}' >"$STATE/meta.json"
+	pickup
+	expect "old hs: worktree を先に作る" 1 "$(calls 'orca worktree create --repo id:repo-a --name hs-4321 --base-branch origin/dev/feature-a')"
+	expect "old hs: 今の hs open" 1 "$(calls 'hs open -y ochanuco/alpha 4321')"
+}
+
+t_meta_no_branch() {
+	setup
+	hs_session_issue
+	echo 0.3.0 >"$STATE/hs-version"
+	echo '{"number":4321,"repo":"ochanuco/alpha","branch":null}' >"$STATE/meta.json"
+	pickup
+	expect "no branch: worktree を先に作る" 1 "$(calls 'orca worktree create --repo id:repo-a --name hs-4321 --base-branch origin/dev/feature-a')"
+	expect "no branch: 今の hs open" 1 "$(calls 'hs open -y ochanuco/alpha 4321')"
+}
+
+t_hs_dev_version() {
+	setup
+	hs_session_issue
+	echo dev >"$STATE/hs-version"
+	echo '{"number":4321,"repo":"ochanuco/alpha","branch":"dev/feature-a"}' >"$STATE/meta.json"
+	pickup
+	expect "dev hs: 版が読めなければ先に作る" 1 "$(calls 'orca worktree create --repo id:repo-a --name hs-4321 --base-branch origin/dev/feature-a')"
+}
+
+t_meta_unreadable() {
+	setup
+	hs_session_issue
+	echo 0.2.4 >"$STATE/hs-version"
+	pickup
+	expect "unreadable: meta が読めなければ先に作る" 1 "$(calls 'orca worktree create --repo id:repo-a --name hs-4321 --base-branch origin/dev/feature-a')"
+	expect "unreadable: 今の hs open" 1 "$(calls 'hs open -y ochanuco/alpha 4321')"
+}
+
+t_meta_bad_branch() {
+	setup
+	hs_session_issue
+	echo 0.2.4 >"$STATE/hs-version"
+	echo '{"number":4321,"branch":"--upload-pack=evil"}' >"$STATE/meta.json"
+	pickup
+	expect "meta bad branch: 今の動き" 1 "$(calls 'orca worktree create --repo id:repo-a --name hs-4321 --base-branch origin/dev/feature-a')"
+}
+
+for t in t_meta_branch t_meta_branch_old_hs t_meta_no_branch t_hs_dev_version t_meta_unreadable t_meta_bad_branch t_orca_down t_pick t_idempotent t_already_picked t_worktree_exists t_repo_missing t_bad_branch t_dry_run t_hs_open t_hs_open_fail t_hs_bad_number t_hs_unconfigured; do
 	"$t"
 	rm -rf "$STATE"
 done

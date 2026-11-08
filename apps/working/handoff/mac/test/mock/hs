@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pickup.sh のテスト用。呼ばれた引数を記録する。$STATE/hs-fail があれば失敗する。
+# pickup.sh のテスト用。呼ばれた引数を記録する。$STATE/hs-fail があれば失敗する。版は $STATE/hs-version（無ければ古い版）。
 set -euo pipefail
 printf 'hs %s\n' "$*" >>"$STATE/calls"
 [ ! -e "$STATE/hs-fail" ] || {
@@ -8,6 +8,7 @@ printf 'hs %s\n' "$*" >>"$STATE/calls"
 }
 case "$1" in
 open) ;;
+--version) cat "$STATE/hs-version" 2>/dev/null || echo 0.2.3 ;;
 *)
 	echo "mock hs: unexpected $*" >&2
 	exit 1

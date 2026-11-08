@@ -108,6 +108,7 @@ Orca の Linux 版は GitHub Releases（`stablyai/orca`）の `orca-ide_<版>_<a
 - 番号を取ったら、投稿の件名の頭に `[<番号>] ` を付ける。番号は要約の 40 字の枠の外に置き、Discord の件名の上限（100 字）で切る。記憶・活動ログ・席の端末の題には番号を外した件名を使う。
 - 席の agent を起こす前に、`hs prepare <番号> --holder <HISHAKU_HOLDER> --cwd <席の worktree の realpath> --json` で貸し出しを受け、正本の記録を agent の置き場所に置く。先頭は agent のままにし、正本があれば `claude -r <session_id>`（Codex は `codex resume <session_id>`）、無ければ `claude --session-id <session_id>`（Codex は `codex`）に今のフラグを足して起こす。先頭を `hs resume` にすると、Orca が端末の agent を見分けられず、終わった席に続きを渡せなくなる。
 - 席の間は 30 秒おきに `hs renew --json` で貸し出しを延ばす。席を閉じる・寝かせる・起動し直す・Claude がいなくなっていたときは、`hs push --release` で記録を預けて返す。
+- `hs push --release` の前に、席の worktree の直下の clone（`.git` を持つもの）ごとに origin の `owner/repo` と今のブランチを調べる。既定のブランチ（`origin/HEAD`、取れなければ `main`・`master`）のままの clone と detached HEAD は除く。残りがちょうど 1 つなら、`PATCH /v1/sessions/<番号>` で meta の `repo` と `branch` に書き、Mac の `hs open` がそのブランチで worktree を作れるようにする。0 か 2 つ以上なら書かず、申し送り issue の作業ブランチに任せる。meta に同じ値があれば書かない。書けなければ warn を残して、そのまま預けて返す。
 - 他の機械が借りていれば（`hs prepare` の終了コード 2）、席を起こさず投稿を貸し出し中にする（「Mac への貸し出し」の節）。持ち主がこの受付なら、前の受付が返さずに落ちたとみなして取り直す。
 - 途中で他の機械に取られていたら（終了コード 3）、warn を残して投稿に一言書き、その席の会話は以後預けない（`hs` が枝として残す）。
 - 引き継ぎ（`状態: 引き継ぎ`）では、記録を預けて貸し出しを返せたことを確かめてから返事を書き、最後に `hs open <番号>` の 1 行を足し、投稿を貸し出し待ちにする。預けられなければ、その行の代わりに申し送り issue から始めることを書き添える。席は申し送り issue の「hishaku の番号」の行に番号を書く。

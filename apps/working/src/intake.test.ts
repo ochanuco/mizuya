@@ -85,6 +85,7 @@ const setup = async (
 		akarin?: boolean;
 		seatReplied?: () => void;
 		hishaku?: ReturnType<typeof fakeHishaku>;
+		findWorkBranches?: IntakeDeps["findWorkBranches"];
 	} = {},
 ) => {
 	const stateDir = opts.stateDir ?? tempDir();
@@ -122,6 +123,7 @@ const setup = async (
 			: null,
 		orca: o.orca,
 		hishaku: opts.hishaku?.hishaku ?? null,
+		findWorkBranches: opts.findWorkBranches ?? null,
 		seats,
 		approvals: await openApprovalStore(stateDir),
 		ledger,
@@ -2150,6 +2152,32 @@ describe("hishaku の番号", () => {
 		expect(s.o.opsOf("removeWorktree")).toEqual(["/seats/seat-p1"]);
 	});
 
+	it("引き継ぎでは預ける前に作業ブランチを meta に書き、書けなくても止める流れを続ける", async () => {
+		const h = fakeHishaku();
+		h.behavior.update = () =>
+			err({ type: "HishakuFailed", reason: "PATCH /v1/sessions/1234 503" });
+		const dirs: string[] = [];
+		const s = await setup({
+			hishaku: h,
+			findWorkBranches: async (dir) => {
+				dirs.push(dir);
+				return [{ repo: "example/app", branch: "dev/fix" }];
+			},
+		});
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "Mac に引き継ぎます\n状態: 引き継ぎ"),
+		);
+		expect(dirs).toEqual(["/seats/seat-p1"]);
+		const ops = h.calls.map((c) => c.op);
+		expect(ops.slice(ops.indexOf("update"))).toEqual(["update", "push"]);
+		expect(h.opsOf("update")).toEqual([
+			{ number: 1234, repo: "example/app", branch: "dev/fix" },
+		]);
+		expect(s.d.sentTo("p1").at(-1)).toContain("`hs open 1234`");
+		expect(s.seats.get("p1")?.status).toBe("lent");
+	});
+
 	it("引き継ぎで会話を預けられなければ hs open を付けず、そう書き添える", async () => {
 		const h = fakeHishaku();
 		h.behavior.push = () =>
@@ -2220,6 +2248,8 @@ describe("Mac への貸し出しと取り戻し", () => {
 				generation,
 				leaseExpiresAt: new Date("2026-11-05T09:00:00Z"),
 				pushedAt: pushedAt === null ? null : new Date(pushedAt),
+				repo: null,
+				branch: null,
 			});
 	};
 	const macReturned = (
@@ -2227,7 +2257,14 @@ describe("Mac への貸し出しと取り戻し", () => {
 		generation: number,
 	) => {
 		h.behavior.meta = () =>
-			ok({ holder: null, generation, leaseExpiresAt: null, pushedAt: null });
+			ok({
+				holder: null,
+				generation,
+				leaseExpiresAt: null,
+				pushedAt: null,
+				repo: null,
+				branch: null,
+			});
 	};
 	const asked = (h: ReturnType<typeof fakeHishaku>) => {
 		h.behavior.renew = () => ok({ releaseRequestedBy: MAC });

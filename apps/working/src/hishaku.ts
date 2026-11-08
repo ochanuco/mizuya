@@ -37,6 +37,11 @@ export type Hishaku = {
 	}) => Promise<Result<Renewed, LeaseError>>;
 	/** Manager の meta を読む。貸し出しの見張りが、Mac が借りているか・返したかを見る。 */
 	meta: (number: number) => Promise<Result<SessionMeta, HishakuError>>;
+	/** 席が作業した repo とブランチを meta に書く。Mac の hs open がそのブランチで worktree を作る。 */
+	update: (
+		number: number,
+		input: { repo: string; branch: string },
+	) => Promise<Result<void, HishakuError>>;
 	/** この受付の Commander の ID。 */
 	holder: string;
 };
@@ -62,6 +67,9 @@ export type SessionMeta = {
 	leaseExpiresAt: Date | null;
 	/** 最後に正本の記録を置いた時刻。まだ置かれていないか、Manager が知らせなければ null。 */
 	pushedAt: Date | null;
+	/** `org/repo`。 */
+	repo: string | null;
+	branch: string | null;
 };
 
 export type HishakuError = { type: "HishakuFailed"; reason: string };
@@ -103,6 +111,8 @@ const sessionMetaSchema = v.object({
 	generation: v.pipe(v.number(), v.integer(), v.minValue(0)),
 	lease_expires_at: v.nullable(timestamp),
 	pushed_at: v.optional(v.nullable(timestamp), null),
+	repo: v.optional(v.nullable(v.string()), null),
+	branch: v.optional(v.nullable(v.string()), null),
 });
 
 const heldSchema = v.object({
@@ -304,7 +314,29 @@ export const createHishaku = (opts: {
 					generation: parsed.output.generation,
 					leaseExpiresAt: parsed.output.lease_expires_at,
 					pushedAt: parsed.output.pushed_at,
+					repo: parsed.output.repo,
+					branch: parsed.output.branch,
 				});
+			} catch (e) {
+				return err({ type: "HishakuFailed", reason: String(e).slice(0, 300) });
+			}
+		},
+		update: async (number, input) => {
+			try {
+				const res = await doFetch(`${base}/v1/sessions/${number}`, {
+					method: "PATCH",
+					headers: { "Content-Type": "application/json", ...access },
+					body: JSON.stringify({ repo: input.repo, branch: input.branch }),
+					redirect: "manual",
+					signal: AbortSignal.timeout(30_000),
+				});
+				if (res.status !== 200) {
+					return err({
+						type: "HishakuFailed",
+						reason: `PATCH /v1/sessions/${number} ${res.status}`,
+					});
+				}
+				return ok(undefined);
 			} catch (e) {
 				return err({ type: "HishakuFailed", reason: String(e).slice(0, 300) });
 			}

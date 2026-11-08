@@ -37,6 +37,7 @@ Working のコンテナで続けられない作業を、Mac が起きたとき�
 | 作業ブランチの行が読めない                                          | 作らずにスキップし、ログに残す                                                                              |
 | 同じ issue に紐づく worktree か、作業ブランチの worktree が既にある | 作らずに、印だけ付ける                                                                                      |
 | issue に hishaku の番号があり、作業ブランチの worktree が既にある   | 作らずに `hs open` で開き直してから印を付ける。開けなければ印を付けず、次の回にまた開く                     |
+| issue に hishaku の番号があり、meta に作業ブランチがある            | `hs open -y <hishaku の番号>` だけで開いて印を付ける。worktree は `hs open` が作る                          |
 | issue に hishaku の番号がある                                       | `origin/<branch>` を fetch し、agent を起こさずに worktree `hs-<番号>` を作り、`hs open` で開いて印を付ける |
 | それ以外                                                            | `origin/<branch>` を fetch し、`orca worktree create` で worktree を作って agent を起動し、印を付ける       |
 
@@ -48,7 +49,9 @@ orca worktree create --repo id:<Orca の repo id> --name handoff-<番号> \
   --agent claude --prompt "申し送り issue <URL> を読んで続きをやって" --no-parent
 ```
 
-hishaku の番号がある issue は次の形で開く。`hs open` は meta にブランチを持たないので、作業ブランチの worktree `hs-<番号>` を先に作っておき、`hs open` がそれを使って `hs resume <番号>` の端末を立てる。
+hishaku の番号がある issue は、まず Manager の `GET /v1/sessions/<番号>` で meta を読む（`HISHAKU_URL` と `HISHAKU_ACCESS_CLIENT_ID`・`HISHAKU_ACCESS_CLIENT_SECRET` を使い、ヘッダーは標準入力から curl に渡す）。meta に作業ブランチがあり、入っている `hs` が `pickup.sh` の `HS_OPENS_BRANCH_VERSION` 以上なら、`hs open -y <番号>` が作業ブランチを fetch して worktree `hs-<番号>` を作り、`hs resume <番号>` の端末を立てる。
+
+meta を読めない、作業ブランチが無い、`hs` がそれより古い（`hs --version` が数字の版でないときも含む）ときは、作業ブランチの worktree `hs-<番号>` を先に作っておき、`hs open` がそれを使う。
 
 ```sh
 orca worktree create --repo id:<Orca の repo id> --name hs-<hishaku の番号> \

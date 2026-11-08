@@ -105,6 +105,10 @@ import {
 import type { RunKind } from "./standup-timer.ts";
 import { buttonMessage } from "./system.ts";
 import {
+	type FindWorkBranches,
+	recordWorkBranchQuietly,
+} from "./work-branch.ts";
+import {
 	replaceStatusTag,
 	takeStatus,
 	WORK_STATUSES,
@@ -138,6 +142,8 @@ export type IntakeDeps = {
 	 * 無いか Manager に届かなければ、席は手元の会話だけで動く。
 	 */
 	hishaku?: Hishaku | null;
+	/** 席の worktree の clone から作業ブランチを探す。あれば会話を預けて返す前に hishaku の meta に書く。 */
+	findWorkBranches?: FindWorkBranches | null;
 	seats: SeatStore;
 	/** 投稿で許可を待っている操作。 */
 	approvals: ApprovalStore;
@@ -738,6 +744,16 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		const number = deps.seats.numberOf(seat.threadId);
 		if (!hishaku || seat.lease === null || number === null || !seat.path) {
 			return { seat, released: false };
+		}
+		if (deps.findWorkBranches) {
+			await recordWorkBranchQuietly({
+				hishaku,
+				number,
+				dir: seat.path,
+				find: deps.findWorkBranches,
+				log,
+				threadId: seat.threadId,
+			});
 		}
 		const r = await hishaku.push({
 			number,
