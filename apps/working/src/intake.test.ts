@@ -25,6 +25,7 @@ import {
 	seatStartFailedText,
 } from "./intake.ts";
 import { err, ok, type PartnerId } from "./lib/core.ts";
+import { externalServiceUnavailable } from "./lib/errors.ts";
 import { silentLogger } from "./logger.ts";
 import { openSeatStore } from "./seat-store.ts";
 import {
@@ -86,12 +87,15 @@ const setup = async (
 		seatReplied?: () => void;
 		hishaku?: ReturnType<typeof fakeHishaku>;
 		findWorkBranches?: IntakeDeps["findWorkBranches"];
+		/** 受付を作り直すときに、同じ Discord を渡す。 */
+		d?: ReturnType<typeof fakeDiscord>;
+		sys?: ReturnType<typeof fakeDiscord>;
 	} = {},
 ) => {
 	const stateDir = opts.stateDir ?? tempDir();
-	const d = fakeDiscord();
+	const d = opts.d ?? fakeDiscord();
 	// mizuya の bot が書くもの（ボタンと状態の欄）は、席の bot の書き込みと分けて見る
-	const sys = fakeDiscord();
+	const sys = opts.sys ?? fakeDiscord();
 	const o = opts.orca ?? fakeOrca(opts.seatsDir);
 	let clock = T0.getTime();
 	const remembered: string[] = [];
@@ -2489,6 +2493,95 @@ describe("Mac への貸し出しと取り戻し", () => {
 			generation: 1,
 			mac: false,
 			requested: true,
+			buttons: [`sent${s.sys.sent.length}`],
+			confirms: [],
 		});
+	});
+
+	/** 貸し出しで出したメッセージのうち、ボタンを外した（本文はそのままで書き換えた）もの。 */
+	const cleared = (s: Awaited<ReturnType<typeof setup>>) =>
+		s.sys.sent
+			.map((m, i) => ({ id: `sent${i + 1}`, content: m.content }))
+			.filter((m) => s.sys.edited.get(m.id)?.content === m.content)
+			.map((m) => m.id);
+	const lastSent = (s: Awaited<ReturnType<typeof setup>>) =>
+		`sent${s.sys.sent.length}`;
+
+	it("Mac から戻ったら、受付を作り直したあとでも、貸し出しで出した取り戻すのボタンをすべて外す", async () => {
+		const { h, s } = await lend();
+		const lent = lastSent(s);
+		macHolds(h, 2);
+		await s.intake.watchLends();
+		await s.intake.handle(say("p1", "B でお願い"));
+		const held = lastSent(s);
+		const r = await setup({
+			hishaku: h,
+			stateDir: s.stateDir,
+			d: s.d,
+			sys: s.sys,
+			orca: s.o,
+		});
+		macReturned(h, 2);
+		await r.intake.watchLends();
+		expect(r.seats.get("p1")?.status).toBe("working");
+		expect(cleared(s)).toEqual([lent, held]);
+		expect(s.sys.edited.get(lent)?.content).toBe(
+			"Mac に貸し出しました（1234）。席は止めています。",
+		);
+	});
+
+	it("取り戻すを確定したら、取り戻すと確認のボタンをすべて外す", async () => {
+		const { h, s } = await lend();
+		const lent = lastSent(s);
+		macHolds(h, 2);
+		await s.intake.watchLends();
+		await s.intake.press(press("p1", lent, "lend:takeback"));
+		const first = lastSent(s);
+		await s.intake.press(press("p1", lent, "lend:takeback"));
+		const second = lastSent(s);
+		h.behavior.prepare = () =>
+			ok({ agent: "claude", sessionId: ID, resume: true, generation: 3 });
+		await s.intake.press(press("p1", second, "lend:confirm"));
+		expect(s.seats.get("p1")?.status).toBe("working");
+		expect(cleared(s)).toEqual([lent, first, second]);
+	});
+
+	it("やめたら確認のボタンをすべて外し、貸し出しは続くので取り戻すのボタンは残す", async () => {
+		const { h, s } = await lend();
+		const lent = lastSent(s);
+		macHolds(h, 2);
+		await s.intake.press(press("p1", lent, "lend:takeback"));
+		const first = lastSent(s);
+		await s.intake.press(press("p1", lent, "lend:takeback"));
+		const second = lastSent(s);
+		await s.intake.press(press("p1", second, "lend:cancel"));
+		expect(cleared(s)).toEqual([first]);
+		expect(s.sys.edited.get(second)?.content).toContain(
+			"取り戻すのをやめました。",
+		);
+		expect(s.sys.edited.has(lent)).toBe(false);
+		expect(s.seats.get("p1")?.lend?.confirms).toEqual([]);
+		expect(s.seats.get("p1")?.lend?.buttons).toEqual([lent]);
+	});
+
+	it("貸し出し中の投稿を閉じたら、取り戻すのボタンを外す", async () => {
+		const { s } = await lend();
+		const lent = lastSent(s);
+		await s.intake.press(press("p1", "x", "thread:dismiss"));
+		expect(s.seats.get("p1")).toBeNull();
+		expect(cleared(s)).toEqual([lent]);
+	});
+
+	it("ボタンを外せなくても、Mac から戻る流れは止めない", async () => {
+		const { h, s } = await lend();
+		vi.mocked(s.sys.api.editMessage).mockResolvedValueOnce(
+			err(externalServiceUnavailable({ service: "discord" })),
+		);
+		macReturned(h, 2);
+		await s.intake.watchLends();
+		expect(s.seats.get("p1")).toBeNull();
+		expect(s.sys.sentTo("p1").at(-1)).toBe(
+			"Mac から戻りました。この投稿に書けば、席が前の会話のまま続けます。",
+		);
 	});
 });
