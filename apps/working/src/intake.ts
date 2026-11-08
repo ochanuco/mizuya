@@ -803,8 +803,53 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		}
 		return sent;
 	};
-	const postTakeback = (threadId: string, content: string) =>
-		postSystem(threadId, content, [TAKEBACK_BUTTON]);
+	/** ボタン付きで書いたメッセージを貸し出しに残す。受付が作り直されても、貸し出しが終わったら外せる。 */
+	const rememberButtons = async (
+		threadId: string,
+		key: "buttons" | "confirms",
+		sent: Awaited<ReturnType<typeof postSystem>>,
+	) => {
+		// ボタンは分けて送った最後の 1 件に付く
+		const id = sent.ok ? sent.value.messageIds.at(-1) : undefined;
+		const seat = seats.get(threadId);
+		if (id === undefined || seat?.lend == null) return;
+		await seats.set({
+			...seat,
+			lend: { ...seat.lend, [key]: [...seat.lend[key], id] },
+		});
+	};
+	const postTakeback = async (threadId: string, content: string) =>
+		rememberButtons(
+			threadId,
+			"buttons",
+			await postSystem(threadId, content, [TAKEBACK_BUTTON]),
+		);
+
+	/** 貸し出しで出したメッセージからボタンを外す。本文は残す。外せなくても流れは止めない。 */
+	const clearButtons = async (threadId: string, ids: readonly string[]) => {
+		for (const id of ids) {
+			const current = await deps.system.getMessage(threadId, id);
+			const edited = current.ok
+				? await deps.system.editMessage(threadId, id, current.value.content)
+				: current;
+			if (!edited.ok) {
+				log.warn("lend button removal failed", {
+					thread_id: threadId,
+					message_id: id,
+					error: edited.error.type,
+				});
+			}
+		}
+	};
+	const clearLendButtons = (seat: Seat, except?: string) =>
+		seat.lend
+			? clearButtons(
+					seat.threadId,
+					[...seat.lend.buttons, ...seat.lend.confirms].filter(
+						(id) => id !== except,
+					),
+				)
+			: Promise.resolve();
 
 	/**
 	 * 会話を Manager に預けて Mac に貸している席。agent は止めてあり、worktree は消してある。
@@ -832,7 +877,15 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		continuation: null,
 		releaseRequested: null,
 		takeback: null,
-		lend: { number, savedAt: now(), generation, mac: false, requested },
+		lend: {
+			number,
+			savedAt: now(),
+			generation,
+			mac: false,
+			requested,
+			buttons: [],
+			confirms: [],
+		},
 	});
 
 	/** 他の機械（Mac）が今の貸し出しを持っている。期限が切れていれば持っていないとみなす。 */
@@ -1144,6 +1197,8 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 					generation: null,
 					mac: true,
 					requested: false,
+					buttons: [],
+					confirms: [],
 				},
 			});
 			await postTakeback(threadId, heldText(number));
@@ -1242,6 +1297,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	 * 預けて貸し出しを返せたら true。
 	 */
 	const closeSeat = async (seat: Seat): Promise<boolean> => {
+		await clearLendButtons(seat);
 		const stopped = await deps.orca.stopSeat(seat);
 		if (!stopped.ok) {
 			log.error("seat stop failed", {
@@ -1648,6 +1704,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	) => {
 		const threadId = seat.threadId;
 		const held = seat.pending;
+		await clearLendButtons(seat);
 		if (takeback === null && held.length === 0) {
 			await seats.delete(threadId);
 			await postSystem(threadId, MAC_RETURNED_TEXT);
@@ -1757,29 +1814,47 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			if (press !== "takeback") await settleConfirm(null);
 			return;
 		}
+		// 押された確認は settleConfirm が外すので、残りのボタンから除く
+		const rest: Seat = {
+			...seat,
+			lend: {
+				...seat.lend,
+				confirms: seat.lend.confirms.filter((id) => id !== p.message_id),
+			},
+		};
 		if (press === "cancel") {
 			await settleConfirm(TAKEBACK_CANCELLED_TEXT);
+			// 貸し出しは続くので「取り戻す」は残し、確認だけをすべて外す
+			await clearButtons(
+				threadId,
+				seat.lend.confirms.filter((id) => id !== p.message_id),
+			);
+			await seats.set({ ...seat, lend: { ...seat.lend, confirms: [] } });
 			return;
 		}
 		const meta = await deps.hishaku.meta(seat.lend.number);
 		if (meta.ok && !macHolds(meta.value)) {
 			// Mac はもう返している。奪わずに戻す
 			if (press === "confirm") await settleConfirm(null);
-			await returnFromMac(seat, null);
+			await returnFromMac(rest, null);
 			return;
 		}
 		const pushedAt =
 			(meta.ok ? meta.value.pushedAt : null) ?? seat.lend.savedAt;
 		if (press === "takeback") {
-			await postSystem(
+			await rememberButtons(
 				threadId,
-				takebackConfirmText(seat.lend.number, pushedAt),
-				CONFIRM_BUTTONS,
+				"confirms",
+				await postSystem(
+					threadId,
+					takebackConfirmText(seat.lend.number, pushedAt),
+					CONFIRM_BUTTONS,
+				),
 			);
 			return;
 		}
 		await settleConfirm(null);
-		await returnFromMac(seat, { pushedAt });
+		await returnFromMac(rest, { pushedAt });
 	};
 
 	/** Dispatch を付けずに送られたメッセージは、送り手の端末か Dispatch から席を引く。 */

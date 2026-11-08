@@ -32,6 +32,10 @@ export type Lend = {
 	mac: boolean;
 	/** Mac に頼まれて渡した。引き継ぎで預けたのと違い、Mac はすぐに借りる。 */
 	requested: boolean;
+	/** この貸し出しで出した「取り戻す」のボタン付きのメッセージ。貸し出しが終わったらボタンを外す。 */
+	buttons: string[];
+	/** 取り戻す確認のボタン付きのメッセージ。確定かやめるで外す。 */
+	confirms: string[];
 };
 
 export type Seat = {
@@ -146,6 +150,8 @@ const seatSchema = v.object({
 				generation: v.nullable(v.number()),
 				mac: v.boolean(),
 				requested: v.boolean(),
+				buttons: v.optional(v.array(v.string()), []),
+				confirms: v.optional(v.array(v.string()), []),
 			}),
 		),
 		null,
@@ -292,6 +298,8 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 							generation: s.lend.generation,
 							mac: s.lend.mac,
 							requested: s.lend.requested,
+							buttons: s.lend.buttons,
+							confirms: s.lend.confirms,
 						}
 					: null,
 				releaseRequested: s.release_requested,
@@ -346,6 +354,8 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 									generation: s.lend.generation,
 									mac: s.lend.mac,
 									requested: s.lend.requested,
+									buttons: s.lend.buttons,
+									confirms: s.lend.confirms,
 								}
 							: null,
 						release_requested: s.releaseRequested,
