@@ -33,7 +33,12 @@ export const panelText = (p: {
 	label: SeatLabel;
 	elapsedMs: number | null;
 	doing: string | null;
+	/** 引き継ぎで記録を預けた hishaku の番号。Mac が開くのを待っている。 */
+	lent?: number | null;
 }) => {
+	if (p.label === "引き継ぎ" && p.lent != null) {
+		return `状態: Mac に貸し出し待ち（${p.lent}）`;
+	}
 	if (p.label !== "作業中") return `状態: ${p.label}`;
 	const lines = [
 		p.elapsedMs === null

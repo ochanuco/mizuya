@@ -199,6 +199,42 @@ export const seatSpec = (preamble: string, task: string) =>
 
 ${task}`;
 
+const NUMBER_PREFIX = /^\[\d{4}\]\s*/;
+
+/**
+ * 投稿の件名の頭に hishaku の番号を付ける。番号は要約の 40 字の枠の外に置き、Discord の件名の上限で切る。
+ * 前に付けた番号は付け直す。
+ */
+export const numberedTitle = (number: number, name: string) => {
+	const named = `[${number}] ${name.replace(NUMBER_PREFIX, "")}`.trimEnd();
+	return named.length > THREAD_NAME_LIMIT
+		? `${named.slice(0, THREAD_NAME_LIMIT - 1)}…`
+		: named;
+};
+
+/** 件名から番号を外す。記憶と活動ログには番号の無い件名を残す。 */
+export const unnumberedTitle = (name: string) =>
+	name.replace(NUMBER_PREFIX, "");
+
+/** 席の最初の spec に足す。席は Mac に引き継ぐとき、この番号を申し送りに書く。 */
+export const numberNote = (number: number) =>
+	`この投稿の hishaku の番号: ${number}（Mac に引き継ぐときは、申し送りの雛形の「hishaku の番号」の行に書く）`;
+
+/** 引き継ぎの返事の最後に付ける。Mac でこの 1 行を打てば、席の会話の続きが開く。 */
+export const handoffOpenLine = (number: number) => `\`hs open ${number}\``;
+
+/** 席を起こそうとしたら、他の機械がこの投稿のセッションを借りていた。 */
+export const leaseHeldText = (holder: string) =>
+	`この投稿の続きは、いま ${holder === "" ? "別の機械" : holder} で開かれています。そちらで閉じてから、もう一度声をかけてください。`;
+
+/** 席がセッションを借りている間に、他の機械に取られた。 */
+export const LEASE_STOLEN_TEXT =
+	"この投稿の会話は別の機械で開かれました。ここで進めた分は枝として残してあります。";
+
+/** 引き継ぎで記録を預けられなかった。 */
+export const HANDOFF_UNSAVED_NOTE =
+	"（会話の記録を預けられなかったので、Mac では申し送り issue から始めます）";
+
 /** 裏の作業を待っている席に届けた持ち主の書き込みの前に置く。受付は「作業中です」とだけ返してある。 */
 export const backgroundReplyNote =
 	"裏の作業を待っている間に持ち主が書いた。受付が「作業中です」とだけ先に返してある。手が空いたら status で答え、待ちを続ける。";

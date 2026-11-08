@@ -133,6 +133,11 @@ export type DiscordApi = {
 		threadId: string,
 		tagIds: string[],
 	) => Promise<Result<void, DomainError>>;
+	/** 投稿（スレッド）の件名を変える。 */
+	renameThread: (
+		threadId: string,
+		name: string,
+	) => Promise<Result<void, DomainError>>;
 	/** 分けずに 1 件だけ送る。書き換える前提のメッセージに使う。 */
 	createMessage: (
 		channelId: string,
@@ -409,6 +414,12 @@ export const createDiscordRest = (opts: DiscordRestOptions): DiscordApi => {
 		setTags: async (threadId, tagIds) => {
 			const r = await call("PATCH", `/channels/${threadId}`, null, {
 				applied_tags: tagIds,
+			});
+			return r.ok ? ok(undefined) : r;
+		},
+		renameThread: async (threadId, name) => {
+			const r = await call("PATCH", `/channels/${threadId}`, null, {
+				name: name.slice(0, THREAD_NAME_LIMIT),
 			});
 			return r.ok ? ok(undefined) : r;
 		},

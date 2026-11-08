@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import {
 	acceptTitle,
 	buildSeatPreamble,
+	numberedTitle,
+	unnumberedTitle,
 	WORKING_INSTRUCTIONS,
 } from "./prompts.ts";
 
@@ -73,5 +75,19 @@ describe("acceptTitle", () => {
 		expect(acceptTitle("請求書を整理しました。")).toBeNull();
 		expect(acceptTitle("あ".repeat(41))).toBeNull();
 		expect(acceptTitle("  ")).toBeNull();
+	});
+});
+
+describe("numberedTitle", () => {
+	it("番号は要約の 40 字の枠の外で頭に付け、付け直しても重ねず、件名の上限で切る", () => {
+		const title = "あ".repeat(40);
+		expect(numberedTitle(1234, title)).toBe(`[1234] ${title}`);
+		expect(numberedTitle(1234, `[1234] ${title}`)).toBe(`[1234] ${title}`);
+		expect(numberedTitle(5678, "[1234] 件名")).toBe("[5678] 件名");
+		const long = numberedTitle(1234, "い".repeat(120));
+		expect(long).toHaveLength(100);
+		expect(long.endsWith("…")).toBe(true);
+		expect(unnumberedTitle("[1234] 件名")).toBe("件名");
+		expect(unnumberedTitle("[12] 件名")).toBe("[12] 件名");
 	});
 });

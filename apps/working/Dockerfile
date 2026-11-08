@@ -90,6 +90,25 @@ RUN arch="$(dpkg --print-architecture)" \
 	&& ln -s /opt/codex/bin/codex /usr/local/bin/codex \
 	&& rm -f /tmp/codex.tar.gz
 
+# 受付が席の agent のセッションを hishaku の Manager に預ける CLI。版はここだけで上げ、Renovate が Releases に追従する。
+# 版ごとの sha256 を持たず、その版の checksums.txt で確かめる。Renovate が版だけを上げても検証が外れないように。
+# renovate: datasource=github-releases depName=ochanuco/hishaku
+ARG HS_VERSION=0.1.0
+RUN arch="$(dpkg --print-architecture)" \
+	&& case "$arch" in \
+		amd64|arm64) ;; \
+		*) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+	esac \
+	&& base="https://github.com/ochanuco/hishaku/releases/download/v${HS_VERSION}" \
+	&& mkdir -p /tmp/hs \
+	&& curl -fsSL -o "/tmp/hs/hs_linux_${arch}.tar.gz" "$base/hs_linux_${arch}.tar.gz" \
+	&& curl -fsSL -o /tmp/hs/checksums.txt "$base/checksums.txt" \
+	&& cd /tmp/hs \
+	&& grep " hs_linux_${arch}.tar.gz\$" checksums.txt | sha256sum -c - \
+	&& tar -xzf "hs_linux_${arch}.tar.gz" hs \
+	&& install -m 755 hs /usr/local/bin/hs \
+	&& cd / && rm -rf /tmp/hs
+
 # 席の Claude の手順書（orchestration の preamble）はコマンドを orca と書く。
 RUN ln -s /usr/bin/orca-ide /usr/local/bin/orca
 
