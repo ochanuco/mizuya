@@ -27,26 +27,41 @@ import { dismissedText, isDismissButton } from "./dismiss.ts";
 import { seatNameOf } from "./guard/env.ts";
 import type { Ledger, Pending } from "./guard/ledger.ts";
 import type { Operation } from "./guard/operation.ts";
+import type { Hishaku } from "./hishaku.ts";
 import { createKeyedQueue } from "./keyed-queue.ts";
 import { PARTNER_IDS, type PartnerId } from "./lib/core.ts";
 import { err, ok, type Result } from "./lib/result.ts";
 import type { Logger } from "./logger.ts";
-import type { Orca, OrcaError, SeatAgent, SeatMessage } from "./orca.ts";
+import type {
+	Orca,
+	OrcaError,
+	SeatAgent,
+	SeatHow,
+	SeatMessage,
+	SeatPrepare,
+} from "./orca.ts";
 import {
 	backgroundReplyNote,
 	fallbackTitle,
 	forumPostBody,
 	forumStarterPrompt,
+	HANDOFF_UNSAVED_NOTE,
+	handoffOpenLine,
 	historyPrompt,
 	issuePostBody,
 	issuePrompt,
 	issueThreadName,
+	LEASE_STOLEN_TEXT,
+	leaseHeldText,
 	messageLink,
+	numberedTitle,
+	numberNote,
 	type PickedIssue,
 	replyPrompt,
 	requestPrompt,
 	restartNote,
 	seatSpec,
+	unnumberedTitle,
 	wakeNote,
 } from "./prompts.ts";
 import {
@@ -97,6 +112,11 @@ export type IntakeDeps = {
 	/** mizuya の bot のユーザー。メンションされたら Yukarin 宛てとみなす。 */
 	systemUserId: string;
 	orca: Orca;
+	/**
+	 * 席の agent のセッションを預ける hishaku。あれば投稿ごとに番号を取り、席の会話を Manager に預けて同じ番号で続ける。
+	 * 無いか Manager に届かなければ、席は手元の会話だけで動く。
+	 */
+	hishaku?: Hishaku | null;
 	seats: SeatStore;
 	/** 投稿で許可を待っている操作。 */
 	approvals: ApprovalStore;
@@ -255,6 +275,8 @@ export type Intake = {
 	refreshPanels: () => Promise<void>;
 	/** 作業中の席の数。gateway が自分のパートナーの数を bot のステータスに出す。 */
 	summary: () => SeatSummary;
+	/** 席が借りている hishaku のセッションの貸し出しを延ばす。 */
+	renewLeases: () => Promise<void>;
 };
 
 export type SeatSummary = {
@@ -448,6 +470,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				? at.getTime() - seat.labelSince.getTime()
 				: null,
 			doing: seat.lastStatus,
+			lent: seat.lent ? deps.seats.numberOf(seat.threadId) : null,
 		});
 		if (text === seat.panelText) return seat;
 		if (
@@ -601,9 +624,110 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		log.info("seat model changed", { thread_id: threadId, from, to });
 	};
 
+	/** 投稿の件名。頭の hishaku の番号は外す。 */
 	const titleOf = async (threadId: string): Promise<string | null> => {
 		const ch = await deps.discord.getChannel(threadId);
-		return ch.ok ? ch.value.name : null;
+		return ch.ok && ch.value.name !== null
+			? unnumberedTitle(ch.value.name)
+			: null;
+	};
+
+	/**
+	 * 投稿の hishaku の番号を取り、件名の頭に付ける。番号はスレッドの ID を post_id にして払い出すので、投稿を立てた後に取る。
+	 * Manager に届かなければ番号なしで進め、席は手元の会話だけで動く。
+	 */
+	const ensureNumber = async (
+		threadId: string,
+		repo: string | null,
+	): Promise<number | null> => {
+		const hishaku = deps.hishaku;
+		if (!hishaku) return null;
+		const known = deps.seats.numberOf(threadId);
+		if (known !== null) return known;
+		const ch = await deps.discord.getChannel(threadId);
+		const name = (ch.ok ? ch.value.name : null) ?? "";
+		const created = await hishaku.createSession({
+			postId: threadId,
+			agent: agentOf(partnerOf(threadId)),
+			title: unnumberedTitle(name) || threadId,
+			repo,
+			branch: null,
+		});
+		if (!created.ok) {
+			log.warn("hishaku session unavailable; seat runs without it", {
+				thread_id: threadId,
+				reason: created.error.reason,
+			});
+			return null;
+		}
+		const { number } = created.value;
+		await deps.seats.setNumber(threadId, number);
+		const named = numberedTitle(number, name);
+		if (ch.ok && name !== "" && named !== name) {
+			const r = await botOf(threadId).renameThread(threadId, named);
+			if (!r.ok) {
+				log.warn("thread rename failed", {
+					thread_id: threadId,
+					error: r.error.type,
+				});
+			}
+		}
+		log.info("hishaku session numbered", { thread_id: threadId, number });
+		return number;
+	};
+
+	/** 席を起こす前に hishaku のセッションを借りる。持ち主が自分（前の受付が返さずに落ちた）なら取り直す。 */
+	const prepareSession = async (number: number, cwd: string) => {
+		const hishaku = deps.hishaku;
+		if (!hishaku) return null;
+		const r = await hishaku.prepare({ number, cwd });
+		if (
+			!r.ok &&
+			r.error.type === "LeaseHeld" &&
+			r.error.holder === hishaku.holder
+		) {
+			return hishaku.prepare({ number, cwd, takeover: true });
+		}
+		return r;
+	};
+
+	/**
+	 * 止めた席の会話を Manager に預け、貸し出しを返す。agent が止まってから呼ぶ。
+	 * 預けて返せたら true。席が借りていなければ false。
+	 */
+	const releaseSession = async (
+		seat: Seat,
+	): Promise<{ seat: Seat; released: boolean }> => {
+		const hishaku = deps.hishaku;
+		const number = deps.seats.numberOf(seat.threadId);
+		if (!hishaku || seat.lease === null || number === null || !seat.path) {
+			return { seat, released: false };
+		}
+		const r = await hishaku.push({
+			number,
+			generation: seat.lease,
+			cwd: seat.path,
+			release: true,
+		});
+		const next = { ...seat, lease: null };
+		if (r.ok) {
+			log.info("hishaku session released", {
+				thread_id: seat.threadId,
+				number,
+			});
+			return { seat: next, released: true };
+		}
+		if (r.error.type === "LeaseStolen") {
+			log.warn("hishaku lease was taken", { thread_id: seat.threadId, number });
+			if (!seat.standup) await sendTo(seat.threadId, LEASE_STOLEN_TEXT);
+		} else {
+			log.warn("hishaku push failed", {
+				thread_id: seat.threadId,
+				number,
+				reason: r.error.reason,
+			});
+		}
+		return { seat: next, released: false };
 	};
 
 	const parentIdOf = async (channelId: string): Promise<string | null> => {
@@ -814,6 +938,43 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		const partner = partnerOf(threadId);
 		const agent = agentOf(partner);
 		const model = deps.seats.modelOf(threadId);
+		const number = seat.standup ? null : deps.seats.numberOf(threadId);
+		const noted = number === null ? text : `${numberNote(number)}\n\n${text}`;
+		let lease: number | null = null;
+		const fallback: SeatHow = seat.path ? "resume" : "start";
+		const prepare: SeatPrepare | undefined =
+			number === null || !deps.hishaku
+				? undefined
+				: async (cwd) => {
+						const r = await prepareSession(number, cwd);
+						if (r === null) return ok({ how: fallback });
+						if (!r.ok) {
+							if (r.error.type === "LeaseHeld") {
+								return err({ holder: r.error.holder });
+							}
+							log.warn("hishaku prepare failed; seat runs without it", {
+								thread_id: threadId,
+								number,
+								reason: r.error.reason,
+							});
+							return ok({ how: fallback });
+						}
+						lease = r.value.generation;
+						// 正本が無いのに worktree の会話が残っている席は、新しい ID で始めずに手元の会話を続ける
+						if (!r.value.resume && seat.path) return ok({ how: fallback });
+						const how: SeatHow = {
+							sessionId: r.value.sessionId,
+							resume: r.value.resume,
+						};
+						// 前の会話が続くなら、やりとりを読ませる依頼文の代わりに新しい言葉だけを渡す
+						if (r.value.resume && seat.continuation && !seat.path) {
+							return ok({
+								how,
+								spec: `${numberNote(number)}\n\n${seat.continuation.join("\n\n---\n\n")}`,
+							});
+						}
+						return ok({ how });
+					};
 		const r = seat.path
 			? await deps.orca.resumeSeat({
 					path: seat.path,
@@ -821,13 +982,15 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 					spec: text,
 					agent,
 					model,
+					prepare,
 				})
 			: await deps.orca.startSeat({
 					name: seatNameOf(threadId),
 					title,
-					spec: seatSpec(speaker(partner).preamble, text),
+					spec: seatSpec(speaker(partner).preamble, noted),
 					agent,
 					model,
+					prepare,
 				});
 		if (!r.ok && r.error.type === "SeatWorktreeMissing" && !seat.standup) {
 			// 前の会話は worktree ごと失われたので、席を忘れてやりとりを読ませた新しい席で始める。
@@ -846,9 +1009,32 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 					labelSince: seat.labelSince,
 					model: seat.model,
 					modelChange: seat.modelChange,
+					continuation: seat.pending,
 				},
 				await historyText(threadId),
 			);
+			return;
+		}
+		if (!r.ok && r.error.type === "SeatLeaseHeld") {
+			log.warn("hishaku session held elsewhere", {
+				thread_id: threadId,
+				holder: r.error.reason,
+			});
+			if (seat.path) {
+				await seats.set({
+					...seat,
+					status: "sleeping",
+					pending: [],
+					continuation: null,
+				});
+			} else {
+				await seats.delete(threadId);
+			}
+			if (!seat.standup) {
+				await sendTo(threadId, leaseHeldText(r.error.reason));
+				await setStatus(threadId, "決めてほしい", seat);
+			}
+			dequeue();
 			return;
 		}
 		if (!r.ok) {
@@ -885,6 +1071,9 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			lastStatus: null,
 			model,
 			modelChange: null,
+			lease,
+			continuation: null,
+			lent: false,
 		});
 		// 作業中に頼まれた切り替えは、起こし直したこの起動で効いた
 		if (seat.modelChange && model !== null && model !== seat.model) {
@@ -898,8 +1087,13 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		if (!seat.standup) await setStatus(threadId, "作業中");
 	};
 
-	/** 席を作るか、上限なら順番待ちにする。 */
-	const openSeat = async (seat: Seat, text: string) => {
+	/** 席を作るか、上限なら順番待ちにする。repo は分かれば hishaku の番号の meta に残す。 */
+	const openSeat = async (
+		seat: Seat,
+		text: string,
+		repo: string | null = null,
+	) => {
+		if (!seat.standup) await ensureNumber(seat.threadId, repo);
 		const reaction =
 			seat.request && !seat.standup
 				? await react(
@@ -923,8 +1117,11 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		await launch(next);
 	};
 
-	/** 席の Claude を止め、worktree を消して対応を忘れる。 */
-	const closeSeat = async (seat: Seat) => {
+	/**
+	 * 席の Claude を止め、会話を hishaku に預けてから worktree を消して対応を忘れる。
+	 * 預けて貸し出しを返せたら true。
+	 */
+	const closeSeat = async (seat: Seat): Promise<boolean> => {
 		const stopped = await deps.orca.stopSeat(seat);
 		if (!stopped.ok) {
 			log.error("seat stop failed", {
@@ -932,6 +1129,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				reason: stopped.error.reason,
 			});
 		}
+		const { released } = await releaseSession(seat);
 		if (seat.path) {
 			const removed = await deps.orca.removeWorktree(seat.path);
 			if (!removed.ok) {
@@ -944,6 +1142,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		await seats.delete(seat.threadId);
 		log.info("seat closed", { thread_id: seat.threadId });
 		dequeue();
+		return released;
 	};
 
 	/** 席の返事から添付の行を外し、ファイルを集める。 */
@@ -977,17 +1176,27 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		const stored = seats.get(threadId);
 		if (stored === null) {
 			// 席が無い（完了したあと、朝会の投稿、作れなかった）ときは、やりとりを読ませて新しい席を作る
+			// 前の会話を hishaku から続けられれば、やりとりの代わりにこの言葉だけを渡す
 			const prompt = await historyText(threadId);
+			const note = granted ? `\n\n${approvedNote(granted)}` : "";
 			await openSeat(
-				{ ...newSeat(threadId), request: from },
-				granted ? `${prompt}\n\n${approvedNote(granted)}` : prompt,
+				{
+					...newSeat(threadId),
+					request: from,
+					continuation: [`${text}${note}`],
+				},
+				`${prompt}${note}`,
 			);
 			return;
 		}
 		const seat = await receive(stored, from);
 		switch (seat.status) {
 			case "queued":
-				await seats.set({ ...seat, pending: [...seat.pending, text] });
+				await seats.set({
+					...seat,
+					pending: [...seat.pending, text],
+					continuation: seat.continuation && [...seat.continuation, text],
+				});
 				return;
 			case "sleeping": {
 				const woke = {
@@ -1106,9 +1315,10 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				});
 				return;
 			}
+			const released = await releaseSession(seat);
 			// 前の会話は残っているので、次の返事で選ばれたモデルのまま起こす
 			next = {
-				...seat,
+				...released.seat,
 				status: "sleeping",
 				terminal: null,
 				questionId: null,
@@ -1174,23 +1384,20 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			});
 			return;
 		}
+		if (taken.status === "引き継ぎ") {
+			await handOff(seat, reply);
+			return;
+		}
 		await postWithApproval(threadId, reply.body, [], reply.files);
 		await setStatus(threadId, taken.status);
 		const title = (await titleOf(threadId)) ?? "仕事フォーラムの投稿";
 		await deps.remember(
 			taken.status === "完了"
 				? `仕事フォーラムの「${title}」を終えた`
-				: taken.status === "見張り中"
-					? `仕事フォーラムの「${title}」で見張りを始めた`
-					: `仕事フォーラムの「${title}」を Mac に引き継いだ`,
+				: `仕事フォーラムの「${title}」で見張りを始めた`,
 			partnerOf(threadId),
 		);
-		await record(
-			threadId,
-			taken.status === "引き継ぎ" ? "handoff" : "done",
-			[],
-			title,
-		);
+		await record(threadId, "done", [], title);
 		await closeSeat(seat);
 		// 席は閉じたが、選ばれたモデルは投稿に残り、次に開く席がそれで動く
 		const chosen = deps.seats.modelOf(threadId);
@@ -1198,6 +1405,43 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			await announceModel(threadId, seat.modelChange.by, seat.model, chosen);
 		}
 		log.info("seat done", { thread_id: threadId, status: taken.status });
+	};
+
+	/**
+	 * Mac への引き継ぎで席を閉じる。会話を Manager に預けて貸し出しを返してから返事を書き、
+	 * 預けられたときだけ返事に `hs open <番号>` を付け、状態の欄を貸し出し待ちにする。
+	 */
+	const handOff = async (
+		seat: Seat,
+		reply: { body: string; files: Attachment[] },
+	) => {
+		const threadId = seat.threadId;
+		const number = deps.seats.numberOf(threadId);
+		const title = (await titleOf(threadId)) ?? "仕事フォーラムの投稿";
+		const leased = seat.lease !== null;
+		const released = await closeSeat(seat);
+		const lent = released && number !== null;
+		const lead = lent
+			? `${reply.body}\n\n${handoffOpenLine(number)}`
+			: leased
+				? `${reply.body}\n\n${HANDOFF_UNSAVED_NOTE}`
+				: reply.body;
+		await postWithApproval(threadId, lead, [], reply.files);
+		await setStatus(threadId, "引き継ぎ", { ...seat, lent });
+		await deps.remember(
+			`仕事フォーラムの「${title}」を Mac に引き継いだ`,
+			partnerOf(threadId),
+		);
+		await record(threadId, "handoff", [], title);
+		const chosen = deps.seats.modelOf(threadId);
+		if (seat.modelChange && chosen !== null && chosen !== seat.model) {
+			await announceModel(threadId, seat.modelChange.by, seat.model, chosen);
+		}
+		log.info("seat done", {
+			thread_id: threadId,
+			status: "引き継ぎ",
+			lent: lent ? number : null,
+		});
 	};
 
 	/** Dispatch を付けずに送られたメッセージは、送り手の端末か Dispatch から席を引く。 */
@@ -1244,9 +1488,11 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			}
 		}
 		const asked = seat.status === "asking" ? seat.question : null;
+		// 起こし直す前に会話を預けて返す。借りたままだと、同じ番号を借り直せない
+		const released = await releaseSession(seat);
 		await sendTo(threadId, RESTARTING_TEXT);
 		await launch({
-			...seat,
+			...released.seat,
 			status: "sleeping",
 			terminal: null,
 			questionId: null,
@@ -1455,7 +1701,11 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		});
 		await queue.run(threadId, async () => {
 			if (seats.get(threadId) !== null) return;
-			await openSeat(newSeat(threadId), issuePrompt({ now: now(), issue }));
+			await openSeat(
+				newSeat(threadId),
+				issuePrompt({ now: now(), issue }),
+				issue.repo,
+			);
 		});
 		return ok({ threadId });
 	};
@@ -1755,8 +2005,9 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			});
 			return;
 		}
+		const released = await releaseSession(seat);
 		await seats.set({
-			...seat,
+			...released.seat,
 			status: "sleeping",
 			terminal: null,
 			questionId: null,
@@ -1934,8 +2185,10 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 					await seats.delete(seat.threadId);
 					continue;
 				}
+				// agent は止まっているので、手元に残った会話を預けて貸し出しを返す
+				const released = await releaseSession(seat);
 				await seats.set({
-					...seat,
+					...released.seat,
 					status: "sleeping",
 					terminal: null,
 					questionId: null,
@@ -1984,6 +2237,39 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			) as Record<PartnerId, number>;
 			for (const s of working) partners[partnerOf(s.threadId)] += 1;
 			return { working: working.length, partners };
+		},
+		renewLeases: async () => {
+			const hishaku = deps.hishaku;
+			if (!hishaku) return;
+			const leased = seats
+				.all()
+				.filter((s) => s.lease !== null && ALIVE.has(s.status));
+			await Promise.all(
+				leased.map((s) =>
+					queue.run(s.threadId, async () => {
+						const seat = seats.get(s.threadId);
+						const number = deps.seats.numberOf(s.threadId);
+						if (seat?.lease == null || number === null) return;
+						const r = await hishaku.renew({ number, generation: seat.lease });
+						if (r.ok) return;
+						if (r.error.type === "HishakuFailed") {
+							// 次の回で延ばせれば貸し出しは切れない
+							log.warn("hishaku renew failed", {
+								thread_id: seat.threadId,
+								number,
+								reason: r.error.reason,
+							});
+							return;
+						}
+						log.warn("hishaku lease was taken", {
+							thread_id: seat.threadId,
+							number,
+						});
+						await seats.set({ ...seat, lease: null });
+						if (!seat.standup) await sendTo(seat.threadId, LEASE_STOLEN_TEXT);
+					}),
+				),
+			);
 		},
 	};
 };

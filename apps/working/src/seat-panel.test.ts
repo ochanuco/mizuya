@@ -28,3 +28,24 @@ describe("panelText", () => {
 		expect(doing?.endsWith("…")).toBe(true);
 	});
 });
+
+describe("貸し出し待ちの状態の欄", () => {
+	it("引き継ぎで記録を預けたら番号を出し、預けていなければ引き継ぎのまま", () => {
+		expect(
+			panelText({
+				label: "引き継ぎ",
+				elapsedMs: null,
+				doing: null,
+				lent: 1234,
+			}),
+		).toBe("状態: Mac に貸し出し待ち（1234）");
+		expect(
+			panelText({
+				label: "引き継ぎ",
+				elapsedMs: null,
+				doing: null,
+				lent: null,
+			}),
+		).toBe("状態: 引き継ぎ");
+	});
+});

@@ -41,6 +41,7 @@ describe("loadConfig", () => {
 				memoryBin: "yunomi-memory",
 				chimera: null,
 				playwright: null,
+				hishaku: null,
 				macState: null,
 				seatStatus: null,
 				scheduler: null,
@@ -169,6 +170,28 @@ describe("loadConfig", () => {
 			YUNOMI_URL: "https://worker.example",
 		});
 		expect(partial.ok && partial.value.memory).toBeNull();
+	});
+
+	it("hishaku は URL と service token がそろったときだけ使い、holder は既定で docker01", () => {
+		const r = loadConfig({
+			...base,
+			HISHAKU_URL: "https://hishaku.example.com",
+			HISHAKU_ACCESS_CLIENT_ID: "hid",
+			HISHAKU_ACCESS_CLIENT_SECRET: "hsecret",
+		});
+		expect(r.ok && r.value.hishaku).toEqual({
+			url: "https://hishaku.example.com",
+			clientId: "hid",
+			clientSecret: "hsecret",
+			holder: "docker01",
+			bin: "hs",
+		});
+		const partial = loadConfig({
+			...base,
+			HISHAKU_URL: "https://hishaku.example.com",
+			HISHAKU_ACCESS_CLIENT_ID: "hid",
+		});
+		expect(partial.ok && partial.value.hishaku).toBeNull();
 	});
 
 	it("chimera の口は URL と service token がそろったときだけ使う", () => {

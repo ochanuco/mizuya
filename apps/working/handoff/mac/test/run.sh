@@ -34,7 +34,8 @@ add_issue() {
 }
 
 pickup() {
-	PATH="$here/mock:$PATH" "${PICKUP_BASH:-bash}" "$pickup" "$@" 2>"$STATE/log"
+	PATH="$here/mock:$PATH" HISHAKU_URL="${HISHAKU_URL-https://hishaku.example.com}" \
+		"${PICKUP_BASH:-bash}" "$pickup" "$@" 2>"$STATE/log"
 }
 
 calls() { grep -c -F -- "$1" "$STATE/calls" || true; }
@@ -130,7 +131,51 @@ t_dry_run() {
 	expect "dry-run: label を表示" 1 "$(grep -c 'dry-run: gh issue edit 8' "$STATE/log")"
 }
 
-for t in t_orca_down t_pick t_idempotent t_already_picked t_worktree_exists t_repo_missing t_bad_branch t_dry_run; do
+t_hs_open() {
+	setup
+	add_issue ochanuco/alpha 7 '- 作業ブランチ: `dev/feature-a`
+- hishaku の番号: `4321`'
+	pickup
+	expect "hs: agent を起こさない worktree" 1 "$(calls 'orca worktree create --repo id:repo-a --name hs-4321 --base-branch origin/dev/feature-a --branch dev/feature-a --issue 7 --no-parent --json')"
+	expect "hs: --agent を付けない" 0 "$(calls '--agent')"
+	expect "hs: hs open" 1 "$(calls 'hs open -y ochanuco/alpha 4321')"
+	expect "hs: label" 1 "$(calls 'gh issue edit 7 --repo ochanuco/alpha --add-label working-handoff-picked')"
+	expect "hs: worktree を作ってから開く" "orca worktree create" "$(grep -E '^(orca worktree create|hs open)' "$STATE/calls" | head -n 1 | cut -d' ' -f1-3)"
+}
+
+t_hs_open_fail() {
+	setup
+	add_issue ochanuco/alpha 7 '- 作業ブランチ: `dev/feature-a`
+- hishaku の番号: `4321`'
+	touch "$STATE/hs-fail"
+	pickup || true
+	expect "hs fail: 印を付けない" 0 "$(calls 'gh issue edit')"
+	rm "$STATE/hs-fail"
+	pickup
+	expect "hs fail: worktree は作り直さない" 1 "$(calls 'orca worktree create')"
+	expect "hs fail: 次の回に開き直す" 2 "$(calls 'hs open -y ochanuco/alpha 4321')"
+	expect "hs fail: 開けたら印を付ける" 1 "$(calls 'gh issue edit 7')"
+}
+
+t_hs_bad_number() {
+	setup
+	add_issue ochanuco/alpha 7 '- 作業ブランチ: `dev/feature-a`
+- hishaku の番号: `12; rm`'
+	pickup
+	expect "bad number: hs を呼ばない" 0 "$(calls 'hs ')"
+	expect "bad number: 今の動き" 1 "$(calls 'orca worktree create --repo id:repo-a --name handoff-7 ')"
+}
+
+t_hs_unconfigured() {
+	setup
+	add_issue ochanuco/alpha 7 '- 作業ブランチ: `dev/feature-a`
+- hishaku の番号: `4321`'
+	HISHAKU_URL="" pickup
+	expect "unconfigured: hs を呼ばない" 0 "$(calls 'hs ')"
+	expect "unconfigured: 今の動き" 1 "$(calls 'orca worktree create --repo id:repo-a --name handoff-7 --base-branch origin/dev/feature-a --branch dev/feature-a --issue 7 --agent claude')"
+}
+
+for t in t_orca_down t_pick t_idempotent t_already_picked t_worktree_exists t_repo_missing t_bad_branch t_dry_run t_hs_open t_hs_open_fail t_hs_bad_number t_hs_unconfigured; do
 	"$t"
 	rm -rf "$STATE"
 done

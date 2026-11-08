@@ -11,6 +11,15 @@
         '# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+) currentValue=(?<currentValue>\\S+)\\nARG YUNOMI_REF=(?<currentDigest>[0-9a-f]{40})',
       ],
     },
+    {
+      // Working の image に入れる hs（hishaku の CLI）の版。Releases の tag は v を付ける
+      customType: 'regex',
+      managerFilePatterns: ['/^apps/working/Dockerfile$/'],
+      matchStrings: [
+        '# renovate: datasource=(?<datasource>github-releases) depName=(?<depName>\\S+)\\nARG HS_VERSION=(?<currentValue>\\S+)',
+      ],
+      extractVersionTemplate: '^v(?<version>.*)$',
+    },
   ],
   packageRules: [
     {

@@ -68,6 +68,11 @@ const envSchema = v.object({
 	SCHEDULER_PORT: v.optional(positiveInt),
 	SCHEDULER_SYNC_INTERVAL_MINUTES: v.optional(positiveInt),
 	PATROL_SCHEDULE: v.optional(nonEmpty),
+	HISHAKU_URL: v.optional(v.pipe(v.string(), v.url())),
+	HISHAKU_ACCESS_CLIENT_ID: v.optional(nonEmpty),
+	HISHAKU_ACCESS_CLIENT_SECRET: v.optional(nonEmpty),
+	HISHAKU_HOLDER: v.optional(nonEmpty),
+	HS_BIN: v.optional(nonEmpty),
 });
 
 const SCHEDULER_KEYS = [
@@ -128,6 +133,17 @@ export type WorkingConfig = {
 	chimera: { url: string; clientId: string; clientSecret: string } | null;
 	/** Akarin の席の Codex に渡す Playwright MCP。3 つそろったときだけ席から使える。 */
 	playwright: { url: string; clientId: string; clientSecret: string } | null;
+	/**
+	 * 席の agent のセッションを預ける hishaku の Manager。3 つそろったときだけ使う。
+	 * holder はこの受付の Commander の ID で、Mac の hs が貸し出しの持ち主として見る。
+	 */
+	hishaku: {
+		url: string;
+		clientId: string;
+		clientSecret: string;
+		holder: string;
+		bin: string;
+	} | null;
 	/** Mac から席の状態を受ける口。トークンがなければ待ち受けない。 */
 	macState: { token: string; port: number } | null;
 	/** yunomi の gateway に席の状態を渡す口。トークンがなければ待ち受けない。 */
@@ -289,6 +305,19 @@ export const loadConfig = (
 						url: e.PLAYWRIGHT_MCP_URL,
 						clientId: e.PLAYWRIGHT_ACCESS_CLIENT_ID,
 						clientSecret: e.PLAYWRIGHT_ACCESS_CLIENT_SECRET,
+					}
+				: null,
+		hishaku:
+			e.HISHAKU_URL &&
+			e.HISHAKU_ACCESS_CLIENT_ID &&
+			e.HISHAKU_ACCESS_CLIENT_SECRET
+				? {
+						url: e.HISHAKU_URL,
+						clientId: e.HISHAKU_ACCESS_CLIENT_ID,
+						clientSecret: e.HISHAKU_ACCESS_CLIENT_SECRET,
+						// コンテナのホスト名は作り直すたびに変わるので、hs の既定（ホスト名）に任せない
+						holder: e.HISHAKU_HOLDER ?? "docker01",
+						bin: e.HS_BIN ?? "hs",
 					}
 				: null,
 		macState: e.MAC_STATE_TOKEN

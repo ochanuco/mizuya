@@ -24,7 +24,7 @@ import {
 	isRestartRequest,
 	seatStartFailedText,
 } from "./intake.ts";
-import { ok, type PartnerId } from "./lib/core.ts";
+import { err, ok, type PartnerId } from "./lib/core.ts";
 import { silentLogger } from "./logger.ts";
 import { openSeatStore } from "./seat-store.ts";
 import {
@@ -33,6 +33,7 @@ import {
 	envelope,
 	FORUM,
 	fakeDiscord,
+	fakeHishaku,
 	fakeOrca,
 	OWNER,
 	press,
@@ -83,6 +84,7 @@ const setup = async (
 		chimera?: ChimeraImages;
 		akarin?: boolean;
 		seatReplied?: () => void;
+		hishaku?: ReturnType<typeof fakeHishaku>;
 	} = {},
 ) => {
 	const stateDir = opts.stateDir ?? tempDir();
@@ -119,6 +121,7 @@ const setup = async (
 				}
 			: null,
 		orca: o.orca,
+		hishaku: opts.hishaku?.hishaku ?? null,
 		seats,
 		approvals: await openApprovalStore(stateDir),
 		ledger,
@@ -1939,5 +1942,257 @@ describe("GitHub の issue", () => {
 		expect(r.ok).toBe(true);
 		expect(s.seats.get("thread1")?.status).toBe("queued");
 		expect(s.o.opsOf("startSeat")).toEqual([]);
+	});
+});
+
+describe("hishaku の番号", () => {
+	const done = (dispatchId: string | null, body: string) =>
+		seatMessage({ type: "worker_done", dispatchId, body });
+	const ID = "11111111-2222-4333-8444-555555555555";
+
+	it("席を作るときに番号を取って投稿ごとに残し、件名の頭に付け、その番号の ID で起こす", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		await openPost(s);
+		expect(h.opsOf("createSession")).toEqual([
+			{
+				postId: "p1",
+				agent: "claude",
+				title: "README の誤字",
+				repo: null,
+				branch: null,
+			},
+		]);
+		expect(s.seats.numberOf("p1")).toBe(1234);
+		expect(s.d.channels.get("p1")?.name).toBe("[1234] README の誤字");
+		expect(h.opsOf("prepare")).toEqual([
+			{ number: 1234, cwd: "/seats/seat-p1" },
+		]);
+		const [start] = s.o.opsOf("startSeat") as {
+			how: unknown;
+			spec: string;
+			title: string;
+		}[];
+		expect(start?.how).toEqual({ sessionId: ID, resume: false });
+		expect(start?.spec).toContain("この投稿の hishaku の番号: 1234");
+		// 席の端末の題には番号を付けない
+		expect(start?.title).toBe("README の誤字");
+		expect(s.seats.get("p1")?.lease).toBe(1);
+		// 受付を作り直しても同じ番号を使う
+		const reopened = await openSeatStore(s.stateDir);
+		expect(reopened.numberOf("p1")).toBe(1234);
+	});
+
+	it("仕事チャンネルの依頼から立てた投稿は、要約の件名の頭に番号を付ける", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		await s.intake.handle(envelope({}));
+		expect(s.d.posts[0]?.name).toBe("請求書の整理");
+		expect(s.d.channels.get("thread1")?.name).toBe("[1234] 請求書の整理");
+	});
+
+	it("Manager に届かなければ番号なしで今の起動のまま始める", async () => {
+		const h = fakeHishaku();
+		h.behavior.create = () =>
+			err({ type: "HishakuFailed", reason: "POST /v1/sessions 503" });
+		const s = await setup({ hishaku: h });
+		await openPost(s);
+		expect(s.seats.numberOf("p1")).toBeNull();
+		expect(s.d.channels.get("p1")?.name).toBe("README の誤字");
+		expect(h.opsOf("prepare")).toEqual([]);
+		const [start] = s.o.opsOf("startSeat") as { how: unknown; spec: string }[];
+		expect(start?.how).toBe("start");
+		expect(start?.spec).not.toContain("hishaku の番号");
+	});
+
+	it("hs prepare が失敗したら warn を残して今の起動に戻す", async () => {
+		const h = fakeHishaku();
+		h.behavior.prepare = () =>
+			err({ type: "HishakuFailed", reason: "hs: Manager に届きません" });
+		const s = await setup({ hishaku: h });
+		await openPost(s);
+		const [start] = s.o.opsOf("startSeat") as { how: unknown }[];
+		expect(start?.how).toBe("start");
+		expect(s.seats.get("p1")?.lease).toBeNull();
+		expect(s.seats.get("p1")?.status).toBe("working");
+	});
+
+	it("他の機械が借りていれば席を起こさず、持ち主を投稿に書く", async () => {
+		const h = fakeHishaku();
+		h.behavior.prepare = () =>
+			err({
+				type: "LeaseHeld",
+				holder: "mac-example",
+				leaseExpiresAt: "2026-11-05T08:02:00.000Z",
+			});
+		const s = await setup({ hishaku: h });
+		s.d.addThread("p1", "README の誤字");
+		await s.intake.handle(say("p1", "README の誤字を直して", { first: true }));
+		expect(s.seats.get("p1")).toBeNull();
+		expect(s.d.sentTo("p1").at(-1)).toContain(
+			"いま mac-example で開かれています",
+		);
+		expect(s.d.tagsOf("p1")).toEqual(["tag-decide"]);
+	});
+
+	it("持ち主が自分のままなら（前の受付が返さずに落ちた）取り直して起こす", async () => {
+		const h = fakeHishaku();
+		let n = 0;
+		h.behavior.prepare = () =>
+			n++ === 0
+				? err({ type: "LeaseHeld", holder: "box01", leaseExpiresAt: "" })
+				: ok({ agent: "claude", sessionId: ID, resume: true, generation: 5 });
+		const s = await setup({ hishaku: h });
+		await openPost(s);
+		expect(h.opsOf("prepare")).toEqual([
+			{ number: 1234, cwd: "/seats/seat-p1" },
+			{ number: 1234, cwd: "/seats/seat-p1", takeover: true },
+		]);
+		expect(s.seats.get("p1")?.lease).toBe(5);
+	});
+
+	it("完了で閉じるときは会話を預けて貸し出しを返してから worktree を消す", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "直しました\n状態: 完了"),
+		);
+		expect(h.opsOf("push")).toEqual([
+			{ number: 1234, generation: 1, cwd: "/seats/seat-p1", release: true },
+		]);
+		const ops = s.o.calls.map((c) => c.op);
+		expect(ops.indexOf("stopSeat")).toBeLessThan(ops.indexOf("removeWorktree"));
+		expect(s.seats.numberOf("p1")).toBe(1234);
+	});
+
+	it("完了のあとにまた書くと同じ番号の会話を続け、やりとりの代わりに返事だけを渡す", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "直しました\n状態: 完了"),
+		);
+		h.behavior.prepare = () =>
+			ok({ agent: "claude", sessionId: ID, resume: true, generation: 2 });
+		await s.intake.handle(say("p1", "もう一か所あった"));
+		expect(h.opsOf("createSession")).toHaveLength(1);
+		const starts = s.o.opsOf("startSeat") as { how: unknown; spec: string }[];
+		expect(starts[1]?.how).toEqual({ sessionId: ID, resume: true });
+		expect(starts[1]?.spec).toContain("もう一か所あった");
+		expect(starts[1]?.spec).not.toContain(PREAMBLE);
+		expect(starts[1]?.spec).not.toContain("--- ここまで ---");
+	});
+
+	it("完了のあとに Manager に届かなければ、これまでのやりとりを渡す", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "直しました\n状態: 完了"),
+		);
+		h.behavior.prepare = () =>
+			err({ type: "HishakuFailed", reason: "hs: Manager に届きません" });
+		await s.intake.handle(say("p1", "もう一か所あった"));
+		const starts = s.o.opsOf("startSeat") as { how: unknown; spec: string }[];
+		expect(starts[1]?.how).toBe("start");
+		expect(starts[1]?.spec.startsWith(PREAMBLE)).toBe(true);
+		expect(starts[1]?.spec).toContain("--- ここまで ---");
+	});
+
+	it("起動し直すときは会話を預けて返してから、同じ番号を借り直して起こす", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		await openPost(s);
+		h.behavior.prepare = () =>
+			ok({ agent: "claude", sessionId: ID, resume: true, generation: 2 });
+		await s.intake.handle(say("p1", "起動し直して"));
+		expect(h.calls.map((c) => c.op)).toEqual([
+			"createSession",
+			"prepare",
+			"push",
+			"prepare",
+		]);
+		const [resume] = s.o.opsOf("resumeSeat") as { how: unknown }[];
+		expect(resume?.how).toEqual({ sessionId: ID, resume: true });
+		expect(s.seats.get("p1")?.lease).toBe(2);
+	});
+
+	it("引き継ぎでは会話を預けて返したことを確かめ、返事に hs open を付けて状態の欄を貸し出し待ちにする", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(
+				seat.dispatchId,
+				"わかりました。席はここで止めて、続きは Mac で開けるようにしました。\nhttps://github.com/example/app/issues/9\n状態: 引き継ぎ",
+			),
+		);
+		expect(h.opsOf("push")).toEqual([
+			{ number: 1234, generation: 1, cwd: "/seats/seat-p1", release: true },
+		]);
+		const reply = s.d.sentTo("p1").at(-1) ?? "";
+		expect(
+			reply.endsWith(
+				"https://github.com/example/app/issues/9\n\n`hs open 1234`",
+			),
+		).toBe(true);
+		expect(s.sys.panelIn("p1")).toBe("状態: Mac に貸し出し待ち（1234）");
+		expect(s.d.tagsOf("p1")).toEqual(["tag-handoff"]);
+		expect(s.activity.map((e) => e.kind)).toEqual(["handoff"]);
+		expect(s.seats.get("p1")).toBeNull();
+	});
+
+	it("引き継ぎで会話を預けられなければ hs open を付けず、そう書き添える", async () => {
+		const h = fakeHishaku();
+		h.behavior.push = () =>
+			err({ type: "HishakuFailed", reason: "hs: Manager に届きません" });
+		const s = await setup({ hishaku: h });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "Mac に引き継ぎます\n状態: 引き継ぎ"),
+		);
+		const reply = s.d.sentTo("p1").at(-1) ?? "";
+		expect(reply).not.toContain("hs open");
+		expect(reply).toContain("申し送り issue から始めます");
+		expect(s.sys.panelIn("p1")).toBe("状態: 引き継ぎ");
+	});
+
+	it("寝かせる席は会話を預けて返し、起こすときに借り直す", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "どちらにしますか\n状態: 決めてほしい"),
+		);
+		s.advance(3 * 60 * 60_000);
+		await s.intake.sleepIdle();
+		expect(s.seats.get("p1")?.status).toBe("sleeping");
+		expect(s.seats.get("p1")?.lease).toBeNull();
+		expect(h.opsOf("push")).toHaveLength(1);
+		await s.intake.handle(say("p1", "A で"));
+		expect(h.opsOf("prepare")).toHaveLength(2);
+		expect(s.seats.get("p1")?.status).toBe("working");
+	});
+
+	it("貸し出しを延ばし、取られていたら投稿に一言書いて以後は預けない", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		await openPost(s);
+		await s.intake.renewLeases();
+		expect(h.opsOf("renew")).toEqual([{ number: 1234, generation: 1 }]);
+		h.behavior.renew = () => err({ type: "LeaseStolen" });
+		await s.intake.renewLeases();
+		expect(s.seats.get("p1")?.lease).toBeNull();
+		expect(s.d.sentTo("p1").at(-1)).toContain("別の機械で開かれました");
+		await s.intake.renewLeases();
+		expect(h.opsOf("renew")).toHaveLength(2);
+	});
+
+	it("朝会の席は番号を取らない", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		await s.intake.startStandup("朝会の材料");
+		expect(h.calls).toEqual([]);
 	});
 });

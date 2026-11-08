@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# pickup.sh のテスト用。呼ばれた引数を記録する。$STATE/hs-fail があれば失敗する。
+set -euo pipefail
+printf 'hs %s\n' "$*" >>"$STATE/calls"
+[ ! -e "$STATE/hs-fail" ] || {
+	echo "hs: Manager に届きません" >&2
+	exit 1
+}
+case "$1" in
+open) ;;
+*)
+	echo "mock hs: unexpected $*" >&2
+	exit 1
+	;;
+esac
