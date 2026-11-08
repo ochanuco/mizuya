@@ -11,13 +11,28 @@ import { WORK_STATUSES, type WorkStatus } from "./work-status.ts";
  * - asking: 席の Claude が ask で聞いて、答えを待っている
  * - waiting: 席の Claude がターンを終え、持ち主の返事を待っている
  * - sleeping: 決めてほしいまま時間がたったので Claude を止めた。worktree と会話は残っている
+ * - lent: 会話を Manager に預けて Mac に貸している。投稿への書き込みは pending に溜め、Mac が返したら席に渡す
  */
 export type SeatStatus =
 	| "queued"
 	| "working"
 	| "asking"
 	| "waiting"
-	| "sleeping";
+	| "sleeping"
+	| "lent";
+
+/** Mac への貸し出し。 */
+export type Lend = {
+	number: number;
+	/** 受付が記録を預けて返した時刻。Manager が Mac の置いた時刻を知らせなければ、これを見せる。 */
+	savedAt: Date | null;
+	/** 返したときの世代。見回りの合間に Mac が借りて返しても、世代が進んでいれば戻ったと分かる。 */
+	generation: number | null;
+	/** Mac が借りているのを見た。 */
+	mac: boolean;
+	/** Mac に頼まれて渡した。引き継ぎで預けたのと違い、Mac はすぐに借りる。 */
+	requested: boolean;
+};
 
 export type Seat = {
 	threadId: string;
@@ -69,8 +84,12 @@ export type Seat = {
 	 * pending はやりとりを読ませる依頼文で、Manager に届かず前の会話が無いときの代わりになる。
 	 */
 	continuation: string[] | null;
-	/** 引き継ぎで記録を預け、Mac が開くのを待っている。状態の欄に番号を出す。 */
-	lent: boolean;
+	/** Mac への貸し出し。lent の間だけある。 */
+	lend: Lend | null;
+	/** Mac が返してほしいと頼んできた（その持ち主）。ターンの終わりを待って渡す。 */
+	releaseRequested: string | null;
+	/** 持ち主が Mac から取り戻した。次の起動で貸し出しを奪い、Mac が最後に置いた時刻を添えて知らせる。 */
+	takeback: { pushedAt: Date | null } | null;
 };
 
 export type MessageRef = { channelId: string; messageId: string };
@@ -84,7 +103,14 @@ const dateSchema = v.pipe(
 );
 
 const seatSchema = v.object({
-	status: v.picklist(["queued", "working", "asking", "waiting", "sleeping"]),
+	status: v.picklist([
+		"queued",
+		"working",
+		"asking",
+		"waiting",
+		"sleeping",
+		"lent",
+	]),
 	path: v.nullable(v.string()),
 	terminal: v.nullable(v.string()),
 	dispatch_id: v.nullable(v.string()),
@@ -112,7 +138,20 @@ const seatSchema = v.object({
 	model_change: v.optional(v.nullable(v.object({ by: v.string() })), null),
 	lease: v.optional(v.nullable(v.number()), null),
 	continuation: v.optional(v.nullable(v.array(v.string())), null),
-	lent: v.optional(v.boolean(), false),
+	lend: v.optional(
+		v.nullable(
+			v.object({
+				number: v.number(),
+				saved_at: dateSchema,
+				generation: v.nullable(v.number()),
+				mac: v.boolean(),
+				requested: v.boolean(),
+			}),
+		),
+		null,
+	),
+	release_requested: v.optional(v.nullable(v.string()), null),
+	takeback: v.optional(v.nullable(v.object({ pushed_at: dateSchema })), null),
 });
 
 const fileSchema = v.object({
@@ -170,7 +209,9 @@ export const newSeat = (threadId: string, standup = false): Seat => ({
 	modelChange: null,
 	lease: null,
 	continuation: null,
-	lent: false,
+	lend: null,
+	releaseRequested: null,
+	takeback: null,
 });
 
 /**
@@ -244,7 +285,17 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 				modelChange: s.model_change,
 				lease: s.lease,
 				continuation: s.continuation,
-				lent: s.lent,
+				lend: s.lend
+					? {
+							number: s.lend.number,
+							savedAt: s.lend.saved_at,
+							generation: s.lend.generation,
+							mac: s.lend.mac,
+							requested: s.lend.requested,
+						}
+					: null,
+				releaseRequested: s.release_requested,
+				takeback: s.takeback ? { pushedAt: s.takeback.pushed_at } : null,
 			});
 		}
 	}
@@ -288,7 +339,19 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 						model_change: s.modelChange,
 						lease: s.lease,
 						continuation: s.continuation,
-						lent: s.lent,
+						lend: s.lend
+							? {
+									number: s.lend.number,
+									saved_at: s.lend.savedAt?.getTime() ?? null,
+									generation: s.lend.generation,
+									mac: s.lend.mac,
+									requested: s.lend.requested,
+								}
+							: null,
+						release_requested: s.releaseRequested,
+						takeback: s.takeback
+							? { pushed_at: s.takeback.pushedAt?.getTime() ?? null }
+							: null,
 					},
 				]),
 			),

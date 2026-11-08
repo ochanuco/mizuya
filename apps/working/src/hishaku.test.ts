@@ -230,14 +230,96 @@ describe("hishaku", () => {
 
 	it("renew は世代を渡す。3 は取られていた", async () => {
 		const hs = fakeHs();
-		expect((await make(hs).renew({ number: 1234, generation: 2 })).ok).toBe(
-			true,
-		);
-		expect(hs.calls()).toEqual(["renew 1234 --generation 2 --holder box01"]);
+		expect(await make(hs).renew({ number: 1234, generation: 2 })).toEqual({
+			ok: true,
+			value: { releaseRequestedBy: null },
+		});
+		expect(hs.calls()).toEqual([
+			"renew 1234 --generation 2 --holder box01 --json",
+		]);
 		const stolen = await make(hs, { HS_EXIT: "3" }).renew({
 			number: 1234,
 			generation: 2,
 		});
 		expect(!stolen.ok && stolen.error.type).toBe("LeaseStolen");
+	});
+
+	it("renew は返してほしいと頼んだ持ち主を返す", async () => {
+		const hs = fakeHs();
+		const r = await make(hs, {
+			HS_OUT:
+				'{"generation":2,"lease_expires_at":"2026-11-05T08:02:00.000Z","release_requested_by":"mac-example"}',
+		}).renew({ number: 1234, generation: 2 });
+		expect(r).toEqual({
+			ok: true,
+			value: { releaseRequestedBy: "mac-example" },
+		});
+	});
+
+	it("meta は service token を付けて GET し、持ち主と最後に置いた時刻を読む", async () => {
+		const hs = fakeHs();
+		const f = vi.fn(
+			async (_url: string | URL | Request, _init?: RequestInit) =>
+				new Response(
+					JSON.stringify({
+						number: 1234,
+						post_id: "p1",
+						agent: "claude",
+						session_id: null,
+						title: "件名",
+						repo: null,
+						branch: null,
+						holder: "mac-example",
+						generation: 3,
+						lease_expires_at: "2026-11-05T08:02:00.000Z",
+						pushed_at: "2026-11-05T07:40:00.000Z",
+						expires_at: "2026-12-05T08:00:00.000Z",
+						updated_at: "2026-11-05T08:00:00.000Z",
+					}),
+					{ status: 200 },
+				),
+		);
+		const r = await make(hs, {}, f as unknown as typeof fetch).meta(1234);
+		expect(r).toEqual({
+			ok: true,
+			value: {
+				holder: "mac-example",
+				generation: 3,
+				leaseExpiresAt: new Date("2026-11-05T08:02:00.000Z"),
+				pushedAt: new Date("2026-11-05T07:40:00.000Z"),
+			},
+		});
+		const [url, init] = f.mock.calls[0] ?? [];
+		expect(url).toBe("https://hishaku.example.com/v1/sessions/1234");
+		expect(init?.headers).toMatchObject({
+			"CF-Access-Client-Id": "cid",
+			"CF-Access-Client-Secret": "csecret",
+		});
+	});
+
+	it("meta に pushed_at が無ければ null、形が違えば失敗にする", async () => {
+		const hs = fakeHs();
+		const reply = (body: unknown, status = 200) =>
+			vi.fn(
+				async () => new Response(JSON.stringify(body), { status }),
+			) as unknown as typeof fetch;
+		const free = await make(
+			hs,
+			{},
+			reply({ holder: null, generation: 2, lease_expires_at: null }),
+		).meta(1234);
+		expect(free).toEqual({
+			ok: true,
+			value: {
+				holder: null,
+				generation: 2,
+				leaseExpiresAt: null,
+				pushedAt: null,
+			},
+		});
+		const odd = await make(hs, {}, reply({ holder: 1 })).meta(1234);
+		expect(!odd.ok && odd.error.reason).toBe("unexpected meta");
+		const gone = await make(hs, {}, reply({}, 404)).meta(1234);
+		expect(!gone.ok && gone.error.reason).toBe("GET /v1/sessions/1234 404");
 	});
 });

@@ -368,6 +368,9 @@ const sleepTimer = setInterval(() => {
 	void intake.refreshPanels().catch((e: unknown) => {
 		logger.error("seat panel refresh crashed", { error: String(e) });
 	});
+	void intake.watchLends().catch((e: unknown) => {
+		logger.error("hishaku lend watch crashed", { error: String(e) });
+	});
 }, 60_000);
 // hs の貸し出しの期限（数分）より短い間隔で延ばす
 const LEASE_RENEW_MS = 30_000;

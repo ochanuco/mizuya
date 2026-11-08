@@ -36,9 +36,17 @@ describe("貸し出し待ちの状態の欄", () => {
 				label: "引き継ぎ",
 				elapsedMs: null,
 				doing: null,
-				lent: 1234,
+				lent: { number: 1234, using: false },
 			}),
 		).toBe("状態: Mac に貸し出し待ち（1234）");
+		expect(
+			panelText({
+				label: "引き継ぎ",
+				elapsedMs: null,
+				doing: null,
+				lent: { number: 1234, using: true },
+			}),
+		).toBe("状態: Mac に貸し出し中（1234）");
 		expect(
 			panelText({
 				label: "引き継ぎ",

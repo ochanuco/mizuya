@@ -223,10 +223,6 @@ export const numberNote = (number: number) =>
 /** 引き継ぎの返事の最後に付ける。Mac でこの 1 行を打てば、席の会話の続きが開く。 */
 export const handoffOpenLine = (number: number) => `\`hs open ${number}\``;
 
-/** 席を起こそうとしたら、他の機械がこの投稿のセッションを借りていた。 */
-export const leaseHeldText = (holder: string) =>
-	`この投稿の続きは、いま ${holder === "" ? "別の機械" : holder} で開かれています。そちらで閉じてから、もう一度声をかけてください。`;
-
 /** 席がセッションを借りている間に、他の機械に取られた。 */
 export const LEASE_STOLEN_TEXT =
 	"この投稿の会話は別の機械で開かれました。ここで進めた分は枝として残してあります。";

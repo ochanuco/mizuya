@@ -2017,7 +2017,7 @@ describe("hishaku の番号", () => {
 		expect(s.seats.get("p1")?.status).toBe("working");
 	});
 
-	it("他の機械が借りていれば席を起こさず、持ち主を投稿に書く", async () => {
+	it("他の機械が借りていれば席を起こさず、書き込みを溜めて取り戻すボタンを出す", async () => {
 		const h = fakeHishaku();
 		h.behavior.prepare = () =>
 			err({
@@ -2028,11 +2028,17 @@ describe("hishaku の番号", () => {
 		const s = await setup({ hishaku: h });
 		s.d.addThread("p1", "README の誤字");
 		await s.intake.handle(say("p1", "README の誤字を直して", { first: true }));
-		expect(s.seats.get("p1")).toBeNull();
-		expect(s.d.sentTo("p1").at(-1)).toContain(
-			"いま mac-example で開かれています",
-		);
-		expect(s.d.tagsOf("p1")).toEqual(["tag-decide"]);
+		expect(s.o.opsOf("startSeat")).toHaveLength(1);
+		const seat = s.seats.get("p1");
+		expect(seat?.status).toBe("lent");
+		expect(seat?.pending.join()).toContain("README の誤字を直して");
+		expect(s.sys.sent.at(-1)).toMatchObject({
+			content:
+				"いまは Mac で作業中です（1234）。この書き込みは Mac が返したあとに席へ渡します。すぐこちらで続けるなら「取り戻す」を押してください。",
+			buttons: ["lend:takeback"],
+		});
+		expect(s.sys.panelIn("p1")).toBe("状態: Mac に貸し出し中（1234）");
+		expect(s.d.tagsOf("p1")).toEqual(["tag-handoff"]);
 	});
 
 	it("持ち主が自分のままなら（前の受付が返さずに落ちた）取り直して起こす", async () => {
@@ -2140,7 +2146,8 @@ describe("hishaku の番号", () => {
 		expect(s.sys.panelIn("p1")).toBe("状態: Mac に貸し出し待ち（1234）");
 		expect(s.d.tagsOf("p1")).toEqual(["tag-handoff"]);
 		expect(s.activity.map((e) => e.kind)).toEqual(["handoff"]);
-		expect(s.seats.get("p1")).toBeNull();
+		expect(s.seats.get("p1")?.status).toBe("lent");
+		expect(s.o.opsOf("removeWorktree")).toEqual(["/seats/seat-p1"]);
 	});
 
 	it("引き継ぎで会話を預けられなければ hs open を付けず、そう書き添える", async () => {
@@ -2194,5 +2201,257 @@ describe("hishaku の番号", () => {
 		const s = await setup({ hishaku: h });
 		await s.intake.startStandup("朝会の材料");
 		expect(h.calls).toEqual([]);
+	});
+});
+
+describe("Mac への貸し出しと取り戻し", () => {
+	const done = (dispatchId: string | null, body: string) =>
+		seatMessage({ type: "worker_done", dispatchId, body });
+	const ID = "11111111-2222-4333-8444-555555555555";
+	const MAC = "mac-example";
+	const macHolds = (
+		h: ReturnType<typeof fakeHishaku>,
+		generation: number,
+		pushedAt: string | null = null,
+	) => {
+		h.behavior.meta = () =>
+			ok({
+				holder: MAC,
+				generation,
+				leaseExpiresAt: new Date("2026-11-05T09:00:00Z"),
+				pushedAt: pushedAt === null ? null : new Date(pushedAt),
+			});
+	};
+	const macReturned = (
+		h: ReturnType<typeof fakeHishaku>,
+		generation: number,
+	) => {
+		h.behavior.meta = () =>
+			ok({ holder: null, generation, leaseExpiresAt: null, pushedAt: null });
+	};
+	const asked = (h: ReturnType<typeof fakeHishaku>) => {
+		h.behavior.renew = () => ok({ releaseRequestedBy: MAC });
+	};
+	/** Mac に頼まれ、手が止まっている席を渡したところまで進める。 */
+	const lend = async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "どちらにしますか\n状態: 決めてほしい"),
+		);
+		asked(h);
+		await s.intake.renewLeases();
+		return { h, s };
+	};
+
+	it("頼まれても作業中なら渡さず、ターンの終わりを待って預けて返し、席を閉じて貸し出し中にする", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		const seat = await openPost(s);
+		asked(h);
+		await s.intake.renewLeases();
+		expect(h.opsOf("push")).toEqual([]);
+		expect(s.seats.get("p1")?.status).toBe("working");
+		expect(s.seats.get("p1")?.releaseRequested).toBe(MAC);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "ここまで直しました\n状態: 決めてほしい"),
+		);
+		expect(h.opsOf("push")).toEqual([
+			{ number: 1234, generation: 1, cwd: "/seats/seat-p1", release: true },
+		]);
+		const ops = s.o.calls.map((c) => c.op);
+		expect(ops.indexOf("stopSeat")).toBeLessThan(ops.indexOf("removeWorktree"));
+		expect(s.seats.get("p1")?.status).toBe("lent");
+		expect(s.sys.sent.at(-1)).toMatchObject({
+			content: "Mac に貸し出しました（1234）。席は止めています。",
+			buttons: ["lend:takeback"],
+		});
+		expect(s.sys.panelIn("p1")).toBe("状態: Mac に貸し出し中（1234）");
+		expect(s.d.tagsOf("p1")).toEqual(["tag-handoff"]);
+	});
+
+	it("手が止まっている席は頼まれたらすぐ渡す。自分の Commander の頼みは渡さない", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "どちらにしますか\n状態: 決めてほしい"),
+		);
+		h.behavior.renew = () => ok({ releaseRequestedBy: "box01" });
+		await s.intake.renewLeases();
+		expect(s.seats.get("p1")?.status).toBe("waiting");
+		asked(h);
+		await s.intake.renewLeases();
+		expect(h.opsOf("push")).toHaveLength(1);
+		expect(s.seats.get("p1")?.status).toBe("lent");
+	});
+
+	it("貸し出し中は meta を見て、Mac が借りたら再開を、返したら戻ったことを 1 度ずつ書いて状態を戻す", async () => {
+		const { h, s } = await lend();
+		await s.intake.watchLends();
+		expect(s.sys.sentTo("p1").filter((t) => t.startsWith("Mac で"))).toEqual(
+			[],
+		);
+		macHolds(h, 2);
+		s.advance(5 * 60_000);
+		await s.intake.watchLends();
+		await s.intake.watchLends();
+		expect(s.sys.sentTo("p1").filter((t) => t.startsWith("Mac で"))).toEqual([
+			"Mac で再開しました（17:05）。",
+		]);
+		expect(s.sys.panelIn("p1")).toBe("状態: Mac に貸し出し中（1234）");
+		macReturned(h, 2);
+		await s.intake.watchLends();
+		await s.intake.watchLends();
+		expect(
+			s.sys.sentTo("p1").filter((t) => t.startsWith("Mac から戻りました")),
+		).toEqual([
+			"Mac から戻りました。この投稿に書けば、席が前の会話のまま続けます。",
+		]);
+		expect(s.seats.get("p1")).toBeNull();
+		expect(s.sys.panelIn("p1")).toBe("状態: 決めてほしい");
+		expect(s.d.tagsOf("p1")).toEqual(["tag-decide"]);
+		h.behavior.prepare = () =>
+			ok({ agent: "claude", sessionId: ID, resume: true, generation: 3 });
+		await s.intake.handle(say("p1", "続きをお願い"));
+		const starts = s.o.opsOf("startSeat") as { how: unknown; spec: string }[];
+		expect(starts[1]?.how).toEqual({ sessionId: ID, resume: true });
+		expect(starts[1]?.spec).toContain("続きをお願い");
+	});
+
+	it("引き継ぎの貸し出し待ちは、見回りの合間に Mac が借りて返しても世代が進んでいれば戻ったと分かる", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "Mac に引き継ぎます\n状態: 引き継ぎ"),
+		);
+		macReturned(h, 1);
+		await s.intake.watchLends();
+		expect(s.seats.get("p1")?.status).toBe("lent");
+		expect(s.sys.panelIn("p1")).toBe("状態: Mac に貸し出し待ち（1234）");
+		macReturned(h, 2);
+		await s.intake.watchLends();
+		expect(s.seats.get("p1")).toBeNull();
+		expect(s.sys.sentTo("p1").at(-1)).toBe(
+			"Mac から戻りました。この投稿に書けば、席が前の会話のまま続けます。",
+		);
+	});
+
+	it("貸し出し中に書かれたら席に渡さずに溜め、Mac が返したら溜めた分を渡して席を起こす", async () => {
+		const { h, s } = await lend();
+		macHolds(h, 2);
+		await s.intake.watchLends();
+		await s.intake.handle(say("p1", "B でお願い"));
+		expect(s.o.opsOf("startSeat")).toHaveLength(1);
+		expect(s.o.opsOf("send")).toEqual([]);
+		expect(s.sys.sent.at(-1)).toMatchObject({
+			content:
+				"いまは Mac で作業中です（1234）。この書き込みは Mac が返したあとに席へ渡します。すぐこちらで続けるなら「取り戻す」を押してください。",
+			buttons: ["lend:takeback"],
+		});
+		macReturned(h, 2);
+		h.behavior.prepare = () =>
+			ok({ agent: "claude", sessionId: ID, resume: true, generation: 3 });
+		await s.intake.watchLends();
+		const starts = s.o.opsOf("startSeat") as { how: unknown; spec: string }[];
+		expect(starts).toHaveLength(2);
+		expect(starts[1]?.how).toEqual({ sessionId: ID, resume: true });
+		expect(starts[1]?.spec).toContain(
+			"Mac に貸している間に持ち主が投稿に書いたこと",
+		);
+		expect(starts[1]?.spec).toContain("B でお願い");
+		expect(s.sys.sentTo("p1")).toContain(
+			"Mac から戻りました。貸し出し中の書き込みを席に渡して、前の会話のまま続けます。",
+		);
+		expect(s.seats.get("p1")?.status).toBe("working");
+		expect(s.seats.get("p1")?.lend).toBeNull();
+	});
+
+	it("取り戻すは確かめてから貸し出しを奪い、席を前の会話のまま起こして両方の bot で知らせる", async () => {
+		const { h, s } = await lend();
+		macHolds(h, 2, "2026-11-05T07:40:00.000Z");
+		await s.intake.watchLends();
+		await s.intake.press(press("p1", "x", "lend:takeback"));
+		expect(s.sys.sent.at(-1)).toMatchObject({
+			content:
+				"Mac はまだ 1234 を持っています（最後に預けたのは 16:40）。取り戻すと、Mac でそのあとに進んだ分は正本に入らず、枝として残ります。",
+			buttons: ["lend:confirm", "lend:cancel"],
+		});
+		expect(h.opsOf("prepare")).toHaveLength(1);
+		const confirm = `sent${s.sys.sent.length}`;
+		h.behavior.prepare = () =>
+			ok({ agent: "claude", sessionId: ID, resume: true, generation: 3 });
+		await s.intake.press(press("p1", confirm, "lend:confirm"));
+		expect(h.opsOf("prepare").at(-1)).toEqual({
+			number: 1234,
+			cwd: "/seats/seat-p1",
+			takeover: true,
+		});
+		const starts = s.o.opsOf("startSeat") as { how: unknown; spec: string }[];
+		expect(starts[1]?.how).toEqual({ sessionId: ID, resume: true });
+		expect(starts[1]?.spec).toContain("Mac からこの投稿の会話を取り戻した");
+		expect(s.sys.sentTo("p1")).toContain(
+			"取り戻しました（世代 3）。席を前の会話のまま起こします。",
+		);
+		expect(s.d.sentTo("p1").at(-1)).toBe(
+			"戻りました。Mac で 16:40 までに進めたところから続けますね。",
+		);
+		expect(s.seats.get("p1")?.status).toBe("working");
+		expect(s.seats.get("p1")?.lease).toBe(3);
+		expect(s.seats.get("p1")?.takeback).toBeNull();
+		expect(s.sys.edited.get(confirm)?.content).toContain("取り戻すと");
+		// 二度押しても何も起きない
+		await s.intake.press(press("p1", confirm, "lend:confirm"));
+		expect(h.opsOf("prepare")).toHaveLength(2);
+	});
+
+	it("Mac が置いた時刻を Manager が知らせなければ、受付が最後に預けた時刻を見せる", async () => {
+		const { h, s } = await lend();
+		macHolds(h, 2);
+		await s.intake.press(press("p1", "x", "lend:takeback"));
+		expect(s.sys.sent.at(-1)?.content).toContain("最後に預けたのは 17:00");
+	});
+
+	it("やめるなら何もせずボタンを外す。持ち主以外の押下は無視する", async () => {
+		const { h, s } = await lend();
+		macHolds(h, 2);
+		await s.intake.press(press("p1", "x", "lend:takeback", "someone"));
+		expect(s.sys.sentTo("p1").some((t) => t.startsWith("Mac はまだ"))).toBe(
+			false,
+		);
+		await s.intake.press(press("p1", "x", "lend:takeback"));
+		const confirm = `sent${s.sys.sent.length}`;
+		await s.intake.press(press("p1", confirm, "lend:confirm", "someone"));
+		await s.intake.press(press("p1", confirm, "lend:cancel"));
+		expect(s.sys.edited.get(confirm)?.content).toContain(
+			"取り戻すのをやめました。",
+		);
+		expect(h.opsOf("prepare")).toHaveLength(1);
+		expect(s.seats.get("p1")?.status).toBe("lent");
+	});
+
+	it("取り戻すを押したときに Mac がもう返していれば、奪わずに戻す", async () => {
+		const { h, s } = await lend();
+		macReturned(h, 2);
+		await s.intake.press(press("p1", "x", "lend:takeback"));
+		expect(s.sys.sentTo("p1").at(-1)).toBe(
+			"Mac から戻りました。この投稿に書けば、席が前の会話のまま続けます。",
+		);
+		expect(s.seats.get("p1")).toBeNull();
+	});
+
+	it("貸し出し中の席は受付を作り直しても貸し出し中のまま読み直す", async () => {
+		const { s } = await lend();
+		const reopened = await openSeatStore(s.stateDir);
+		expect(reopened.get("p1")?.status).toBe("lent");
+		expect(reopened.get("p1")?.lend).toEqual({
+			number: 1234,
+			savedAt: T0,
+			generation: 1,
+			mac: false,
+			requested: true,
+		});
 	});
 });
