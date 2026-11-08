@@ -110,12 +110,40 @@ RUN arch="$(dpkg --print-architecture)" \
 	&& install -m 755 hs /usr/local/bin/hs \
 	&& cd / && rm -rf /tmp/hs
 
+# 席の Claude の Bash の出力を縮める CLI。managed settings の PreToolUse hook（rtk hook claude）がコマンドを書き換えて通す。
+# hs と同じく、版ごとの sha256 を持たずその版の checksums.txt で確かめる。
+# renovate: datasource=github-releases depName=rtk-ai/rtk
+ARG RTK_VERSION=1.1.0
+RUN arch="$(dpkg --print-architecture)" \
+	&& case "$arch" in \
+		amd64) asset=rtk-x86_64-unknown-linux-musl.tar.gz ;; \
+		arm64) asset=rtk-aarch64-unknown-linux-gnu.tar.gz ;; \
+		*) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+	esac \
+	&& base="https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}" \
+	&& mkdir -p /tmp/rtk \
+	&& curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o "/tmp/rtk/$asset" "$base/$asset" \
+	&& curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o /tmp/rtk/checksums.txt "$base/checksums.txt" \
+	&& cd /tmp/rtk \
+	&& grep " $asset\$" checksums.txt | sha256sum -c - \
+	&& tar -xzf "$asset" rtk \
+	&& install -m 755 rtk /usr/local/bin/rtk \
+	&& cd / && rm -rf /tmp/rtk
+
+# 席の Claude の plugin TokenEconomizer。managed settings が directory の marketplace として指し、enabledPlugins で強制的に有効にする
+# （allowManagedHooksOnly の下で plugin の hook が動くのは、managed settings が有効にしたものだけ）。plugin は clone の symlink を辿るので clone ごと置く。
+# renovate: datasource=github-tags depName=microsoft/TokenEconomizer
+ARG TOKENECONOMIZER_VERSION=v0.1.0
+ADD https://github.com/microsoft/TokenEconomizer.git#${TOKENECONOMIZER_VERSION} /opt/tokeneconomizer
+
 # 席の Claude の手順書（orchestration の preamble）はコマンドを orca と書く。
 RUN ln -s /usr/bin/orca-ide /usr/local/bin/orca
 
 # 取り消せない操作を止める PreToolUse hook。managed settings も hook も root の持ち物にし、
 # Claude CLI（worker で動く）が書き換えて止めるのをやめさせられないようにする。
 COPY apps/working/guard/managed-settings.json /etc/claude-code/managed-settings.json
+# rtk が縮めた出力の読み方を席の Claude に伝える managed の CLAUDE.md。
+COPY apps/working/guard/CLAUDE.md /etc/claude-code/CLAUDE.md
 COPY apps/working/guard/codex-requirements.toml /etc/codex/requirements.toml
 COPY apps/working/src/guard/hook.ts apps/working/src/guard/decide.ts \
 	apps/working/src/guard/env.ts apps/working/src/guard/ledger.ts \
@@ -136,6 +164,8 @@ WORKDIR /home/worker
 RUN mkdir -p /home/worker/.claude /home/worker/.codex /home/worker/.config /home/worker/state /home/worker/work
 # Orca は席の worktree を ~/orca/workspaces に作る。作り直しても席が残るよう work の volume に置く。
 RUN ln -s /home/worker/work/orca /home/worker/orca
+# TokenEconomizer が repo ごとに学んだことも、作り直しで消えないよう work の volume に置く。
+RUN ln -s /home/worker/work/.tokeneconomizer /home/worker/.tokeneconomizer
 
 RUN curl -fsSL https://claude.ai/install.sh | bash
 RUN git config --global credential.helper '!gh auth git-credential'

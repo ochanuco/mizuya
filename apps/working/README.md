@@ -19,6 +19,7 @@ Working（仕事）を受け持つコンテナ。`orca serve`、Claude CLI、Cod
 | `src/repo-map/`                 | 受付が chabatake の `repo-map.yaml` を取って `STATE_DIR` に写しを置く処理と、席の Claude の SessionStart hook。hook は node の組み込みだけで書き、`/opt/mizuya-repo-map/` に置いて node で直接動かす                                                                     |
 | `guard/managed-settings.json`   | hook を登録する Claude CLI の managed settings。`/etc/claude-code/` に置く                                                                                                                                                                                               |
 | `guard/codex-requirements.toml` | 同じ hook を登録する Codex CLI の managed な要件。`/etc/codex/requirements.toml` に置く                                                                                                                                                                                  |
+| `guard/CLAUDE.md`               | rtk が縮めた出力の読み方を席の Claude に伝える managed の CLAUDE.md。`/etc/claude-code/` に置く                                                                                                                                                                          |
 | `start.sh`                      | コンテナの entrypoint。受付と、引数で渡したコマンド（`orca-ide serve …`）を並べて動かし、どちらかが終わればコンテナを終わらせる                                                                                                                                          |
 | `seat-env.sh`                   | start.sh が `orca-ide serve` をこれ越しに起動する。席の Claude は orca serve の環境変数を受け継ぐので、渡してよい変数だけに絞る                                                                                                                                          |
 | `release-orcad-lock.sh`         | `orca-ide serve` の前に start.sh が呼ぶ。前のコンテナの orcad が volume に残した `orcad.lock` を消す                                                                                                                                                                     |
@@ -202,6 +203,8 @@ managed settings（`/etc/claude-code/managed-settings.json`、root の持ち物�
 - PermissionDenied hook（同じ `hook.ts`）: auto モードが止めた操作を、その投稿に紐づけて記録する。受付が質問に書き添える。
 - SessionStart hook（`src/repo-map/hook.ts`）: 手元のリポジトリを含む関連リポジトリセットを出す（「関連リポジトリセット」の節）。
 - `autoMode.allow`: `ochanuco/*` の PR のマージを、auto モードの既定の「Merge Without Review」の対象から外す。持ち主ひとりで回していて approve する人がいないため。持ち主が頼んだマージか、席が頼まれた作業のために開いた PR に限る。`--admin` での必須チェックの回避は外さない。
+- PreToolUse hook（`rtk hook claude`、Bash だけ）: rtk が出力を縮めるよう Bash のコマンドを書き換える。guard と並んで動き、guard が止めればそちらが勝つ。
+- `extraKnownMarketplaces` と `enabledPlugins`: TokenEconomizer（image の `/opt/tokeneconomizer`）を強制的に有効にする。`allowManagedHooksOnly` の下で plugin の hook が動くのは、managed settings が有効にした plugin だけ。start.sh が起動のたびに `claude plugin install` で入れる。学んだことは `~/.tokeneconomizer`（work の volume）に残る。
 - `ENABLE_TOOL_SEARCH=false`: MCP の道具を遅延読み込みせず、最初から読み込む。席の Claude は `ToolSearch` を使わずに chimera などの道具を呼べる。
 
 hook は席の場所（`CLAUDE_PROJECT_DIR`）で、止めた操作の紐づけ先をその投稿にする。
