@@ -184,6 +184,28 @@ describe("createDiscordRest", () => {
 		expect(!r.ok && r.error.type).toBe("ExternalServiceUnavailable");
 	});
 
+	it("フォーラムのタグの絵文字は Unicode のものだけ読み、無いかカスタム絵文字なら null にする", async () => {
+		const fetch = vi.fn(async () =>
+			json({
+				id: "f1",
+				name: "仕事",
+				available_tags: [
+					{ id: "a", name: "完了", emoji_id: null, emoji_name: "🎉" },
+					{ id: "b", name: "作業中", emoji_id: null, emoji_name: null },
+					{ id: "c", name: "見張り中", emoji_id: "900", emoji_name: "eyes" },
+					{ id: "d", name: "引き継ぎ" },
+				],
+			}),
+		);
+		const r = await createDiscordRest({ token: "t", fetch }).getChannel("f1");
+		expect(r.ok && r.value.availableTags).toEqual([
+			{ id: "a", name: "完了", emoji: "🎉" },
+			{ id: "b", name: "作業中", emoji: null },
+			{ id: "c", name: "見張り中", emoji: null },
+			{ id: "d", name: "引き継ぎ", emoji: null },
+		]);
+	});
+
 	it("2xx 以外は状態とエラーコード・メッセージをログに残し、トークンは出さない", async () => {
 		const logs: Record<string, unknown>[] = [];
 		const logger = {

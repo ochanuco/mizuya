@@ -25,12 +25,13 @@ import {
 	seatStartFailedText,
 } from "./intake.ts";
 import { err, ok, type PartnerId } from "./lib/core.ts";
-import { externalServiceUnavailable } from "./lib/errors.ts";
+import { externalServiceUnavailable, rateLimited } from "./lib/errors.ts";
 import { silentLogger } from "./logger.ts";
 import { openSeatStore } from "./seat-store.ts";
 import {
 	aiCommand,
 	BOT,
+	EMOJI_TAGS,
 	envelope,
 	FORUM,
 	fakeDiscord,
@@ -116,6 +117,7 @@ const setup = async (
 	const ledger = createLedger(guardDirOf(stateDir));
 	let g = 0;
 	const timers = new Set<() => void>();
+	const delayed: { ms: number; fn: () => void }[] = [];
 	const deps: IntakeDeps = {
 		discord: asBot(d.api, writes.yukarin),
 		akarin: opts.akarin
@@ -162,6 +164,9 @@ const setup = async (
 			timers.add(fn);
 			return () => timers.delete(fn);
 		},
+		after: (ms, fn) => {
+			delayed.push({ ms, fn });
+		},
 		logger: silentLogger,
 		seatReplied: opts.seatReplied,
 	};
@@ -180,6 +185,11 @@ const setup = async (
 		intake: createIntake(deps),
 		advance: (ms: number) => {
 			clock += ms;
+		},
+		delayed,
+		/** 待たせた呼び出しをすべて呼ぶ。 */
+		fireDelayed: () => {
+			for (const t of delayed.splice(0)) t.fn();
 		},
 		/** 入力中の表示のタイマーを 1 回分進める。 */
 		tick: () => {
@@ -2583,5 +2593,152 @@ describe("Mac への貸し出しと取り戻し", () => {
 		expect(s.sys.sentTo("p1").at(-1)).toBe(
 			"Mac から戻りました。この投稿に書けば、席が前の会話のまま続けます。",
 		);
+	});
+});
+
+describe("件名の状態の絵文字", () => {
+	const done = (dispatchId: string | null, body: string) =>
+		seatMessage({ type: "worker_done", dispatchId, body });
+	/** 状態のタグに絵文字を付けたフォーラムで受付を作る。 */
+	const emojiSetup = async (
+		opts: { hishaku?: ReturnType<typeof fakeHishaku> } = {},
+	) => {
+		const d = fakeDiscord();
+		const forum = d.channels.get(FORUM);
+		if (!forum) throw new Error("no forum");
+		d.channels.set(FORUM, { ...forum, availableTags: EMOJI_TAGS });
+		return setup({ d, ...opts });
+	};
+	const nameOf = (s: Awaited<ReturnType<typeof setup>>) =>
+		s.d.channels.get("p1")?.name;
+
+	it.each([
+		["完了", "🎉[1234] README の誤字"],
+		["決めてほしい", "🤔[1234] README の誤字"],
+		["見張り中", "👀[1234] README の誤字"],
+		["引き継ぎ", "👨‍💼[1234] README の誤字"],
+	])("%s になったら件名の頭に絵文字を付ける", async (status, title) => {
+		const s = await emojiSetup({ hishaku: fakeHishaku() });
+		const seat = await openPost(s);
+		expect(nameOf(s)).toBe("[1234] README の誤字");
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, `済みました\n状態: ${status}`),
+		);
+		expect(nameOf(s)).toBe(title);
+		expect(s.seats.pendingTitleOf("p1")).toBeNull();
+	});
+
+	it("作業中に戻っても件名は前の絵文字のまま", async () => {
+		const s = await emojiSetup({ hishaku: fakeHishaku() });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "どちらにしますか\n状態: 決めてほしい"),
+		);
+		expect(nameOf(s)).toBe("🤔[1234] README の誤字");
+		const calls = vi.mocked(s.d.api.renameThread).mock.calls.length;
+		await s.intake.handle(say("p1", "A で"));
+		expect(s.d.tagsOf("p1")).toEqual(["tag-working"]);
+		expect(nameOf(s)).toBe("🤔[1234] README の誤字");
+		expect(vi.mocked(s.d.api.renameThread).mock.calls).toHaveLength(calls);
+	});
+
+	it("番号の無い投稿は絵文字と件名の間に空白を置く", async () => {
+		const s = await emojiSetup();
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "直しました\n状態: 完了"),
+		);
+		expect(nameOf(s)).toBe("🎉 README の誤字");
+	});
+
+	it("絵文字の無いタグやカスタム絵文字のタグでは絵文字を付けず、前の絵文字も外す", async () => {
+		const d = fakeDiscord();
+		const forum = d.channels.get(FORUM);
+		if (!forum) throw new Error("no forum");
+		d.channels.set(FORUM, {
+			...forum,
+			availableTags: EMOJI_TAGS.map((t) =>
+				t.name === "完了" ? { ...t, emoji: null } : t,
+			),
+		});
+		const s = await setup({ d, hishaku: fakeHishaku() });
+		s.d.addThread("p1", "🤔[1234] README の誤字");
+		await s.intake.handle(say("p1", "README の誤字を直して", { first: true }));
+		const seat = s.seats.get("p1");
+		await s.intake.onSeatMessage(
+			done(seat?.dispatchId ?? null, "直しました\n状態: 完了"),
+		);
+		expect(nameOf(s)).toBe("[1234] README の誤字");
+	});
+
+	it("同じ件名なら名前を変えない", async () => {
+		const s = await emojiSetup({ hishaku: fakeHishaku() });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "question",
+				dispatchId: seat.dispatchId,
+				body: "A か B か",
+			}),
+		);
+		expect(nameOf(s)).toBe("🤔[1234] README の誤字");
+		const calls = vi.mocked(s.d.api.renameThread).mock.calls.length;
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "やはり聞きたい\n状態: 決めてほしい"),
+		);
+		expect(vi.mocked(s.d.api.renameThread).mock.calls).toHaveLength(calls);
+	});
+
+	it("名前の変更の制限に当たったら、待ってから最後に覚えた件名だけを付ける", async () => {
+		const s = await emojiSetup({ hishaku: fakeHishaku() });
+		const seat = await openPost(s);
+		const rename = vi.mocked(s.d.api.renameThread);
+		rename.mockImplementationOnce(async () =>
+			err(rateLimited({ retryAfterMs: 300_000 })),
+		);
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "question",
+				dispatchId: seat.dispatchId,
+				body: "A か B か",
+			}),
+		);
+		expect(nameOf(s)).toBe("[1234] README の誤字");
+		// 状態の欄とタグは止めない
+		expect(s.d.tagsOf("p1")).toEqual(["tag-decide"]);
+		expect(s.delayed.map((t) => t.ms)).toEqual([300_000]);
+		await s.intake.handle(say("p1", "A で"));
+		await s.intake.onSeatMessage(
+			done(s.seats.get("p1")?.dispatchId ?? null, "直しました\n状態: 完了"),
+		);
+		// 待っている間は呼ばず、付けたい件名だけを覚え直す
+		expect(rename.mock.calls.map((c) => c[1])).toEqual([
+			"[1234] README の誤字",
+			"🤔[1234] README の誤字",
+		]);
+		const reopened = await openSeatStore(s.stateDir);
+		expect(reopened.pendingTitleOf("p1")).toBe("🎉[1234] README の誤字");
+		s.fireDelayed();
+		await vi.waitFor(() => expect(nameOf(s)).toBe("🎉[1234] README の誤字"));
+		expect(rename.mock.calls.map((c) => c[1])).toEqual([
+			"[1234] README の誤字",
+			"🤔[1234] README の誤字",
+			"🎉[1234] README の誤字",
+		]);
+		await vi.waitFor(() => expect(s.seats.pendingTitleOf("p1")).toBeNull());
+	});
+
+	it("起動時に、前の受付が付けられなかった件名を付ける", async () => {
+		const d = fakeDiscord();
+		const forum = d.channels.get(FORUM);
+		if (!forum) throw new Error("no forum");
+		d.channels.set(FORUM, { ...forum, availableTags: EMOJI_TAGS });
+		const stateDir = tempDir();
+		const store = await openSeatStore(stateDir);
+		await store.setPendingTitle("p1", "🎉[1234] README の誤字");
+		d.addThread("p1", "[1234] README の誤字");
+		const s = await setup({ d, stateDir });
+		await s.intake.reconcile();
+		await vi.waitFor(() => expect(nameOf(s)).toBe("🎉[1234] README の誤字"));
 	});
 });

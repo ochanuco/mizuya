@@ -64,6 +64,7 @@ import type {
 } from "./orca.ts";
 import {
 	backgroundReplyNote,
+	composeTitle,
 	fallbackTitle,
 	forumPostBody,
 	forumStarterPrompt,
@@ -78,6 +79,7 @@ import {
 	numberedTitle,
 	numberNote,
 	type PickedIssue,
+	parseTitle,
 	replyPrompt,
 	requestPrompt,
 	restartNote,
@@ -114,6 +116,8 @@ import {
 	WORK_STATUSES,
 	type WorkStatus,
 } from "./work-status.ts";
+
+type StatusTag = { id: string; emoji: string | null };
 
 /** 席を受け持つパートナーの bot と、その席に渡す前置き。 */
 export type SeatPartner = {
@@ -183,11 +187,20 @@ export type IntakeDeps = {
 	now?: () => Date;
 	/** ms ごとに fn を呼び、止める関数を返す。入力中の表示を送り続けるのに使う。 */
 	every?: (ms: number, fn: () => void) => () => void;
+	/** ms たったら fn を 1 回呼ぶ。件名の変更の制限が解けるのを待つのに使う。 */
+	after?: (ms: number, fn: () => void) => void;
 	logger: Logger;
 };
 
 /** Discord の入力中の表示は約 10 秒で消えるので、それより短い間隔で送り直す。 */
 export const TYPING_EVERY_MS = 8_000;
+
+/** Discord はスレッドの名前の変更を 1 スレッドあたり 10 分に 2 回までに抑える。待つ長さが分からないときはこれだけ待つ。 */
+const RENAME_WINDOW_MS = 10 * 60_000;
+
+const defaultAfter = (ms: number, fn: () => void) => {
+	setTimeout(fn, ms).unref();
+};
 
 const defaultEvery = (ms: number, fn: () => void) => {
 	const timer = setInterval(fn, ms);
@@ -324,9 +337,10 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	const newGrantId = deps.newGrantId ?? randomUUID;
 	const queue = createKeyedQueue();
 	const parentOf = new Map<string, string | null>();
-	let tagIds: Map<WorkStatus, string> | null = null;
+	let statusTagInfo: Map<WorkStatus, StatusTag> | null = null;
 	let modelTagIds: Map<string, string> | null = null;
 	const every = deps.every ?? defaultEvery;
+	const after = deps.after ?? defaultAfter;
 
 	const yukarin: SeatPartner = {
 		discord: deps.discord,
@@ -420,23 +434,33 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		},
 	};
 
-	const statusTags = async (): Promise<Map<WorkStatus, string>> => {
-		if (tagIds) return tagIds;
+	/** 状態のタグ名 → ID と絵文字。絵文字は mizuya に書き写さず、フォーラムのタグから引く。 */
+	const statusTagsOf = async (): Promise<Map<WorkStatus, StatusTag>> => {
+		if (statusTagInfo) return statusTagInfo;
 		const forum = await deps.discord.getChannel(deps.workForumChannelId);
 		if (!forum.ok) {
 			log.warn("forum tags unavailable", { error: forum.error.type });
 			return new Map();
 		}
-		const found = new Map<WorkStatus, string>();
+		const found = new Map<WorkStatus, StatusTag>();
 		for (const name of WORK_STATUSES) {
 			const tag = forum.value.availableTags.find((t) => t.name === name);
-			if (tag) found.set(name, tag.id);
+			if (tag) found.set(name, { id: tag.id, emoji: tag.emoji ?? null });
 			else log.warn("forum tag missing", { tag: name });
 		}
 		// タグは後からフォーラムに足せるので、欠けている間は覚えずに次も引き直す
-		if (found.size === WORK_STATUSES.length) tagIds = found;
+		if (found.size === WORK_STATUSES.length) statusTagInfo = found;
 		return found;
 	};
+
+	const statusTags = async (): Promise<Map<WorkStatus, string>> =>
+		new Map([...(await statusTagsOf())].map(([k, t]) => [k, t.id]));
+
+	/** 件名の頭に付けうる状態の絵文字。件名から外すときに使う。 */
+	const statusEmojis = async (): Promise<string[]> =>
+		[...(await statusTagsOf()).values()].flatMap((t) =>
+			t.emoji ? [t.emoji] : [],
+		);
 
 	/** モデルのタグ名 → ID。状態のタグと同じく、欠けている間は覚えずに次も引き直す。 */
 	const modelTags = async (): Promise<Map<string, string>> => {
@@ -612,11 +636,81 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		const same =
 			next.length === thread.value.appliedTagIds.length &&
 			next.every((id) => thread.value.appliedTagIds.includes(id));
-		if (same) return;
-		const r = await botOf(threadId).setTags(threadId, next);
-		if (!r.ok) {
-			log.warn("set tags failed", { thread_id: threadId, error: r.error.type });
+		if (!same) {
+			const r = await botOf(threadId).setTags(threadId, next);
+			if (!r.ok) {
+				log.warn("set tags failed", {
+					thread_id: threadId,
+					error: r.error.type,
+				});
+			}
 		}
+		// 作業中は返事のたびに行き来するので、件名は前の状態の絵文字のままにして名前の変更の枠を使わない
+		if (status !== "作業中" && thread.value.name !== null) {
+			await retitle(threadId, thread.value.name, status);
+		}
+	};
+
+	/** 件名の変更の制限が解けるのを待っている投稿。 */
+	const titleWaits = new Set<string>();
+
+	/**
+	 * 覚えた付けたい件名を投稿に付ける。今の件名と同じなら呼ばない。
+	 * 名前の変更の制限に当たったら、解けるのを待ってから、その時に覚えている最後の件名だけを付ける。
+	 */
+	const applyTitle = async (threadId: string, current: string | null) => {
+		if (titleWaits.has(threadId)) return;
+		const want = deps.seats.pendingTitleOf(threadId);
+		if (want === null) return;
+		if (current === want) {
+			await deps.seats.setPendingTitle(threadId, null);
+			return;
+		}
+		const r = await botOf(threadId).renameThread(threadId, want);
+		if (r.ok) {
+			if (deps.seats.pendingTitleOf(threadId) === want) {
+				await deps.seats.setPendingTitle(threadId, null);
+			}
+			return;
+		}
+		if (r.error.type === "RateLimited") {
+			const waitMs = r.error.retryAfterMs ?? RENAME_WINDOW_MS;
+			log.warn("thread rename rate limited; retry later", {
+				thread_id: threadId,
+				retry_after_ms: waitMs,
+			});
+			titleWaits.add(threadId);
+			after(waitMs, () => {
+				titleWaits.delete(threadId);
+				void queue.run(threadId, async () => {
+					const ch = await deps.discord.getChannel(threadId);
+					await applyTitle(threadId, ch.ok ? ch.value.name : null);
+				});
+			});
+			return;
+		}
+		log.warn("thread rename failed", {
+			thread_id: threadId,
+			error: r.error.type,
+		});
+		await deps.seats.setPendingTitle(threadId, null);
+	};
+
+	/** 件名の頭の状態の絵文字を status のものに替える。タグに Unicode の絵文字が無ければ絵文字を外す。 */
+	const retitle = async (
+		threadId: string,
+		name: string,
+		status: WorkStatus,
+	) => {
+		const tags = await statusTagsOf();
+		const t = parseTitle(name, await statusEmojis());
+		const want = composeTitle(
+			tags.get(status)?.emoji ?? null,
+			t.number ?? deps.seats.numberOf(threadId),
+			t.base,
+		);
+		await deps.seats.setPendingTitle(threadId, want);
+		await applyTitle(threadId, name);
 	};
 
 	const setModelTag = async (threadId: string, model: string) => {
@@ -662,7 +756,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	const titleOf = async (threadId: string): Promise<string | null> => {
 		const ch = await deps.discord.getChannel(threadId);
 		return ch.ok && ch.value.name !== null
-			? unnumberedTitle(ch.value.name)
+			? unnumberedTitle(ch.value.name, await statusEmojis())
 			: null;
 	};
 
@@ -683,7 +777,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		const created = await hishaku.createSession({
 			postId: threadId,
 			agent: agentOf(partnerOf(threadId)),
-			title: unnumberedTitle(name) || threadId,
+			title: unnumberedTitle(name, await statusEmojis()) || threadId,
 			repo,
 			branch: null,
 		});
@@ -696,15 +790,16 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		}
 		const { number } = created.value;
 		await deps.seats.setNumber(threadId, number);
-		const named = numberedTitle(number, name);
-		if (ch.ok && name !== "" && named !== name) {
-			const r = await botOf(threadId).renameThread(threadId, named);
-			if (!r.ok) {
-				log.warn("thread rename failed", {
-					thread_id: threadId,
-					error: r.error.type,
-				});
-			}
+		if (ch.ok && name !== "") {
+			// 先に覚えた付けたい件名（状態の絵文字）があれば、それに番号を足す
+			const emojis = await statusEmojis();
+			const named = numberedTitle(
+				number,
+				deps.seats.pendingTitleOf(threadId) ?? name,
+				emojis,
+			);
+			await deps.seats.setPendingTitle(threadId, named);
+			await applyTitle(threadId, name);
 		}
 		log.info("hishaku session numbered", { thread_id: threadId, number });
 		return number;
@@ -2586,6 +2681,14 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			);
 		},
 		reconcile: async () => {
+			await statusTagsOf();
+			// 前の受付が制限で待っていた件名を付ける
+			for (const threadId of deps.seats.pendingTitles()) {
+				void queue.run(threadId, async () => {
+					const ch = await deps.discord.getChannel(threadId);
+					await applyTitle(threadId, ch.ok ? ch.value.name : null);
+				});
+			}
 			const [live, residue] = await Promise.all([
 				deps.orca.liveTerminals(),
 				deps.orca.residue(),

@@ -167,6 +167,7 @@ const fileSchema = v.object({
 	partners: v.optional(v.record(v.string(), v.picklist(PARTNER_IDS)), {}),
 	models: v.optional(v.record(v.string(), v.string()), {}),
 	numbers: v.optional(v.record(v.string(), v.number()), {}),
+	titles: v.optional(v.record(v.string(), v.string()), {}),
 });
 
 export type SeatStore = {
@@ -186,6 +187,14 @@ export type SeatStore = {
 	/** 投稿の hishaku の番号。席を閉じたあとも残し、同じ投稿でまた席を開くときに同じセッションを続ける。 */
 	numberOf: (threadId: string) => number | null;
 	setNumber: (threadId: string, number: number) => Promise<void>;
+	/**
+	 * 投稿にまだ付けられていない、付けたい件名。名前の変更の制限で待つ間も受付を作り直す間も残し、最後に覚えたものだけを付ける。
+	 * null で消す。
+	 */
+	pendingTitleOf: (threadId: string) => string | null;
+	setPendingTitle: (threadId: string, name: string | null) => Promise<void>;
+	/** 付けたい件名が残っている投稿。 */
+	pendingTitles: () => string[];
 };
 
 export const newSeat = (threadId: string, standup = false): Seat => ({
@@ -231,6 +240,7 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 	const partners = new Map<string, PartnerId>();
 	const models = new Map<string, string>();
 	const numbers = new Map<string, number>();
+	const titles = new Map<string, string>();
 	let orca: { runId: string | null; reception: string | null } = {
 		runId: null,
 		reception: null,
@@ -257,6 +267,9 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 		}
 		for (const [id, n] of Object.entries(parsed.output.numbers)) {
 			numbers.set(id, n);
+		}
+		for (const [id, t] of Object.entries(parsed.output.titles)) {
+			titles.set(id, t);
 		}
 		for (const [id, s] of Object.entries(parsed.output.seats)) {
 			seats.set(id, {
@@ -368,6 +381,7 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 			partners: Object.fromEntries(partners),
 			models: Object.fromEntries(models),
 			numbers: Object.fromEntries(numbers),
+			titles: Object.fromEntries(titles),
 		};
 		// 書きかけで落ちても前の内容が残るよう、別名に書いてから置き換える
 		writing = writing.then(async () => {
@@ -421,5 +435,13 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 			numbers.set(id, number);
 			return flush();
 		},
+		pendingTitleOf: (id) => titles.get(id) ?? null,
+		setPendingTitle: (id, name) => {
+			if ((titles.get(id) ?? null) === name) return Promise.resolve();
+			if (name === null) titles.delete(id);
+			else titles.set(id, name);
+			return flush();
+		},
+		pendingTitles: () => [...titles.keys()],
 	};
 };

@@ -73,16 +73,26 @@ const channelSchema = v.object({
 	parent_id: v.nullish(v.string()),
 	applied_tags: v.optional(v.array(v.string())),
 	available_tags: v.optional(
-		v.array(v.object({ id: v.string(), name: v.string() })),
+		v.array(
+			v.object({
+				id: v.string(),
+				name: v.string(),
+				emoji_id: v.nullish(v.string()),
+				emoji_name: v.nullish(v.string()),
+			}),
+		),
 	),
 });
+
+/** フォーラムのタグ。emoji は Unicode の絵文字だけを持ち、無いかカスタム絵文字なら null。 */
+export type ForumTag = { id: string; name: string; emoji?: string | null };
 
 export type ChannelInfo = {
 	id: string;
 	name: string | null;
 	parentId: string | null;
 	appliedTagIds: string[];
-	availableTags: { id: string; name: string }[];
+	availableTags: ForumTag[];
 };
 
 export type PostedMessage = {
@@ -200,7 +210,11 @@ const toChannel = (c: v.InferOutput<typeof channelSchema>): ChannelInfo => ({
 	name: c.name ?? null,
 	parentId: c.parent_id ?? null,
 	appliedTagIds: c.applied_tags ?? [],
-	availableTags: c.available_tags ?? [],
+	availableTags: (c.available_tags ?? []).map((t) => ({
+		id: t.id,
+		name: t.name,
+		emoji: t.emoji_id ? null : t.emoji_name || null,
+	})),
 });
 
 /** 改行を優先して上限以下に切り分ける。 */
