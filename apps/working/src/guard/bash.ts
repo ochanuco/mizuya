@@ -123,7 +123,9 @@ const secretCommand = (cmd: SimpleCommand): Reason => {
 	) {
 		return SECRET_READ;
 	}
-	if ((name === "set" || name === "export") && rest.every((a) => isFlag(a))) {
+	// `set -e` のようなフラグだけの `set` は shell の挙動を変えるだけで、変数を見せない
+	if (name === "set" && rest.length === 0) return SECRET_READ;
+	if (name === "export" && (rest.length === 0 || rest.includes("-p"))) {
 		return SECRET_READ;
 	}
 	if (
