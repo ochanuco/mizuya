@@ -30,10 +30,13 @@ export type Hishaku = {
 		cwd: string;
 		release: boolean;
 	}) => Promise<Result<void, LeaseError>>;
+	/** 貸し出しを延ばす。他の機械が返してほしいと頼んでいれば、その持ち主を返す。 */
 	renew: (input: {
 		number: number;
 		generation: number;
-	}) => Promise<Result<void, LeaseError>>;
+	}) => Promise<Result<Renewed, LeaseError>>;
+	/** Manager の meta を読む。貸し出しの見張りが、Mac が借りているか・返したかを見る。 */
+	meta: (number: number) => Promise<Result<SessionMeta, HishakuError>>;
 	/** この受付の Commander の ID。 */
 	holder: string;
 };
@@ -45,6 +48,20 @@ export type Prepared = {
 	/** 正本に記録があり、前の会話のまま起こす。 */
 	resume: boolean;
 	generation: number;
+};
+
+export type Renewed = {
+	/** 返してほしいと頼んだ Commander の ID。頼まれていなければ null。 */
+	releaseRequestedBy: string | null;
+};
+
+export type SessionMeta = {
+	/** 今の持ち主。返した後は null。期限切れでも次に借りられるまでは残る。 */
+	holder: string | null;
+	generation: number;
+	leaseExpiresAt: Date | null;
+	/** 最後に正本の記録を置いた時刻。まだ置かれていないか、Manager が知らせなければ null。 */
+	pushedAt: Date | null;
 };
 
 export type HishakuError = { type: "HishakuFailed"; reason: string };
@@ -69,6 +86,23 @@ const preparedSchema = v.object({
 	session_id: v.pipe(v.string(), v.regex(/^[A-Za-z0-9-]*$/)),
 	resume: v.boolean(),
 	generation: v.pipe(v.number(), v.integer(), v.minValue(1)),
+});
+
+const renewedSchema = v.object({
+	release_requested_by: v.optional(v.nullable(v.string()), null),
+});
+
+const timestamp = v.pipe(
+	v.string(),
+	v.isoTimestamp(),
+	v.transform((t) => new Date(t)),
+);
+
+const sessionMetaSchema = v.object({
+	holder: v.nullable(v.string()),
+	generation: v.pipe(v.number(), v.integer(), v.minValue(0)),
+	lease_expires_at: v.nullable(timestamp),
+	pushed_at: v.optional(v.nullable(timestamp), null),
 });
 
 const heldSchema = v.object({
@@ -130,38 +164,39 @@ export const createHishaku = (opts: {
 
 	const lease = async (
 		args: readonly string[],
-	): Promise<Result<void, LeaseError>> => {
+	): Promise<Result<string, LeaseError>> => {
 		const out = await hs(args);
-		if (out.code === 0) return ok(undefined);
+		if (out.code === 0) return ok(out.stdout);
 		if (out.code === STOLEN) return err({ type: "LeaseStolen" });
 		return err({ type: "HishakuFailed", reason: failure(out).slice(0, 300) });
+	};
+	const base = opts.url.replace(/\/$/, "");
+	const access = {
+		"CF-Access-Client-Id": opts.clientId,
+		"CF-Access-Client-Secret": opts.clientSecret,
 	};
 
 	return {
 		holder: opts.holder,
 		createSession: async (input) => {
 			try {
-				const res = await doFetch(
-					`${opts.url.replace(/\/$/, "")}/v1/sessions`,
-					{
-						method: "POST",
-						headers: {
-							"Content-Type": "application/json",
-							"CF-Access-Client-Id": opts.clientId,
-							"CF-Access-Client-Secret": opts.clientSecret,
-						},
-						body: JSON.stringify({
-							post_id: input.postId,
-							agent: input.agent,
-							title: input.title,
-							repo: input.repo,
-							branch: input.branch,
-						}),
-						// Access の login 画面への redirect を成功と取り違えない
-						redirect: "manual",
-						signal: AbortSignal.timeout(30_000),
+				const res = await doFetch(`${base}/v1/sessions`, {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						...access,
 					},
-				);
+					body: JSON.stringify({
+						post_id: input.postId,
+						agent: input.agent,
+						title: input.title,
+						repo: input.repo,
+						branch: input.branch,
+					}),
+					// Access の login 画面への redirect を成功と取り違えない
+					redirect: "manual",
+					signal: AbortSignal.timeout(30_000),
+				});
 				if (res.status !== 200 && res.status !== 201) {
 					return err({
 						type: "HishakuFailed",
@@ -214,8 +249,8 @@ export const createHishaku = (opts: {
 				generation: parsed.output.generation,
 			});
 		},
-		push: ({ number, generation, cwd, release }) =>
-			lease([
+		push: async ({ number, generation, cwd, release }) => {
+			const r = await lease([
 				"push",
 				String(number),
 				"--generation",
@@ -225,15 +260,54 @@ export const createHishaku = (opts: {
 				"--cwd",
 				cwd,
 				...(release ? ["--release"] : []),
-			]),
-		renew: ({ number, generation }) =>
-			lease([
+			]);
+			return r.ok ? ok(undefined) : r;
+		},
+		renew: async ({ number, generation }) => {
+			const r = await lease([
 				"renew",
 				String(number),
 				"--generation",
 				String(generation),
 				"--holder",
 				opts.holder,
-			]),
+				"--json",
+			]);
+			if (!r.ok) return r;
+			// 延ばせたことは終了コードで分かるので、読めない応答は頼まれていないとみなす
+			const parsed = v.safeParse(renewedSchema, lastJsonLine(r.value));
+			return ok({
+				releaseRequestedBy: parsed.success
+					? parsed.output.release_requested_by
+					: null,
+			});
+		},
+		meta: async (number) => {
+			try {
+				const res = await doFetch(`${base}/v1/sessions/${number}`, {
+					headers: access,
+					redirect: "manual",
+					signal: AbortSignal.timeout(30_000),
+				});
+				if (res.status !== 200) {
+					return err({
+						type: "HishakuFailed",
+						reason: `GET /v1/sessions/${number} ${res.status}`,
+					});
+				}
+				const parsed = v.safeParse(sessionMetaSchema, await res.json());
+				if (!parsed.success) {
+					return err({ type: "HishakuFailed", reason: "unexpected meta" });
+				}
+				return ok({
+					holder: parsed.output.holder,
+					generation: parsed.output.generation,
+					leaseExpiresAt: parsed.output.lease_expires_at,
+					pushedAt: parsed.output.pushed_at,
+				});
+			} catch (e) {
+				return err({ type: "HishakuFailed", reason: String(e).slice(0, 300) });
+			}
+		},
 	};
 };

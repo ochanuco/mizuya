@@ -33,11 +33,13 @@ export const panelText = (p: {
 	label: SeatLabel;
 	elapsedMs: number | null;
 	doing: string | null;
-	/** 引き継ぎで記録を預けた hishaku の番号。Mac が開くのを待っている。 */
-	lent?: number | null;
+	/** Mac への貸し出し。using は Mac が借りている（借りに来る）とき。 */
+	lent?: { number: number; using: boolean } | null;
 }) => {
-	if (p.label === "引き継ぎ" && p.lent != null) {
-		return `状態: Mac に貸し出し待ち（${p.lent}）`;
+	if (p.lent != null) {
+		return p.lent.using
+			? `状態: Mac に貸し出し中（${p.lent.number}）`
+			: `状態: Mac に貸し出し待ち（${p.lent.number}）`;
 	}
 	if (p.label !== "作業中") return `状態: ${p.label}`;
 	const lines = [

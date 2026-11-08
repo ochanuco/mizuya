@@ -44,13 +44,14 @@ RUN apt-get update \
 	&& rm -rf /var/lib/apt/lists/*
 
 # 席の Claude がリポジトリの mise.toml の道具を入れるのに使う。
+# GitHub Releases の大きな asset は時々 504 を返すので、curl での取得はすべて再試行させる
 RUN arch="$(dpkg --print-architecture)" \
 	&& case "$arch" in \
 		amd64) asset=x64; sha="$MISE_SHA256_AMD64" ;; \
 		arm64) asset=arm64; sha="$MISE_SHA256_ARM64" ;; \
 		*) echo "unsupported arch: $arch" >&2; exit 1 ;; \
 	esac \
-	&& curl -fsSL -o /usr/local/bin/mise \
+	&& curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o /usr/local/bin/mise \
 		"https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/mise-v${MISE_VERSION}-linux-${asset}" \
 	&& echo "$sha  /usr/local/bin/mise" | sha256sum -c - \
 	&& chmod 755 /usr/local/bin/mise
@@ -58,7 +59,7 @@ RUN arch="$(dpkg --print-architecture)" \
 COPY apps/working/mise/config.toml /etc/mise/config.toml
 
 # Claude CLI が clone・issue・PR に使う。認証は環境変数 GH_TOKEN で渡す。
-RUN curl -fsSL -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+RUN curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
 		https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 	&& echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
 		> /etc/apt/sources.list.d/github-cli.list \
@@ -68,7 +69,7 @@ RUN curl -fsSL -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
 
 # orca-ide の deb は Electron アプリ一式で、GUI 用ライブラリを依存に持つ。apt に解決させる。
 RUN arch="$(dpkg --print-architecture)" \
-	&& curl -fsSL -o /tmp/orca.deb \
+	&& curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o /tmp/orca.deb \
 		"https://github.com/stablyai/orca/releases/download/v${ORCA_VERSION}/orca-ide_${ORCA_VERSION}_${arch}.deb" \
 	&& apt-get update \
 	&& apt-get install -y --no-install-recommends /tmp/orca.deb \
@@ -82,7 +83,7 @@ RUN arch="$(dpkg --print-architecture)" \
 		arm64) triple=aarch64-unknown-linux-musl; sha="$CODEX_SHA256_ARM64" ;; \
 		*) echo "unsupported arch: $arch" >&2; exit 1 ;; \
 	esac \
-	&& curl -fsSL -o /tmp/codex.tar.gz \
+	&& curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o /tmp/codex.tar.gz \
 		"https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-package-${triple}.tar.gz" \
 	&& echo "$sha  /tmp/codex.tar.gz" | sha256sum -c - \
 	&& mkdir -p /opt/codex \
@@ -93,7 +94,7 @@ RUN arch="$(dpkg --print-architecture)" \
 # 受付が席の agent のセッションを hishaku の Manager に預ける CLI。版はここだけで上げ、Renovate が Releases に追従する。
 # 版ごとの sha256 を持たず、その版の checksums.txt で確かめる。Renovate が版だけを上げても検証が外れないように。
 # renovate: datasource=github-releases depName=ochanuco/hishaku
-ARG HS_VERSION=0.2.0
+ARG HS_VERSION=0.2.3
 RUN arch="$(dpkg --print-architecture)" \
 	&& case "$arch" in \
 		amd64|arm64) ;; \
@@ -101,8 +102,8 @@ RUN arch="$(dpkg --print-architecture)" \
 	esac \
 	&& base="https://github.com/ochanuco/hishaku/releases/download/v${HS_VERSION}" \
 	&& mkdir -p /tmp/hs \
-	&& curl -fsSL -o "/tmp/hs/hs_linux_${arch}.tar.gz" "$base/hs_linux_${arch}.tar.gz" \
-	&& curl -fsSL -o /tmp/hs/checksums.txt "$base/checksums.txt" \
+	&& curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o "/tmp/hs/hs_linux_${arch}.tar.gz" "$base/hs_linux_${arch}.tar.gz" \
+	&& curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o /tmp/hs/checksums.txt "$base/checksums.txt" \
 	&& cd /tmp/hs \
 	&& grep " hs_linux_${arch}.tar.gz\$" checksums.txt | sha256sum -c - \
 	&& tar -xzf "hs_linux_${arch}.tar.gz" hs \

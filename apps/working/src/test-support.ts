@@ -16,6 +16,8 @@ import type {
 	LeaseError,
 	Prepared,
 	PrepareError,
+	Renewed,
+	SessionMeta,
 } from "./hishaku.ts";
 import {
 	err,
@@ -498,7 +500,14 @@ export const fakeHishaku = () => {
 				generation: ++generation,
 			}),
 		push: (): Result<void, LeaseError> => ok(undefined),
-		renew: (): Result<void, LeaseError> => ok(undefined),
+		renew: (): Result<Renewed, LeaseError> => ok({ releaseRequestedBy: null }),
+		meta: (): Result<SessionMeta, HishakuError> =>
+			ok({
+				holder: null,
+				generation: generation,
+				leaseExpiresAt: null,
+				pushedAt: null,
+			}),
 	};
 	const hishaku: Hishaku = {
 		holder: "box01",
@@ -517,6 +526,10 @@ export const fakeHishaku = () => {
 		renew: vi.fn(async (input) => {
 			calls.push({ op: "renew", args: input });
 			return behavior.renew();
+		}),
+		meta: vi.fn(async (number: number) => {
+			calls.push({ op: "meta", args: number });
+			return behavior.meta();
 		}),
 	};
 	const opsOf = (op: string) =>
