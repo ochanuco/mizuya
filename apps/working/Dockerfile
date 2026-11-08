@@ -3,7 +3,8 @@
 FROM node:26.12.1-slim AS build
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
-RUN corepack enable
+# Node 25 から corepack が同梱されなくなったので npm から入れる
+RUN npm install -g corepack@0.36.0 && corepack enable
 WORKDIR /repo
 COPY . .
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
