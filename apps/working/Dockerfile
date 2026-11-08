@@ -110,7 +110,7 @@ RUN arch="$(dpkg --print-architecture)" \
 	&& install -m 755 hs /usr/local/bin/hs \
 	&& cd / && rm -rf /tmp/hs
 
-# 席の Claude の Bash の出力を縮める CLI。managed settings の PreToolUse hook（rtk hook claude）がコマンドを書き換えて通す。
+# 席の Claude と Codex の Bash の出力を縮める CLI。managed settings と requirements.toml の PreToolUse hook がコマンドを書き換えて通す。
 # hs と同じく、版ごとの sha256 を持たずその版の checksums.txt で確かめる。
 # renovate: datasource=github-releases depName=rtk-ai/rtk
 ARG RTK_VERSION=1.1.0
@@ -130,8 +130,9 @@ RUN arch="$(dpkg --print-architecture)" \
 	&& install -m 755 rtk /usr/local/bin/rtk \
 	&& cd / && rm -rf /tmp/rtk
 
-# 席の Claude の plugin TokenEconomizer。managed settings が directory の marketplace として指し、enabledPlugins で強制的に有効にする
-# （allowManagedHooksOnly の下で plugin の hook が動くのは、managed settings が有効にしたものだけ）。plugin は clone の symlink を辿るので clone ごと置く。
+# 席の Claude と Codex の plugin TokenEconomizer。plugin は clone の symlink を辿るので clone ごと置く。
+# Claude は managed settings が directory の marketplace として指し、enabledPlugins で強制的に有効にする
+# （allowManagedHooksOnly の下で plugin の hook が動くのは、managed settings が有効にしたものだけ）。Codex は requirements.toml が hook を持つ。
 # renovate: datasource=github-tags depName=microsoft/TokenEconomizer
 ARG TOKENECONOMIZER_VERSION=v0.1.0
 ADD https://github.com/microsoft/TokenEconomizer.git#${TOKENECONOMIZER_VERSION} /opt/tokeneconomizer
