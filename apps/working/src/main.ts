@@ -73,6 +73,7 @@ import {
 	startUsagePolling,
 	usageByPartner,
 } from "./usage.ts";
+import { createFindWorkBranches } from "./work-branch.ts";
 
 const config = loadConfig(process.env);
 if (!config.ok) {
@@ -302,6 +303,9 @@ const intake = createIntake({
 	discord,
 	orca,
 	hishaku,
+	findWorkBranches: hishaku
+		? createFindWorkBranches({ exec: spawnExec, env })
+		: null,
 	seats,
 	approvals,
 	ledger,
