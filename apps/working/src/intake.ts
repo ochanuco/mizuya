@@ -281,9 +281,9 @@ export const isRestartRequest = (content: string) =>
 			.replace(/[。.!！]+$/, ""),
 	);
 
-/** 残している席を閉じる一言。席の Claude に渡さずに受付が閉じるので、決まった言い方だけにする。 */
+/** 席を閉じる一言。席の Claude に渡さずに受付が閉じるので、決まった言い方だけにする。 */
 export const isCloseRequest = (content: string) =>
-	/^(終了|クローズ|close|閉じて|おわり|終わり)$/i.test(
+	/^(終了|クローズ|close|閉じて|おわり|終わり|中止|キャンセル|cancel|やめて|やめ)$/i.test(
 		content
 			.replace(MENTION, "")
 			.normalize("NFKC")
@@ -2607,17 +2607,37 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		await closeDone(seat);
 	};
 
-	/** 残している席に閉じる一言が書かれたら、席の Claude に渡さずに閉じ、その書き込みに完了の絵文字を付ける。 */
+	/**
+	 * 手を止めた席（完了して残している、返事や答えを待っている、止めた）に閉じる一言が書かれたら、
+	 * 席の Claude に渡さずに閉じ、その書き込みに完了の絵文字を付ける。作業中の席には渡す。
+	 */
 	const closeByWord = async (threadId: string, from: MessageRef) => {
 		const seat = seats.get(threadId);
-		if (seat?.doneAt == null || seat.status !== "waiting") return false;
+		if (seat === null || seat.standup) return false;
+		const lingering = seat.doneAt !== null && seat.status === "waiting";
+		const idle =
+			seat.status === "waiting" ||
+			seat.status === "asking" ||
+			seat.status === "sleeping";
+		if (!lingering && !idle) return false;
 		const bot = botOf(threadId);
 		if (seat.request && seat.reaction) {
 			await react(bot, seat.request, seat.reaction, null);
 		}
-		await react(bot, from, null, REACTION_OF.完了);
-		log.info("lingering seat closed by owner", { thread_id: threadId });
-		await closeDone(seat);
+		if (lingering) {
+			await react(bot, from, null, REACTION_OF.完了);
+			log.info("lingering seat closed by owner", { thread_id: threadId });
+			await closeDone(seat);
+			return true;
+		}
+		// 不要のボタンと同じく、待っていた許可を却下として片付け、タグと件名を完了にして閉じる。
+		// リアクションは閉じる一言の書き込みに付ける
+		await seats.set({ ...seat, request: from, reaction: null });
+		log.info("waiting seat closed by owner", {
+			thread_id: threadId,
+			status: seat.status,
+		});
+		await dismissThread(threadId);
 		return true;
 	};
 

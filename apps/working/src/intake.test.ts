@@ -998,7 +998,7 @@ describe("決めてほしいまま時間がたった席", () => {
 		await s.intake.sleepIdle();
 		s.o.worktrees.delete("/seats/seat-p1");
 
-		await s.intake.handle(say("p1", "閉じて"));
+		await s.intake.handle(say("p1", "B でお願い"));
 		expect(s.o.opsOf("startSeat")).toHaveLength(2);
 		expect(s.seats.get("p1")?.status).toBe("working");
 		expect(s.d.sentTo("p1").join("\n")).not.toContain(
@@ -1374,10 +1374,22 @@ describe("起動し直して", () => {
 			"おわり！",
 			" 終わり ",
 			"<@1> 終了",
+			"中止",
+			"キャンセル。",
+			"Cancel",
+			"やめて",
+			"やめ！",
 		]) {
 			expect(isCloseRequest(t), t).toBe(true);
 		}
-		for (const t of ["終了したら教えて", "閉じないで", "closed", "OK"]) {
+		for (const t of [
+			"終了したら教えて",
+			"閉じないで",
+			"closed",
+			"OK",
+			"やめておいて A をやって",
+			"中止になった件を調べて",
+		]) {
 			expect(isCloseRequest(t), t).toBe(false);
 		}
 	});
@@ -3071,6 +3083,78 @@ describe("件名の状態の絵文字", () => {
 		expect(s.d.reactionsOn("p1", word.payload.message_id)).toEqual(["✅"]);
 		expect(s.d.reactionsOn("p1", "p1")).toEqual([]);
 		expect(s.d.tagsOf("p1")).toEqual(["tag-done"]);
+	});
+
+	it("🤔 のあと返事で作業中に戻り、完了で残した席は、閉じるときに 🎉 を付ける", async () => {
+		const s = await emojiSetup({ hishaku: fakeHishaku() });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "どちらにしますか\n状態: 決めてほしい"),
+		);
+		await leave(s, HOUR);
+		expect(nameOf(s)).toBe("🤔[1234] README の誤字");
+		await s.intake.handle(say("p1", "A でお願い"));
+		expect(nameOf(s)).toBe("[1234] README の誤字");
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "わかりました、ここでやめておきます。\n状態: 完了"),
+		);
+		expect(s.seats.get("p1")?.doneAt).not.toBeNull();
+		await leave(s, HOUR - 60_000);
+		expect(nameOf(s)).toBe("[1234] README の誤字");
+		await expireLinger(s);
+		expect(s.seats.get("p1")).toBeNull();
+		expect(nameOf(s)).toBe("🎉[1234] README の誤字");
+	});
+
+	it.each([
+		[
+			"決めてほしい",
+			(id: string | null) => done(id, "どちらにしますか\n状態: 決めてほしい"),
+		],
+		[
+			"ask",
+			(id: string | null) =>
+				seatMessage({ type: "question", dispatchId: id, body: "A か B か" }),
+		],
+	])(
+		"%s で待っている席に中止と書かれたら、席に渡さずに完了にして閉じる",
+		async (_kind, wait) => {
+			const h = fakeHishaku();
+			const s = await emojiSetup({ hishaku: h });
+			const seat = await openPost(s);
+			await s.intake.onSeatMessage(wait(seat.dispatchId));
+			const word = say("p1", "中止");
+			await s.intake.handle(word);
+			expect(s.o.opsOf("send")).toEqual([]);
+			expect(s.o.opsOf("reply")).toEqual([]);
+			expect(s.seats.get("p1")).toBeNull();
+			expect(s.d.tagsOf("p1")).toEqual(["tag-done"]);
+			expect(nameOf(s)).toBe("🎉[1234] README の誤字");
+			expect(s.d.reactionsOn("p1", word.payload.message_id)).toEqual(["✅"]);
+			expect(s.d.reactionsOn("p1", "p1")).toEqual([]);
+			expect(h.opsOf("push")).toEqual([
+				{ number: 1234, generation: 1, cwd: "/seats/seat-p1", release: true },
+			]);
+			expect(s.o.opsOf("removeWorktree")).toEqual(["/seats/seat-p1"]);
+			expect(s.d.sentTo("p1").filter((t) => t.includes("中止"))).toEqual([]);
+		},
+	);
+
+	it("止めた席に閉じる一言が書かれたら、起こさずに閉じる", async () => {
+		const s = await emojiSetup({ hishaku: fakeHishaku() });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			seatMessage({ type: "question", dispatchId: seat.dispatchId, body: "?" }),
+		);
+		s.advance(3 * HOUR);
+		await s.intake.sleepIdle();
+		expect(s.seats.get("p1")?.status).toBe("sleeping");
+		await s.intake.handle(say("p1", "やめて"));
+		expect(s.o.opsOf("resumeSeat")).toEqual([]);
+		expect(s.seats.get("p1")).toBeNull();
+		expect(s.o.opsOf("removeWorktree")).toEqual(["/seats/seat-p1"]);
+		expect(s.d.tagsOf("p1")).toEqual(["tag-done"]);
+		expect(nameOf(s)).toBe("🎉[1234] README の誤字");
 	});
 
 	it("席が作業中なら、閉じる一言もふつうの返事として渡す", async () => {
