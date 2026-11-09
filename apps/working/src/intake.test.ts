@@ -29,6 +29,7 @@ import { err, ok, type PartnerId } from "./lib/core.ts";
 import { externalServiceUnavailable, rateLimited } from "./lib/errors.ts";
 import { silentLogger } from "./logger.ts";
 import { openSeatStore } from "./seat-store.ts";
+import { buttonMessage } from "./system.ts";
 import {
 	aiCommand,
 	BOT,
@@ -160,6 +161,7 @@ const setup = async (
 		seatLimit: opts.seatLimit ?? 6,
 		sleepAfterMs: 2 * 60 * 60_000,
 		doneLingerMs: 60 * 60_000,
+		titleSettleMs: 60 * 60_000,
 		newGrantId: () => `g${++g}`,
 		now: () => new Date(clock),
 		every: (_ms, fn) => {
@@ -1847,9 +1849,21 @@ describe("Akarin の席", () => {
 });
 
 describe("不要のボタン", () => {
-	/** 席に質問させ、不要のボタンが付いたメッセージの ID を返す。 */
+	/**
+	 * 朝会などが立てた投稿の不要のボタンを置き、その投稿で席に質問させる。ボタンのメッセージの ID を返す。
+	 * 席の返事には不要のボタンを付けない。
+	 */
 	const ask = async (s: Awaited<ReturnType<typeof setup>>) => {
 		const seat = await openPost(s);
+		const m = buttonMessage({ approval: false, dismiss: true });
+		const posted = await s.sys.api.send(
+			"p1",
+			m.content,
+			undefined,
+			[],
+			m.buttons,
+		);
+		if (!posted.ok) throw new Error("button post failed");
 		await s.intake.onSeatMessage(
 			seatMessage({
 				type: "question",
@@ -1858,10 +1872,30 @@ describe("不要のボタン", () => {
 			}),
 		);
 		expect(s.d.sent.every((m) => m.buttons === undefined)).toBe(true);
-		const at = s.sys.sent.findIndex((m) => m.buttons !== undefined);
-		expect(s.sys.sent[at]?.buttons).toEqual(["thread:dismiss"]);
-		return `sent${at + 1}`;
+		expect(s.sys.sent.filter((m) => m.buttons !== undefined)).toHaveLength(1);
+		return posted.value.messageIds[0] ?? "";
 	};
+
+	it("決めてほしいの返事には不要のボタンのメッセージを出さない", async () => {
+		const s = await setup();
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "worker_done",
+				dispatchId: seat.dispatchId,
+				body: "A と B のどちらにしますか\n状態: 決めてほしい",
+			}),
+		);
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "question",
+				dispatchId: seat.dispatchId,
+				body: "どちらにしますか",
+			}),
+		);
+		expect(s.sys.sent).toEqual([]);
+		expect(s.d.sent.every((m) => m.buttons === undefined)).toBe(true);
+	});
 
 	it("持ち主が押すと席の Claude を通さずに席を閉じ、タグを完了にしてボタンを外す", async () => {
 		const s = await setup();
@@ -2855,19 +2889,104 @@ describe("件名の状態の絵文字", () => {
 		s.d.channels.get(threadId)?.name;
 	const renames = (s: Awaited<ReturnType<typeof setup>>) =>
 		vi.mocked(s.d.api.renameThread).mock.calls.length;
+	/** 投稿を ms 放っておき、付けてよくなった件名を付けさせる。 */
+	const leave = async (s: Awaited<ReturnType<typeof setup>>, ms: number) => {
+		s.advance(ms);
+		await s.intake.applyDueTitles();
+	};
+	const HOUR = 60 * 60_000;
 
 	it.each([
 		["決めてほしい", "🤔[1234] README の誤字"],
 		["引き継ぎ", "👨‍💼[1234] README の誤字"],
-	])("%s になったら件名の頭に絵文字を付ける", async (status, title) => {
+	])(
+		"%s になったら、投稿が 60 分放っておかれてから件名の頭に絵文字を付ける",
+		async (status, title) => {
+			const s = await emojiSetup({ hishaku: fakeHishaku() });
+			const seat = await openPost(s);
+			expect(nameOf(s)).toBe("[1234] README の誤字");
+			const before = renames(s);
+			await s.intake.onSeatMessage(
+				done(seat.dispatchId, `済みました\n状態: ${status}`),
+			);
+			expect(nameOf(s)).toBe("[1234] README の誤字");
+			expect(renames(s)).toBe(before);
+			expect(s.seats.pendingTitleOf("p1")).toBe(title);
+			await leave(s, HOUR - 60_000);
+			expect(renames(s)).toBe(before);
+			await leave(s, 60_000);
+			expect(nameOf(s)).toBe(title);
+			expect(s.seats.pendingTitleOf("p1")).toBeNull();
+			expect(s.seats.titleDueOf("p1")).toBeNull();
+		},
+	);
+
+	it("60 分のうちに返事をすれば、件名は一度も変えない", async () => {
 		const s = await emojiSetup({ hishaku: fakeHishaku() });
 		const seat = await openPost(s);
-		expect(nameOf(s)).toBe("[1234] README の誤字");
+		const before = renames(s);
 		await s.intake.onSeatMessage(
-			done(seat.dispatchId, `済みました\n状態: ${status}`),
+			done(seat.dispatchId, "どちらにしますか\n状態: 決めてほしい"),
 		);
-		expect(nameOf(s)).toBe(title);
+		await leave(s, 30 * 60_000);
+		await s.intake.handle(say("p1", "A で"));
+		expect(s.d.tagsOf("p1")).toEqual(["tag-working"]);
 		expect(s.seats.pendingTitleOf("p1")).toBeNull();
+		await leave(s, 2 * HOUR);
+		expect(renames(s)).toBe(before);
+		expect(nameOf(s)).toBe("[1234] README の誤字");
+	});
+
+	it("🤔 が付いたあとに返事が来て作業中に戻ったら、🤔 をすぐ外す", async () => {
+		const s = await emojiSetup({ hishaku: fakeHishaku() });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "どちらにしますか\n状態: 決めてほしい"),
+		);
+		await leave(s, HOUR);
+		expect(nameOf(s)).toBe("🤔[1234] README の誤字");
+		await s.intake.handle(say("p1", "A で"));
+		expect(s.d.tagsOf("p1")).toEqual(["tag-working"]);
+		expect(nameOf(s)).toBe("[1234] README の誤字");
+	});
+
+	it("待っている間に状態が変われば、付けたい件名と時刻をその状態のものに替える", async () => {
+		const s = await emojiSetup({ hishaku: fakeHishaku() });
+		const seat = await openPost(s);
+		const before = renames(s);
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "question",
+				dispatchId: seat.dispatchId,
+				body: "どちらにしますか",
+			}),
+		);
+		await leave(s, 30 * 60_000);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "Mac に引き継ぎます\n状態: 引き継ぎ"),
+		);
+		expect(s.seats.pendingTitleOf("p1")).toBe("👨‍💼[1234] README の誤字");
+		await leave(s, 30 * 60_000);
+		expect(renames(s)).toBe(before);
+		await leave(s, 30 * 60_000);
+		expect(nameOf(s)).toBe("👨‍💼[1234] README の誤字");
+		expect(renames(s)).toBe(before + 1);
+	});
+
+	it("付けたい件名と時刻は受付を作り直しても残り、時刻が来たら付ける", async () => {
+		const s = await emojiSetup({ hishaku: fakeHishaku() });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "どちらにしますか\n状態: 決めてほしい"),
+		);
+		const reopened = await openSeatStore(s.stateDir);
+		expect(reopened.pendingTitleOf("p1")).toBe("🤔[1234] README の誤字");
+		expect(reopened.titleDueOf("p1")).toEqual(new Date(T0.getTime() + HOUR));
+		const again = await setup({ stateDir: s.stateDir, d: s.d, sys: s.sys });
+		await again.intake.reconcile();
+		expect(nameOf(again)).toBe("[1234] README の誤字");
+		await leave(again, HOUR);
+		expect(nameOf(again)).toBe("🤔[1234] README の誤字");
 	});
 
 	it.each([
@@ -2918,7 +3037,7 @@ describe("件名の状態の絵文字", () => {
 		expect(nameOf(s)).toBe("🎉[1234] README の誤字");
 	});
 
-	it("順番待ちがあってすぐ閉じるときは、その場で件名に絵文字を付ける", async () => {
+	it("順番待ちがあってすぐ閉じるときも、投稿が放っておかれてから件名に絵文字を付ける", async () => {
 		const s = await emojiSetup({ hishaku: fakeHishaku(), seatLimit: 1 });
 		const seat = await openPost(s);
 		s.d.addThread("p2", "二つ目");
@@ -2928,6 +3047,8 @@ describe("件名の状態の絵文字", () => {
 			done(seat.dispatchId, "済みました\n状態: 完了"),
 		);
 		expect(s.seats.get("p1")).toBeNull();
+		expect(nameOf(s)).toBe("[1234] README の誤字");
+		await leave(s, HOUR);
 		expect(nameOf(s)).toBe("🎉[1234] README の誤字");
 	});
 
@@ -2958,20 +3079,6 @@ describe("件名の状態の絵文字", () => {
 		await s.intake.handle(say("p1", "終了"));
 		expect(s.o.opsOf("send")).toHaveLength(1);
 		expect(s.seats.get("p1")?.status).toBe("working");
-	});
-
-	it("作業中に戻っても件名は前の絵文字のまま", async () => {
-		const s = await emojiSetup({ hishaku: fakeHishaku() });
-		const seat = await openPost(s);
-		await s.intake.onSeatMessage(
-			done(seat.dispatchId, "どちらにしますか\n状態: 決めてほしい"),
-		);
-		expect(nameOf(s)).toBe("🤔[1234] README の誤字");
-		const calls = vi.mocked(s.d.api.renameThread).mock.calls.length;
-		await s.intake.handle(say("p1", "A で"));
-		expect(s.d.tagsOf("p1")).toEqual(["tag-working"]);
-		expect(nameOf(s)).toBe("🤔[1234] README の誤字");
-		expect(vi.mocked(s.d.api.renameThread).mock.calls).toHaveLength(calls);
 	});
 
 	it.each([
@@ -3053,12 +3160,15 @@ describe("件名の状態の絵文字", () => {
 				body: "A か B か",
 			}),
 		);
+		await leave(s, HOUR);
 		expect(nameOf(s)).toBe("🤔[1234] README の誤字");
-		const calls = vi.mocked(s.d.api.renameThread).mock.calls.length;
+		const calls = renames(s);
 		await s.intake.onSeatMessage(
 			done(seat.dispatchId, "やはり聞きたい\n状態: 決めてほしい"),
 		);
-		expect(vi.mocked(s.d.api.renameThread).mock.calls).toHaveLength(calls);
+		await leave(s, HOUR);
+		expect(renames(s)).toBe(calls);
+		expect(s.seats.pendingTitleOf("p1")).toBeNull();
 	});
 
 	it("名前の変更の制限に当たったら、待ってから最後に覚えた件名だけを付ける", async () => {
@@ -3075,28 +3185,25 @@ describe("件名の状態の絵文字", () => {
 				body: "A か B か",
 			}),
 		);
+		await leave(s, HOUR);
 		expect(nameOf(s)).toBe("[1234] README の誤字");
 		// タグは止めない
 		expect(s.d.tagsOf("p1")).toEqual(["tag-decide"]);
 		expect(s.delayed.map((t) => t.ms)).toEqual([300_000]);
-		await s.intake.handle(say("p1", "A で"));
-		await s.intake.onSeatMessage(
-			done(s.seats.get("p1")?.dispatchId ?? null, "直しました\n状態: 完了"),
-		);
-		await expireLinger(s);
-		// 待っている間は呼ばず、付けたい件名だけを覚え直す
+		// 待っている間は次の見回りでも呼ばない
+		await leave(s, 60_000);
 		expect(rename.mock.calls.map((c) => c[1])).toEqual([
 			"[1234] README の誤字",
 			"🤔[1234] README の誤字",
 		]);
 		const reopened = await openSeatStore(s.stateDir);
-		expect(reopened.pendingTitleOf("p1")).toBe("🎉[1234] README の誤字");
+		expect(reopened.pendingTitleOf("p1")).toBe("🤔[1234] README の誤字");
 		s.fireDelayed();
-		await vi.waitFor(() => expect(nameOf(s)).toBe("🎉[1234] README の誤字"));
+		await vi.waitFor(() => expect(nameOf(s)).toBe("🤔[1234] README の誤字"));
 		expect(rename.mock.calls.map((c) => c[1])).toEqual([
 			"[1234] README の誤字",
 			"🤔[1234] README の誤字",
-			"🎉[1234] README の誤字",
+			"🤔[1234] README の誤字",
 		]);
 		await vi.waitFor(() => expect(s.seats.pendingTitleOf("p1")).toBeNull());
 	});

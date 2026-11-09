@@ -199,6 +199,8 @@ export type IntakeDeps = {
 	 * 起こし直すと system prompt が変わってキャッシュが効かないので、すぐ続きを書かれたら同じ Claude に渡す。
 	 */
 	doneLingerMs: number;
+	/** 手が止まった状態の絵文字を件名に付けるまで、投稿が放っておかれるのを待つ長さ。 */
+	titleSettleMs: number;
 	newGrantId?: () => string;
 	now?: () => Date;
 	/** ms ごとに fn を呼び、止める関数を返す。入力中の表示を送り続けるのに使う。 */
@@ -335,6 +337,8 @@ export type Intake = {
 	) => Promise<Result<{ threadId: string }, { type: string }>>;
 	/** 決めてほしいまま時間がたった席の Claude を止め、完了したあと残していた席を時間がたったら閉じる。 */
 	sleepIdle: () => Promise<void>;
+	/** 付けてよい時刻が来た件名を付ける。 */
+	applyDueTitles: () => Promise<void>;
 	/** 起動時に、対応表と Orca の席を突き合わせる。 */
 	reconcile: () => Promise<void>;
 	/** 作業中の席の数。gateway が自分のパートナーの数を bot のステータスに出す。 */
@@ -572,14 +576,15 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	};
 
 	/**
-	 * title が false なら件名は変えない。件名の変更は投稿にシステムメッセージを残すので、
-	 * 続きが来るかもしれない残している席は、閉じるまで完了の絵文字を付けない。
+	 * 状態のタグとリアクションをすぐ変え、件名の頭の絵文字を合わせる。
+	 * 件名の変更は投稿にシステムメッセージを残すので、手が止まった状態の絵文字は投稿が titleSettleMs 放っておかれてから付け、
+	 * その間に状態が変われば付けない。title が now ならすぐ付け、keep なら件名は変えない（残している席は閉じるときに付ける）。
 	 */
 	const setStatus = async (
 		threadId: string,
 		status: WorkStatus,
 		gone?: Seat,
-		{ title = true }: { title?: boolean } = {},
+		{ title = "later" }: { title?: "now" | "later" | "keep" } = {},
 	) => {
 		await show(threadId, status, gone);
 		const tags = await statusTags();
@@ -601,30 +606,30 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				});
 			}
 		}
-		if (thread.value.name === null || !title) return;
-		const info = await statusTagsOf();
+		if (title === "keep") {
+			// 前の状態のまだ付けていない絵文字は、もう今の状態ではないので付けない
+			if (deps.seats.titleDueOf(threadId) !== null) {
+				await deps.seats.setPendingTitle(threadId, null);
+			}
+			return;
+		}
+		if (thread.value.name === null) return;
 		if (status !== "作業中") {
+			const info = await statusTagsOf();
 			await retitle(
 				threadId,
 				thread.value.name,
 				info.get(status)?.emoji ?? null,
+				title === "now" ? null : new Date(now().getTime() + deps.titleSettleMs),
 			);
 			return;
 		}
-		// 作業中は決めてほしいと返事のたびに行き来するので、🤔 は残して名前の変更の枠を使わない。
-		// 完了と見張り中の絵文字だけは、また動き出したのに終わったように見えるので外す。
-		// 制限で付けられずに待っている件名があれば、それがこれから付く件名なのでそちらで見る
-		const finished = new Set(
-			(["完了", "見張り中"] as const).flatMap((s) => {
-				const e = info.get(s)?.emoji;
-				return e ? [e] : [];
-			}),
-		);
-		const shown = parseTitle(
-			deps.seats.pendingTitleOf(threadId) ?? thread.value.name,
-			await statusEmojis(),
-		);
-		if (shown.emoji !== null && finished.has(shown.emoji)) {
+		// また動き出したので、付いている状態の絵文字はすぐ外し、まだ付けていない絵文字は付けない
+		const emojis = await statusEmojis();
+		const pending = deps.seats.pendingTitleOf(threadId);
+		const shown = parseTitle(thread.value.name, emojis).emoji;
+		const coming = pending === null ? null : parseTitle(pending, emojis).emoji;
+		if (shown !== null || coming !== null) {
 			await retitle(threadId, thread.value.name, null);
 		}
 	};
@@ -635,11 +640,14 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	/**
 	 * 覚えた付けたい件名を投稿に付ける。今の件名と同じなら呼ばない。
 	 * 名前の変更の制限に当たったら、解けるのを待ってから、その時に覚えている最後の件名だけを付ける。
+	 * 付けてよい時刻がまだなら付けず、その時刻に applyDueTitles が付ける。
 	 */
 	const applyTitle = async (threadId: string, current: string | null) => {
 		if (titleWaits.has(threadId)) return;
 		const want = deps.seats.pendingTitleOf(threadId);
 		if (want === null) return;
+		const due = deps.seats.titleDueOf(threadId);
+		if (due !== null && due.getTime() > now().getTime()) return;
 		if (current === want) {
 			await deps.seats.setPendingTitle(threadId, null);
 			return;
@@ -674,11 +682,12 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		await deps.seats.setPendingTitle(threadId, null);
 	};
 
-	/** 件名の頭の状態の絵文字を emoji に替える。null なら絵文字を外す。 */
+	/** 件名の頭の状態の絵文字を emoji に替える。null なら絵文字を外す。dueAt があればその時刻まで付けない。 */
 	const retitle = async (
 		threadId: string,
 		name: string,
 		emoji: string | null,
+		dueAt: Date | null = null,
 	) => {
 		const t = parseTitle(name, await statusEmojis());
 		const want = composeTitle(
@@ -686,7 +695,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			t.number ?? deps.seats.numberOf(threadId),
 			t.base,
 		);
-		await deps.seats.setPendingTitle(threadId, want);
+		await deps.seats.setPendingTitle(threadId, want, dueAt);
 		await applyTitle(threadId, name);
 	};
 
@@ -775,7 +784,11 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				deps.seats.pendingTitleOf(threadId) ?? name,
 				emojis,
 			);
-			await deps.seats.setPendingTitle(threadId, named);
+			await deps.seats.setPendingTitle(
+				threadId,
+				named,
+				deps.seats.titleDueOf(threadId),
+			);
 			await applyTitle(threadId, name);
 		}
 		log.info("hishaku session numbered", { thread_id: threadId, number });
@@ -1072,7 +1085,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 
 	/**
 	 * hook が止めた操作を投稿に書き、許可を待つ。lead は同じメッセージの頭に置く文。
-	 * waiting なら持ち主の判断を待つ投稿なので、席を通さずに閉じるボタンも付ける。
+	 * waiting なら持ち主の判断を待つ投稿なので、許可のボタンに席を通さずに閉じるボタンも並べる。
 	 */
 	const postWithApproval = async (
 		threadId: string,
@@ -1091,7 +1104,6 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				});
 				return;
 			}
-			if (waiting) await postButtons(threadId, false, true);
 			return;
 		}
 		const request = approvalRequestText(blocked);
@@ -1706,7 +1718,9 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 						: null,
 			});
 		}
-		await setStatus(threadId, taken.status, undefined, { title: !linger });
+		await setStatus(threadId, taken.status, undefined, {
+			title: linger ? "keep" : "later",
+		});
 		const title = (await titleOf(threadId)) ?? "仕事フォーラムの投稿";
 		await deps.remember(
 			taken.status === "完了"
@@ -2475,7 +2489,8 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			dismiss(threadId, request);
 		}
 		const seat = seats.get(threadId);
-		await setStatus(threadId, "完了");
+		// 持ち主が要らないと決めて閉じたので、放っておかれるのを待たない
+		await setStatus(threadId, "完了", undefined, { title: "now" });
 		if (seat !== null) {
 			expireGrant(threadId);
 			await record(threadId, "done", []);
@@ -2761,6 +2776,21 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 					queue.run(s.threadId, () => closeLingering(s.threadId)),
 				),
 			]);
+		},
+		applyDueTitles: async () => {
+			const at = now().getTime();
+			const due = deps.seats.pendingTitles().filter((id) => {
+				const d = deps.seats.titleDueOf(id);
+				return d !== null && d.getTime() <= at;
+			});
+			await Promise.all(
+				due.map((id) =>
+					queue.run(id, async () => {
+						const ch = await deps.discord.getChannel(id);
+						await applyTitle(id, ch.ok ? ch.value.name : null);
+					}),
+				),
+			);
 		},
 		reconcile: async () => {
 			await statusTagsOf();
