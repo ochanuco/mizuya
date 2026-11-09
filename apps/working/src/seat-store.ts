@@ -61,6 +61,8 @@ export type Seat = {
 	 * 続きを書かれたら同じ Claude に渡してプロンプトキャッシュを使い、時間がたつか席が足りなくなったら閉じる。
 	 */
 	doneAt: Date | null;
+	/** 残している席が終えたときの状態。閉じるときに件名の絵文字をこれにする。 */
+	doneStatus: DoneStatus | null;
 	/** 席ができる前・起こす前に届いた、席に渡す言葉。 */
 	pending: string[];
 	queuedAt: Date | null;
@@ -101,6 +103,9 @@ export type Seat = {
 	takeback: { pushedAt: Date | null } | null;
 };
 
+/** 席を残したまま終えられる状態。 */
+export type DoneStatus = "完了" | "見張り中";
+
 export type MessageRef = { channelId: string; messageId: string };
 
 /** 投稿に出す状態。受付は席ができて Claude が動き出すまで。 */
@@ -129,6 +134,7 @@ const seatSchema = v.object({
 	expect_stop: v.boolean(),
 	waiting_since: dateSchema,
 	done_at: v.optional(dateSchema, null),
+	done_status: v.optional(v.nullable(v.picklist(["完了", "見張り中"])), null),
 	pending: v.array(v.string()),
 	queued_at: dateSchema,
 	standup: v.boolean(),
@@ -215,6 +221,7 @@ export const newSeat = (threadId: string, standup = false): Seat => ({
 	expectStop: false,
 	waitingSince: null,
 	doneAt: null,
+	doneStatus: null,
 	pending: [],
 	queuedAt: null,
 	standup,
@@ -291,6 +298,7 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 				expectStop: s.expect_stop,
 				waitingSince: s.waiting_since,
 				doneAt: s.done_at,
+				doneStatus: s.done_status,
 				pending: s.pending,
 				queuedAt: s.queued_at,
 				standup: s.standup,
@@ -348,6 +356,7 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 						expect_stop: s.expectStop,
 						waiting_since: s.waitingSince?.getTime() ?? null,
 						done_at: s.doneAt?.getTime() ?? null,
+						done_status: s.doneStatus,
 						pending: s.pending,
 						queued_at: s.queuedAt?.getTime() ?? null,
 						standup: s.standup,

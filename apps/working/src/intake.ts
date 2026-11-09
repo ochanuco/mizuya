@@ -268,6 +268,16 @@ export const isRestartRequest = (content: string) =>
 			.replace(/[。.!！]+$/, ""),
 	);
 
+/** 残している席を閉じる一言。席の Claude に渡さずに受付が閉じるので、決まった言い方だけにする。 */
+export const isCloseRequest = (content: string) =>
+	/^(終了|クローズ|close|閉じて|おわり|終わり)$/i.test(
+		content
+			.replace(MENTION, "")
+			.normalize("NFKC")
+			.trim()
+			.replace(/[。!！]+$/, ""),
+	);
+
 /**
  * escalation の本文（席の端末の末尾）に、裏で動いている shell やタスクが出ているか。
  * Claude CLI は裏の作業が残っていると「1 shell still running」「· 2 shells ·」のように書く。
@@ -625,10 +635,15 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		return next;
 	};
 
+	/**
+	 * title が false なら件名は変えない。件名の変更は投稿にシステムメッセージを残すので、
+	 * 続きが来るかもしれない残している席は、閉じるまで完了の絵文字を付けない。
+	 */
 	const setStatus = async (
 		threadId: string,
 		status: WorkStatus,
 		gone?: Seat,
+		{ title = true }: { title?: boolean } = {},
 	) => {
 		await show(threadId, status, gone);
 		const tags = await statusTags();
@@ -650,9 +665,31 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				});
 			}
 		}
-		// 作業中は返事のたびに行き来するので、件名は前の状態の絵文字のままにして名前の変更の枠を使わない
-		if (status !== "作業中" && thread.value.name !== null) {
-			await retitle(threadId, thread.value.name, status);
+		if (thread.value.name === null || !title) return;
+		const info = await statusTagsOf();
+		if (status !== "作業中") {
+			await retitle(
+				threadId,
+				thread.value.name,
+				info.get(status)?.emoji ?? null,
+			);
+			return;
+		}
+		// 作業中は決めてほしいと返事のたびに行き来するので、🤔 は残して名前の変更の枠を使わない。
+		// 完了と見張り中の絵文字だけは、また動き出したのに終わったように見えるので外す。
+		// 制限で付けられずに待っている件名があれば、それがこれから付く件名なのでそちらで見る
+		const finished = new Set(
+			(["完了", "見張り中"] as const).flatMap((s) => {
+				const e = info.get(s)?.emoji;
+				return e ? [e] : [];
+			}),
+		);
+		const shown = parseTitle(
+			deps.seats.pendingTitleOf(threadId) ?? thread.value.name,
+			await statusEmojis(),
+		);
+		if (shown.emoji !== null && finished.has(shown.emoji)) {
+			await retitle(threadId, thread.value.name, null);
 		}
 	};
 
@@ -701,16 +738,15 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		await deps.seats.setPendingTitle(threadId, null);
 	};
 
-	/** 件名の頭の状態の絵文字を status のものに替える。タグに Unicode の絵文字が無ければ絵文字を外す。 */
+	/** 件名の頭の状態の絵文字を emoji に替える。null なら絵文字を外す。 */
 	const retitle = async (
 		threadId: string,
 		name: string,
-		status: WorkStatus,
+		emoji: string | null,
 	) => {
-		const tags = await statusTagsOf();
 		const t = parseTitle(name, await statusEmojis());
 		const want = composeTitle(
-			tags.get(status)?.emoji ?? null,
+			emoji,
 			t.number ?? deps.seats.numberOf(threadId),
 			t.base,
 		);
@@ -970,6 +1006,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		expectStop: false,
 		waitingSince: null,
 		doneAt: null,
+		doneStatus: null,
 		pending: [],
 		queuedAt: null,
 		background: false,
@@ -1336,6 +1373,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			expectStop: false,
 			waitingSince: null,
 			doneAt: null,
+			doneStatus: null,
 			pending: [],
 			queuedAt: null,
 			background: false,
@@ -1424,6 +1462,22 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		return released;
 	};
 
+	/** 残していた席を閉じる。閉じて終わりが決まったので、ここで件名を終えたときの状態の絵文字にする。 */
+	const closeDone = async (seat: Seat): Promise<boolean> => {
+		if (seat.doneStatus !== null) {
+			const thread = await deps.discord.getChannel(seat.threadId);
+			if (thread.ok && thread.value.name !== null) {
+				const info = await statusTagsOf();
+				await retitle(
+					seat.threadId,
+					thread.value.name,
+					info.get(seat.doneStatus)?.emoji ?? null,
+				);
+			}
+		}
+		return closeSeat(seat);
+	};
+
 	/** 完了したあと残している、Claude が動いたままの席。 */
 	const lingering = () =>
 		seats.all().filter((s) => s.doneAt !== null && s.status === "waiting");
@@ -1447,7 +1501,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 					thread_id: seat.threadId,
 					for: self,
 				});
-				await closeSeat(seat);
+				await closeDone(seat);
 			});
 		}
 	};
@@ -1470,6 +1524,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		expectStop: ask !== null,
 		waitingSince: now(),
 		doneAt: null,
+		doneStatus: null,
 		background: false,
 		lastStatus: null,
 	});
@@ -1594,6 +1649,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			questionId: null,
 			waitingSince: null,
 			doneAt: null,
+			doneStatus: null,
 		});
 		await setStatus(threadId, "作業中");
 	};
@@ -1717,9 +1773,13 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				...toWaiting(seat, null),
 				expectStop: false,
 				doneAt: now(),
+				doneStatus:
+					taken.status === "完了" || taken.status === "見張り中"
+						? taken.status
+						: null,
 			});
 		}
-		await setStatus(threadId, taken.status);
+		await setStatus(threadId, taken.status, undefined, { title: !linger });
 		const title = (await titleOf(threadId)) ?? "仕事フォーラムの投稿";
 		await deps.remember(
 			taken.status === "完了"
@@ -2532,8 +2592,10 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			content: p.content,
 		});
 		if (isRestartRequest(p.content) && (await restart(threadId))) return;
-		const request = deps.approvals.get(threadId);
 		const from = { channelId: threadId, messageId: p.message_id };
+		if (isCloseRequest(p.content) && (await closeByWord(threadId, from)))
+			return;
+		const request = deps.approvals.get(threadId);
 		if (request === null) {
 			await deliver(threadId, reply, null, from);
 			return;
@@ -2602,7 +2664,21 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		)
 			return;
 		log.info("lingering seat expired", { thread_id: threadId });
-		await closeSeat(seat);
+		await closeDone(seat);
+	};
+
+	/** 残している席に閉じる一言が書かれたら、席の Claude に渡さずに閉じ、その書き込みに完了の絵文字を付ける。 */
+	const closeByWord = async (threadId: string, from: MessageRef) => {
+		const seat = seats.get(threadId);
+		if (seat?.doneAt == null || seat.status !== "waiting") return false;
+		const bot = botOf(threadId);
+		if (seat.request && seat.reaction) {
+			await react(bot, seat.request, seat.reaction, null);
+		}
+		await react(bot, from, null, REACTION_OF.完了);
+		log.info("lingering seat closed by owner", { thread_id: threadId });
+		await closeDone(seat);
+		return true;
 	};
 
 	return {
@@ -2798,7 +2874,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				}
 				// 完了して残していた席は、Claude がいなければ残す意味がないので閉じる
 				if (seat.doneAt !== null) {
-					await closeSeat({ ...seat, terminal: null });
+					await closeDone({ ...seat, terminal: null });
 					closed.add(seat.path);
 					continue;
 				}
