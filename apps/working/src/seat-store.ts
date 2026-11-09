@@ -9,7 +9,7 @@ import { WORK_STATUSES, type WorkStatus } from "./work-status.ts";
  * - queued: 席の数が上限で、空くのを待っている
  * - working: 席の Claude が作業している
  * - asking: 席の Claude が ask で聞いて、答えを待っている
- * - waiting: 席の Claude がターンを終え、持ち主の返事を待っている
+ * - waiting: 席の Claude がターンを終え、持ち主の返事を待っている。完了したあとしばらく残している席もここ（doneAt がある）
  * - sleeping: 決めてほしいまま時間がたったので Claude を止めた。worktree と会話は残っている
  * - lent: 会話を Manager に預けて Mac に貸している。投稿への書き込みは pending に溜め、Mac が返したら席に渡す
  */
@@ -56,6 +56,11 @@ export type Seat = {
 	expectStop: boolean;
 	/** 決めてほしいになった時刻。止めるまでの時間を数える。 */
 	waitingSince: Date | null;
+	/**
+	 * 完了か見張り中で手を止めた時刻。閉じずに残している間だけある。
+	 * 続きを書かれたら同じ Claude に渡してプロンプトキャッシュを使い、時間がたつか席が足りなくなったら閉じる。
+	 */
+	doneAt: Date | null;
 	/** 席ができる前・起こす前に届いた、席に渡す言葉。 */
 	pending: string[];
 	queuedAt: Date | null;
@@ -123,6 +128,7 @@ const seatSchema = v.object({
 	question: v.nullable(v.string()),
 	expect_stop: v.boolean(),
 	waiting_since: dateSchema,
+	done_at: v.optional(dateSchema, null),
 	pending: v.array(v.string()),
 	queued_at: dateSchema,
 	standup: v.boolean(),
@@ -208,6 +214,7 @@ export const newSeat = (threadId: string, standup = false): Seat => ({
 	question: null,
 	expectStop: false,
 	waitingSince: null,
+	doneAt: null,
 	pending: [],
 	queuedAt: null,
 	standup,
@@ -283,6 +290,7 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 				question: s.question,
 				expectStop: s.expect_stop,
 				waitingSince: s.waiting_since,
+				doneAt: s.done_at,
 				pending: s.pending,
 				queuedAt: s.queued_at,
 				standup: s.standup,
@@ -339,6 +347,7 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 						question: s.question,
 						expect_stop: s.expectStop,
 						waiting_since: s.waitingSince?.getTime() ?? null,
+						done_at: s.doneAt?.getTime() ?? null,
 						pending: s.pending,
 						queued_at: s.queuedAt?.getTime() ?? null,
 						standup: s.standup,

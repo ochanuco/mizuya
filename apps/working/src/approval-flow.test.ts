@@ -57,6 +57,7 @@ const setup = async () => {
 		workForumChannelId: FORUM,
 		seatLimit: 6,
 		sleepAfterMs: 60_000,
+		doneLingerMs: 60 * 60_000,
 		newGrantId: () => "g1",
 		logger: silentLogger,
 	});

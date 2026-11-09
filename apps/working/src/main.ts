@@ -342,6 +342,7 @@ const intake = createIntake({
 	ownerUserIds: cfg.ownerUserIds,
 	seatLimit: cfg.seatLimit,
 	sleepAfterMs: cfg.seatSleepAfterMs,
+	doneLingerMs: cfg.seatDoneLingerMs,
 	logger,
 });
 await intake.reconcile();
