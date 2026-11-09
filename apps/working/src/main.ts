@@ -370,9 +370,6 @@ const sleepTimer = setInterval(() => {
 	void intake.sleepIdle().catch((e: unknown) => {
 		logger.error("seat sleep crashed", { error: String(e) });
 	});
-	void intake.refreshPanels().catch((e: unknown) => {
-		logger.error("seat panel refresh crashed", { error: String(e) });
-	});
 	void intake.watchLends().catch((e: unknown) => {
 		logger.error("hishaku lend watch crashed", { error: String(e) });
 	});

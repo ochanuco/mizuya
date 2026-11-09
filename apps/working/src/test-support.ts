@@ -271,10 +271,6 @@ export const fakeDiscord = () => {
 	};
 	const reactionsOn = (channelId: string, messageId: string) =>
 		reactions.get(`${channelId}/${messageId}`) ?? [];
-	const panelIn = (channelId: string) =>
-		[...edited]
-			.filter(([id, m]) => id.startsWith("panel") && m.channelId === channelId)
-			.at(-1)?.[1].content ?? null;
 	const addThread = (id: string, name: string) =>
 		channels.set(id, {
 			id,
@@ -296,7 +292,6 @@ export const fakeDiscord = () => {
 		refuseSendTo,
 		typing,
 		reactionsOn,
-		panelIn,
 		edited,
 		addThread,
 		tagsOf,

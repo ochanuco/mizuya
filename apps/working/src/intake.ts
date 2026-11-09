@@ -96,12 +96,10 @@ import {
 	partnerName,
 	replaceModelTag,
 } from "./seat-model.ts";
-import { PANEL_REFRESH_MS, panelText, REACTION_OF } from "./seat-panel.ts";
 import {
 	type MessageRef,
 	newSeat,
 	type Seat,
-	type SeatLabel,
 	type SeatStore,
 } from "./seat-store.ts";
 import type { RunKind } from "./standup-timer.ts";
@@ -118,6 +116,19 @@ import {
 } from "./work-status.ts";
 
 type StatusTag = { id: string; emoji: string | null };
+
+/** 依頼メッセージに出す状態。受付は席ができて Claude が動き出すまで。 */
+type SeatLabel = "受付" | WorkStatus;
+
+/** 依頼メッセージに付けるリアクション。 */
+const REACTION_OF: Readonly<Record<SeatLabel, string>> = {
+	受付: "👀",
+	作業中: "⏳",
+	完了: "✅",
+	決めてほしい: "❓",
+	引き継ぎ: "❓",
+	見張り中: "🔭",
+};
 
 /** 席を受け持つパートナーの bot と、その席に渡す前置き。 */
 export type SeatPartner = {
@@ -136,7 +147,7 @@ export type IntakeDeps = {
 	seatReplied?: () => void;
 	/** Yukarin の bot。読むのもこの bot で行う。 */
 	discord: DiscordApi;
-	/** mizuya の bot。許可と不要のボタン、状態の欄を書く。 */
+	/** mizuya の bot。許可と不要のボタンを書く。 */
 	system: DiscordApi;
 	/** mizuya の bot のユーザー。メンションされたら Yukarin 宛てとみなす。 */
 	systemUserId: string;
@@ -326,8 +337,6 @@ export type Intake = {
 	sleepIdle: () => Promise<void>;
 	/** 起動時に、対応表と Orca の席を突き合わせる。 */
 	reconcile: () => Promise<void>;
-	/** 作業中の席の状態の欄の経過時間を書き換える。前に書いてから間がなければ書かない。 */
-	refreshPanels: () => Promise<void>;
 	/** 作業中の席の数。gateway が自分のパートナーの数を bot のステータスに出す。 */
 	summary: () => SeatSummary;
 	/** 席が借りている hishaku のセッションの貸し出しを延ばす。Mac が返してほしいと頼んでいれば、ターンの終わりに渡す。 */
@@ -528,96 +537,23 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		return to;
 	};
 
-	/** 状態の欄を書き換える。内容が同じなら書かず、force でなければ前に書いてから間をおく。 */
-	const writePanel = async (seat: Seat, force: boolean): Promise<Seat> => {
-		if (seat.panelId === null || seat.label === null) return seat;
-		const at = now();
-		const text = panelText({
-			label: seat.label,
-			elapsedMs: seat.labelSince
-				? at.getTime() - seat.labelSince.getTime()
-				: null,
-			doing: seat.lastStatus,
-			lent: seat.lend
-				? {
-						number: seat.lend.number,
-						using: seat.lend.mac || seat.lend.requested,
-					}
-				: null,
-		});
-		if (text === seat.panelText) return seat;
-		if (
-			!force &&
-			seat.panelAt !== null &&
-			at.getTime() - seat.panelAt.getTime() < PANEL_REFRESH_MS
-		) {
-			return seat;
-		}
-		const r = await deps.system.editMessage(seat.threadId, seat.panelId, text);
-		if (!r.ok) {
-			log.warn("panel update failed", {
-				thread_id: seat.threadId,
-				error: r.error.type,
-			});
-			return seat;
-		}
-		return { ...seat, panelText: text, panelAt: at };
-	};
-
-	const refreshPanel = async (threadId: string, force: boolean) => {
-		const seat = seats.get(threadId);
-		if (seat === null) return;
-		const next = await writePanel(seat, force);
-		if (next !== seat) await seats.set(next);
-	};
-
 	/**
-	 * 依頼メッセージのリアクションと状態の欄を label に合わせる。
+	 * 依頼メッセージのリアクションを label に合わせる。投稿の状態は、このリアクションとタグと件名の絵文字で見せる。
 	 * 席を閉じたあとに呼ぶときは、閉じる前の席を gone に渡す。
 	 */
 	const show = async (threadId: string, label: SeatLabel, gone?: Seat) => {
 		const seat = seats.get(threadId) ?? gone ?? null;
-		if (seat === null || seat.standup) return;
-		const reaction = seat.request
-			? await react(
-					botOf(threadId),
-					seat.request,
-					seat.reaction,
-					REACTION_OF[label],
-				)
-			: seat.reaction;
-		const next = await writePanel(
-			{
-				...seat,
-				reaction,
-				label,
-				labelSince: seat.label === label ? seat.labelSince : now(),
-			},
-			true,
+		if (seat === null || seat.standup || seat.request === null) return;
+		const reaction = await react(
+			botOf(threadId),
+			seat.request,
+			seat.reaction,
+			REACTION_OF[label],
 		);
-		if (seats.get(threadId) !== null) await seats.set(next);
-	};
-
-	/** 投稿の先頭近くに状態の欄を置く。 */
-	const placePanel = async (seat: Seat): Promise<Seat> => {
-		if (seat.standup || seat.panelId !== null) return seat;
-		const text = panelText({ label: "受付", elapsedMs: null, doing: null });
-		const r = await deps.system.createMessage(seat.threadId, text);
-		if (!r.ok) {
-			log.warn("panel post failed", {
-				thread_id: seat.threadId,
-				error: r.error.type,
-			});
-			return seat;
+		const current = seats.get(threadId);
+		if (current !== null && current.reaction !== reaction) {
+			await seats.set({ ...current, reaction });
 		}
-		return {
-			...seat,
-			panelId: r.value.id,
-			panelText: text,
-			panelAt: now(),
-			label: "受付",
-			labelSince: now(),
-		};
 	};
 
 	/** 持ち主の新しい依頼メッセージに受付の絵文字を移す。 */
@@ -1305,11 +1241,6 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 					...newSeat(threadId),
 					request: seat.request,
 					reaction: seat.reaction,
-					panelId: seat.panelId,
-					panelText: seat.panelText,
-					panelAt: seat.panelAt,
-					label: seat.label,
-					labelSince: seat.labelSince,
 					model: seat.model,
 					modelChange: seat.modelChange,
 					continuation: seat.pending,
@@ -1418,11 +1349,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 						REACTION_OF.受付,
 					)
 				: seat.reaction;
-		const next = await placePanel({
-			...seat,
-			reaction,
-			pending: [...seat.pending, text],
-		});
+		const next = { ...seat, reaction, pending: [...seat.pending, text] };
 		if (!seat.standup) await makeRoom(seat.threadId);
 		if (!seat.standup && alive().length >= deps.seatLimit) {
 			await seats.set({ ...next, status: "queued", queuedAt: now() });
@@ -1808,7 +1735,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 
 	/**
 	 * Mac への引き継ぎで席を閉じる。会話を Manager に預けて貸し出しを返してから返事を書き、
-	 * 預けられたときだけ返事に `hs open <番号>` を付け、状態の欄を貸し出し待ちにする。
+	 * 預けられたときだけ返事に `hs open <番号>` を付ける。
 	 */
 	const handOff = async (
 		seat: Seat,
@@ -1983,7 +1910,6 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			if (seat.lend.mac) return;
 			await seats.set({ ...seat, lend: { ...seat.lend, mac: true } });
 			await postSystem(threadId, macResumedText(now()));
-			await refreshPanel(threadId, true);
 			return;
 		}
 		// 見回りの合間に借りて返していても、世代が進んでいれば戻ったと分かる
@@ -2086,7 +2012,6 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		if (reply.body === "" && reply.files.length === 0) return;
 		if (reply.text !== "") {
 			await seats.set({ ...seat, lastStatus: reply.text });
-			await refreshPanel(seat.threadId, true);
 		}
 		const sent = await sendTo(seat.threadId, reply.body, reply.files);
 		if (!sent.ok) {
@@ -2910,16 +2835,6 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			}
 			for (const seat of seats.all()) syncTyping(seat.threadId, seat);
 			dequeue();
-		},
-		refreshPanels: async () => {
-			const working = seats
-				.all()
-				.filter((s) => s.status === "working" && !s.standup);
-			await Promise.all(
-				working.map((s) =>
-					queue.run(s.threadId, () => refreshPanel(s.threadId, false)),
-				),
-			);
 		},
 		watchLends: async () => {
 			if (!deps.hishaku) return;
