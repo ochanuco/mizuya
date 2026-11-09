@@ -650,9 +650,31 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				});
 			}
 		}
-		// 作業中は返事のたびに行き来するので、件名は前の状態の絵文字のままにして名前の変更の枠を使わない
-		if (status !== "作業中" && thread.value.name !== null) {
-			await retitle(threadId, thread.value.name, status);
+		if (thread.value.name === null) return;
+		const info = await statusTagsOf();
+		if (status !== "作業中") {
+			await retitle(
+				threadId,
+				thread.value.name,
+				info.get(status)?.emoji ?? null,
+			);
+			return;
+		}
+		// 作業中は決めてほしいと返事のたびに行き来するので、🤔 は残して名前の変更の枠を使わない。
+		// 完了と見張り中の絵文字だけは、また動き出したのに終わったように見えるので外す。
+		// 制限で付けられずに待っている件名があれば、それがこれから付く件名なのでそちらで見る
+		const finished = new Set(
+			(["完了", "見張り中"] as const).flatMap((s) => {
+				const e = info.get(s)?.emoji;
+				return e ? [e] : [];
+			}),
+		);
+		const shown = parseTitle(
+			deps.seats.pendingTitleOf(threadId) ?? thread.value.name,
+			await statusEmojis(),
+		);
+		if (shown.emoji !== null && finished.has(shown.emoji)) {
+			await retitle(threadId, thread.value.name, null);
 		}
 	};
 
@@ -701,16 +723,15 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		await deps.seats.setPendingTitle(threadId, null);
 	};
 
-	/** 件名の頭の状態の絵文字を status のものに替える。タグに Unicode の絵文字が無ければ絵文字を外す。 */
+	/** 件名の頭の状態の絵文字を emoji に替える。null なら絵文字を外す。 */
 	const retitle = async (
 		threadId: string,
 		name: string,
-		status: WorkStatus,
+		emoji: string | null,
 	) => {
-		const tags = await statusTagsOf();
 		const t = parseTitle(name, await statusEmojis());
 		const want = composeTitle(
-			tags.get(status)?.emoji ?? null,
+			emoji,
 			t.number ?? deps.seats.numberOf(threadId),
 			t.base,
 		);

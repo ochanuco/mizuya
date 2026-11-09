@@ -2839,6 +2839,42 @@ describe("件名の状態の絵文字", () => {
 		expect(vi.mocked(s.d.api.renameThread).mock.calls).toHaveLength(calls);
 	});
 
+	it.each([
+		["完了", "済みました"],
+		["見張り中", "見張りを登録しました"],
+	])(
+		"%s のあとまた書かれて作業中に戻ったら、終わった絵文字を外す",
+		async (status, body) => {
+			const s = await emojiSetup({ hishaku: fakeHishaku() });
+			const seat = await openPost(s);
+			await s.intake.onSeatMessage(
+				done(seat.dispatchId, `${body}\n状態: ${status}`),
+			);
+			expect(nameOf(s)).not.toBe("[1234] README の誤字");
+			await s.intake.handle(say("p1", "もう少し聞きたい"));
+			expect(s.d.tagsOf("p1")).toEqual(["tag-working"]);
+			expect(nameOf(s)).toBe("[1234] README の誤字");
+		},
+	);
+
+	it("制限で 🎉 を付けられずに待っている間に作業中に戻ったら、🎉 を付けない", async () => {
+		const s = await emojiSetup({ hishaku: fakeHishaku() });
+		const seat = await openPost(s);
+		const rename = vi.mocked(s.d.api.renameThread);
+		rename.mockImplementationOnce(async () =>
+			err(rateLimited({ retryAfterMs: 300_000 })),
+		);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "済みました\n状態: 完了"),
+		);
+		expect(s.seats.pendingTitleOf("p1")).toBe("🎉[1234] README の誤字");
+		await s.intake.handle(say("p1", "もう少し聞きたい"));
+		expect(s.seats.pendingTitleOf("p1")).toBe("[1234] README の誤字");
+		s.fireDelayed();
+		await vi.waitFor(() => expect(s.seats.pendingTitleOf("p1")).toBeNull());
+		expect(nameOf(s)).toBe("[1234] README の誤字");
+	});
+
 	it("番号の無い投稿は絵文字と件名の間に空白を置く", async () => {
 		const s = await emojiSetup();
 		const seat = await openPost(s);
