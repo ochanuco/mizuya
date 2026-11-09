@@ -2,7 +2,6 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import * as v from "valibot";
 import { PARTNER_IDS, type PartnerId } from "./lib/core.ts";
-import { WORK_STATUSES, type WorkStatus } from "./work-status.ts";
 
 /**
  * 席の状態。
@@ -76,14 +75,6 @@ export type Seat = {
 	request: MessageRef | null;
 	/** request に bot が付けているリアクション。 */
 	reaction: string | null;
-	/** 投稿の先頭近くに置いた状態の欄。 */
-	panelId: string | null;
-	/** 状態の欄に最後に書いた本文。同じ内容なら書き換えない。 */
-	panelText: string | null;
-	panelAt: Date | null;
-	/** 投稿に出している状態と、その状態になった時刻。経過時間を数える。 */
-	label: SeatLabel | null;
-	labelSince: Date | null;
 	/** 席の CLI をいま動かしているモデル。null は CLI の既定のモデル。 */
 	model: string | null;
 	/** 作業中に頼まれたモデルの切り替え。手が止まったら切り替え、投稿に頼んだ人の名前で残す。 */
@@ -107,9 +98,6 @@ export type Seat = {
 export type DoneStatus = "完了" | "見張り中";
 
 export type MessageRef = { channelId: string; messageId: string };
-
-/** 投稿に出す状態。受付は席ができて Claude が動き出すまで。 */
-export type SeatLabel = "受付" | WorkStatus;
 
 const dateSchema = v.pipe(
 	v.nullable(v.number()),
@@ -145,11 +133,6 @@ const seatSchema = v.object({
 		null,
 	),
 	reaction: v.optional(v.nullable(v.string()), null),
-	panel_id: v.optional(v.nullable(v.string()), null),
-	panel_text: v.optional(v.nullable(v.string()), null),
-	panel_at: v.optional(dateSchema, null),
-	label: v.optional(v.nullable(v.picklist(["受付", ...WORK_STATUSES])), null),
-	label_since: v.optional(dateSchema, null),
 	model: v.optional(v.nullable(v.string()), null),
 	model_change: v.optional(v.nullable(v.object({ by: v.string() })), null),
 	lease: v.optional(v.nullable(v.number()), null),
@@ -229,11 +212,6 @@ export const newSeat = (threadId: string, standup = false): Seat => ({
 	lastStatus: null,
 	request: null,
 	reaction: null,
-	panelId: null,
-	panelText: null,
-	panelAt: null,
-	label: null,
-	labelSince: null,
 	model: null,
 	modelChange: null,
 	lease: null,
@@ -311,11 +289,6 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 						}
 					: null,
 				reaction: s.reaction,
-				panelId: s.panel_id,
-				panelText: s.panel_text,
-				panelAt: s.panel_at,
-				label: s.label,
-				labelSince: s.label_since,
 				model: s.model,
 				modelChange: s.model_change,
 				lease: s.lease,
@@ -369,11 +342,6 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 								}
 							: null,
 						reaction: s.reaction,
-						panel_id: s.panelId,
-						panel_text: s.panelText,
-						panel_at: s.panelAt?.getTime() ?? null,
-						label: s.label,
-						label_since: s.labelSince?.getTime() ?? null,
 						model: s.model,
 						model_change: s.modelChange,
 						lease: s.lease,

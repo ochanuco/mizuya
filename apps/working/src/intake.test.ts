@@ -96,7 +96,7 @@ const setup = async (
 ) => {
 	const stateDir = opts.stateDir ?? tempDir();
 	const d = opts.d ?? fakeDiscord();
-	// mizuya の bot が書くもの（ボタンと状態の欄）は、席の bot の書き込みと分けて見る
+	// mizuya の bot が書くもの（ボタン）は、席の bot の書き込みと分けて見る
 	const sys = opts.sys ?? fakeDiscord();
 	const o = opts.orca ?? fakeOrca(opts.seatsDir);
 	let clock = T0.getTime();
@@ -1536,7 +1536,6 @@ describe("作業中かを Discord で見せる", () => {
 			}),
 		);
 		expect(s.d.reactionsOn(TEXT, req.payload.message_id)).toEqual(["✅"]);
-		expect(s.sys.panelIn("thread1")).toBe("状態: 完了");
 	});
 
 	it("順番待ちの席は受付のまま待たせる", async () => {
@@ -1545,15 +1544,12 @@ describe("作業中かを Discord で見せる", () => {
 		s.d.addThread("p2", "二つ目");
 		await s.intake.handle(say("p2", "こっちも", { first: true }));
 		expect(s.d.reactionsOn("p2", "p2")).toEqual(["👀"]);
-		expect(s.sys.panelIn("p2")).toBe("状態: 受付");
 		expect(s.d.typing).not.toContain("p2");
 	});
 
-	it("状態の欄に状態・経過時間・いまやっていることを書き、経過時間だけの変化は 5 分おきに書き換える", async () => {
+	it("席を開いて作業し、完了しても、状態だけを書いたメッセージは投稿しない", async () => {
 		const s = await setup();
 		const seat = await openPost(s);
-		expect(s.sys.panelIn("p1")).toBe("状態: 作業中（1分未満）");
-
 		await s.intake.onSeatMessage(
 			seatMessage({
 				type: "status",
@@ -1561,32 +1557,65 @@ describe("作業中かを Discord で見せる", () => {
 				body: "誤字を探しています",
 			}),
 		);
-		expect(s.sys.panelIn("p1")).toBe(
-			"状態: 作業中（1分未満）\nいまやっていること: 誤字を探しています",
-		);
-
-		const edits = vi.mocked(s.sys.api.editMessage);
-		const before = edits.mock.calls.length;
-		s.advance(3 * 60_000);
-		await s.intake.refreshPanels();
-		expect(edits.mock.calls.length).toBe(before);
-
-		s.advance(2 * 60_000);
-		await s.intake.refreshPanels();
-		expect(s.sys.panelIn("p1")).toBe(
-			"状態: 作業中（5分）\nいまやっていること: 誤字を探しています",
-		);
-		await s.intake.refreshPanels();
-		expect(edits.mock.calls.length).toBe(before + 1);
-
 		await s.intake.onSeatMessage(
 			seatMessage({
-				type: "question",
+				type: "worker_done",
 				dispatchId: seat.dispatchId,
-				body: "どちらにしますか",
+				body: "直しました\n状態: 完了",
 			}),
 		);
-		expect(s.sys.panelIn("p1")).toBe("状態: 決めてほしい");
+		await expireLinger(s);
+		expect(
+			s.writes.system.filter((w) => w.startsWith("createMessage")),
+		).toEqual([]);
+		expect(vi.mocked(s.sys.api.editMessage)).not.toHaveBeenCalled();
+		const posted = [
+			...s.d.sentTo("p1"),
+			...s.sys.sentTo("p1"),
+			...[...s.sys.edited.values()].map((m) => m.content),
+		];
+		expect(posted.filter((t) => t.startsWith("状態:"))).toEqual([]);
+		expect(s.d.reactionsOn("p1", "p1")).toEqual(["✅"]);
+		expect(s.d.tagsOf("p1")).toEqual(["tag-done"]);
+	});
+
+	it("状態の欄を持っていた前の seats.json も読める", async () => {
+		const dir = tempDir();
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(dir, "seats.json"),
+			JSON.stringify({
+				run_id: null,
+				reception: null,
+				seats: {
+					p1: {
+						status: "waiting",
+						path: "/seats/seat-p1",
+						terminal: "t1",
+						dispatch_id: "d1",
+						dispatch_ids: ["d1"],
+						question_id: null,
+						question: null,
+						expect_stop: false,
+						waiting_since: null,
+						pending: [],
+						queued_at: null,
+						standup: false,
+						panel_id: "m1",
+						panel_text: "状態: 決めてほしい",
+						panel_at: 0,
+						label: "決めてほしい",
+						label_since: 0,
+					},
+				},
+			}),
+		);
+		const store = await openSeatStore(dir);
+		expect(store.get("p1")).toMatchObject({
+			status: "waiting",
+			dispatchId: "d1",
+		});
+		expect(store.get("p1")).not.toHaveProperty("panelId");
 	});
 
 	it("作業中の席の数を数える。朝会と待っている席は数えない", async () => {
@@ -2269,7 +2298,6 @@ describe("hishaku の番号", () => {
 				"いまは Mac で作業中です（1234）。この書き込みは Mac が返したあとに席へ渡します。すぐこちらで続けるなら「取り戻す」を押してください。",
 			buttons: ["lend:takeback"],
 		});
-		expect(s.sys.panelIn("p1")).toBe("状態: Mac に貸し出し中（1234）");
 		expect(s.d.tagsOf("p1")).toEqual(["tag-handoff"]);
 	});
 
@@ -2360,7 +2388,7 @@ describe("hishaku の番号", () => {
 		expect(s.seats.get("p1")?.lease).toBe(2);
 	});
 
-	it("引き継ぎでは会話を預けて返したことを確かめ、返事に hs open を付けて状態の欄を貸し出し待ちにする", async () => {
+	it("引き継ぎでは会話を預けて返したことを確かめ、返事に hs open を付ける", async () => {
 		const h = fakeHishaku();
 		const s = await setup({ hishaku: h });
 		const seat = await openPost(s);
@@ -2379,7 +2407,6 @@ describe("hishaku の番号", () => {
 				"https://github.com/example/app/issues/9\n\n`hs open 1234`",
 			),
 		).toBe(true);
-		expect(s.sys.panelIn("p1")).toBe("状態: Mac に貸し出し待ち（1234）");
 		expect(s.d.tagsOf("p1")).toEqual(["tag-handoff"]);
 		expect(s.activity.map((e) => e.kind)).toEqual(["handoff"]);
 		expect(s.seats.get("p1")?.status).toBe("lent");
@@ -2424,7 +2451,6 @@ describe("hishaku の番号", () => {
 		const reply = s.d.sentTo("p1").at(-1) ?? "";
 		expect(reply).not.toContain("hs open");
 		expect(reply).toContain("申し送り issue から始めます");
-		expect(s.sys.panelIn("p1")).toBe("状態: 引き継ぎ");
 	});
 
 	it("寝かせる席は会話を預けて返し、起こすときに借り直す", async () => {
@@ -2538,7 +2564,6 @@ describe("Mac への貸し出しと取り戻し", () => {
 			content: "Mac に貸し出しました（1234）。席は止めています。",
 			buttons: ["lend:takeback"],
 		});
-		expect(s.sys.panelIn("p1")).toBe("状態: Mac に貸し出し中（1234）");
 		expect(s.d.tagsOf("p1")).toEqual(["tag-handoff"]);
 	});
 
@@ -2571,7 +2596,6 @@ describe("Mac への貸し出しと取り戻し", () => {
 		expect(s.sys.sentTo("p1").filter((t) => t.startsWith("Mac で"))).toEqual([
 			"Mac で再開しました（17:05）。",
 		]);
-		expect(s.sys.panelIn("p1")).toBe("状態: Mac に貸し出し中（1234）");
 		macReturned(h, 2);
 		await s.intake.watchLends();
 		await s.intake.watchLends();
@@ -2581,7 +2605,6 @@ describe("Mac への貸し出しと取り戻し", () => {
 			"Mac から戻りました。この投稿に書けば、席が前の会話のまま続けます。",
 		]);
 		expect(s.seats.get("p1")).toBeNull();
-		expect(s.sys.panelIn("p1")).toBe("状態: 決めてほしい");
 		expect(s.d.tagsOf("p1")).toEqual(["tag-decide"]);
 		h.behavior.prepare = () =>
 			ok({ agent: "claude", sessionId: ID, resume: true, generation: 3 });
@@ -2601,7 +2624,6 @@ describe("Mac への貸し出しと取り戻し", () => {
 		macReturned(h, 1);
 		await s.intake.watchLends();
 		expect(s.seats.get("p1")?.status).toBe("lent");
-		expect(s.sys.panelIn("p1")).toBe("状態: Mac に貸し出し待ち（1234）");
 		macReturned(h, 2);
 		await s.intake.watchLends();
 		expect(s.seats.get("p1")).toBeNull();
@@ -3054,7 +3076,7 @@ describe("件名の状態の絵文字", () => {
 			}),
 		);
 		expect(nameOf(s)).toBe("[1234] README の誤字");
-		// 状態の欄とタグは止めない
+		// タグは止めない
 		expect(s.d.tagsOf("p1")).toEqual(["tag-decide"]);
 		expect(s.delayed.map((t) => t.ms)).toEqual([300_000]);
 		await s.intake.handle(say("p1", "A で"));
