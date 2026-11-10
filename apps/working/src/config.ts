@@ -39,6 +39,7 @@ const envSchema = v.object({
 	SEAT_LIMIT: v.optional(positiveInt),
 	SEAT_SLEEP_AFTER_MINUTES: v.optional(positiveInt),
 	SEAT_DONE_LINGER_MINUTES: v.optional(positiveInt),
+	TITLE_SETTLE_MINUTES: v.optional(positiveInt),
 	LOG_LEVEL: v.optional(v.picklist(["debug", "info", "warn", "error"])),
 	YUNOMI_URL: v.optional(v.pipe(v.string(), v.url())),
 	CF_ACCESS_CLIENT_ID: v.optional(nonEmpty),
@@ -128,6 +129,8 @@ export type WorkingConfig = {
 	seatSleepAfterMs: number;
 	/** 完了か見張り中で手を止めた投稿の席を、これだけ閉じずに残す。続きをすぐ書かれたら同じ Claude に渡す。 */
 	seatDoneLingerMs: number;
+	/** 決めてほしい・引き継ぎ・完了になってから、これだけ投稿が放っておかれたら件名に状態の絵文字を付ける。 */
+	titleSettleMs: number;
 	logLevel: LogLevel;
 	/** Working の記憶の口。3 つそろったときだけ yunomi-memory が使える。 */
 	memory: { url: string; clientId: string; clientSecret: string } | null;
@@ -282,6 +285,7 @@ export const loadConfig = (
 		seatSleepAfterMs: (e.SEAT_SLEEP_AFTER_MINUTES ?? 120) * 60_000,
 		// Anthropic のプロンプトキャッシュが残る長さ（約 1 時間）に合わせる
 		seatDoneLingerMs: (e.SEAT_DONE_LINGER_MINUTES ?? 60) * 60_000,
+		titleSettleMs: (e.TITLE_SETTLE_MINUTES ?? 60) * 60_000,
 		logLevel: e.LOG_LEVEL ?? "info",
 		memory:
 			e.YUNOMI_URL && e.CF_ACCESS_CLIENT_ID && e.CF_ACCESS_CLIENT_SECRET
