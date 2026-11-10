@@ -167,6 +167,7 @@ const fileSchema = v.object({
 				task_id: v.nullable(v.string()),
 				count: v.number(),
 				nudged: v.boolean(),
+				closing: v.optional(v.boolean(), false),
 			}),
 		),
 		{},
@@ -192,6 +193,8 @@ export type ChakaiWork = {
 	count: number;
 	/** 渡したタスクが doing のまま残ったので、状態を動かすよう促した。 */
 	nudged: boolean;
+	/** run を閉じると決めたが、まだ閉じられていない。見回りが閉じ直す。 */
+	closing: boolean;
 };
 
 export type SeatStore = {
@@ -211,8 +214,10 @@ export type SeatStore = {
 	setIssue: (threadId: string, issue: IssueRef) => Promise<void>;
 	chakaiOf: (threadId: string) => ChakaiWork | null;
 	setChakai: (threadId: string, work: ChakaiWork) => Promise<void>;
+	deleteChakai: (threadId: string) => Promise<void>;
 	/** chakai の親タスクを受け持つ投稿。 */
 	chakaiThreadOf: (parentId: string) => string | null;
+	chakaiThreads: () => string[];
 	/** 投稿の hishaku の番号。席を閉じたあとも残し、同じ投稿でまた席を開くときに同じセッションを続ける。 */
 	numberOf: (threadId: string) => number | null;
 	setNumber: (threadId: string, number: number) => Promise<void>;
@@ -306,6 +311,7 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 				taskId: c.task_id,
 				count: c.count,
 				nudged: c.nudged,
+				closing: c.closing,
 			});
 		}
 		for (const [id, t] of Object.entries(parsed.output.titles)) {
@@ -422,6 +428,7 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 						task_id: c.taskId,
 						count: c.count,
 						nudged: c.nudged,
+						closing: c.closing,
 					},
 				]),
 			),
@@ -479,6 +486,11 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 			chakai.set(id, work);
 			return flush();
 		},
+		deleteChakai: (id) => {
+			if (!chakai.delete(id)) return Promise.resolve();
+			return flush();
+		},
+		chakaiThreads: () => [...chakai.keys()],
 		chakaiThreadOf: (parentId) =>
 			[...chakai].find(([, c]) => c.parentId === parentId)?.[0] ?? null,
 		numberOf: (id) => numbers.get(id) ?? null,

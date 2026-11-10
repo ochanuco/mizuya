@@ -65,8 +65,11 @@ import { PARTNER_IDS, type PartnerId } from "./lib/core.ts";
 import { err, ok, type Result } from "./lib/result.ts";
 import type { Logger } from "./logger.ts";
 import {
+	CHAKAI_CLOSED_REASON,
+	CHAKAI_REPEAT_TEXT,
 	CHAKAI_STUCK_TEXT,
 	chakaiHandoffText,
+	chakaiLeftReason,
 	chakaiNextPrompt,
 	chakaiNudgePrompt,
 	chakaiPostBody,
@@ -344,6 +347,10 @@ export type Intake = {
 	startFromTask: (
 		input: TaskStart,
 	) => Promise<Result<{ threadId: string }, TaskStartError>>;
+	/** そのタスクを親として回している席があるか。投稿が消されていれば席を閉じる。 */
+	chakaiHolds: (taskId: string) => Promise<boolean>;
+	/** 閉じそこねた chakai の run と、席が無いのに開いている run を閉じ直す。 */
+	sweepChakai: () => Promise<void>;
 	/** 決めてほしいまま時間がたった席の Claude を止め、完了したあと残していた席を時間がたったら閉じる。 */
 	sleepIdle: () => Promise<void>;
 	/** 付けてよい時刻が来た件名を付ける。 */
@@ -1381,23 +1388,88 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		await launch(next);
 	};
 
-	/** 投稿の chakai の run を閉じる。閉じられなくても席は進め、台帳に残った run はログで追う。 */
-	const endChakaiRun = async (threadId: string) => {
+	/**
+	 * 投稿の chakai の run を閉じる。閉じられなければ run の ID を残し、見回りが閉じ直す。
+	 * 閉じられたら true。
+	 */
+	const endChakaiRun = async (threadId: string): Promise<boolean> => {
 		const work = deps.seats.chakaiOf(threadId);
-		if (!deps.chakai || work === null || work.runId === null) return;
+		if (!deps.chakai || work === null || work.runId === null) return true;
 		const ended = await deps.chakai.endRun(partnerOf(threadId), work.runId);
 		if (!ended.ok) {
-			log.warn("chakai run end failed", {
+			log.warn("chakai run end failed; will retry", {
 				thread_id: threadId,
 				run: work.runId,
 				reason: ended.error.reason,
 			});
+			await deps.seats.setChakai(threadId, { ...work, closing: true });
+			return false;
 		}
 		await deps.seats.setChakai(threadId, {
 			...work,
 			runId: null,
 			taskId: null,
+			closing: false,
 		});
+		return true;
+	};
+
+	/** 渡した子を todo に戻す。chakai は AI が自分で作った深い todo を拒むので、戻せないことがある。 */
+	const chakaiToTodo = async (actor: PartnerId, taskId: string) => {
+		const back = await deps.chakai?.updateTask(actor, taskId, {
+			state: "todo",
+		});
+		if (back && !back.ok) {
+			log.warn("chakai task not moved back to todo", {
+				task: taskId,
+				reason: back.error.reason,
+			});
+		}
+	};
+
+	/**
+	 * 席を閉じるときに、回していた run の台帳を片付ける。
+	 * 渡したままの子は todo に戻し、doing のまま残る親は review にして、run を閉じる。
+	 * 席の無い doing を残すと、見回りが落ちた席の残りと見て拾い直してしまう。
+	 */
+	const releaseChakai = async (
+		threadId: string,
+		reason = CHAKAI_CLOSED_REASON,
+	) => {
+		const chakai = deps.chakai;
+		const work = deps.seats.chakaiOf(threadId);
+		if (!chakai || work === null || work.runId === null || work.closing) {
+			return;
+		}
+		const actor = partnerOf(threadId);
+		if (work.taskId !== null && work.taskId !== work.parentId) {
+			const [handed, split] = await Promise.all([
+				chakai.getTask(actor, work.taskId),
+				chakai.hasChildren(actor, work.taskId),
+			]);
+			if (
+				handed.ok &&
+				handed.value.state === "doing" &&
+				split.ok &&
+				!split.value
+			) {
+				await chakaiToTodo(actor, work.taskId);
+			}
+		}
+		const parent = await chakai.getTask(actor, work.parentId);
+		if (parent.ok && parent.value.state === "doing") {
+			const moved = await chakai.updateTask(actor, work.parentId, {
+				state: "review",
+				waiting_on: reason,
+			});
+			if (!moved.ok) {
+				log.warn("chakai parent not moved to review", {
+					thread_id: threadId,
+					reason: moved.error.reason,
+				});
+			}
+		}
+		await endChakaiRun(threadId);
 	};
 
 	/**
@@ -1423,7 +1495,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				});
 			}
 		}
-		await endChakaiRun(seat.threadId);
+		await releaseChakai(seat.threadId);
 		await seats.delete(seat.threadId);
 		log.info("seat closed", { thread_id: seat.threadId });
 		dequeue();
@@ -1774,7 +1846,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	const chakaiStep = async (threadId: string): Promise<ChakaiStep> => {
 		const chakai = deps.chakai;
 		const work = deps.seats.chakaiOf(threadId);
-		if (!chakai || work === null || work.runId === null) {
+		if (!chakai || work === null || work.runId === null || work.closing) {
 			return { type: "none" };
 		}
 		if (work.taskId === null) return { type: "none" };
@@ -1812,6 +1884,10 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		const todo = next.value.task;
 		if (todo === null) {
 			return { type: "finish", count: work.count, states: next.value.states };
+		}
+		// 渡したばかりのタスクがまた先頭の todo に出た。渡し直すと、同じタスクをいつまでも渡し続ける
+		if (todo.id === work.taskId) {
+			return { type: "pause", note: CHAKAI_REPEAT_TEXT };
 		}
 		const moved = await chakai.updateTask(actor, todo.id, { state: "doing" });
 		if (!moved.ok) return unreadable(moved.error.reason);
@@ -1908,6 +1984,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				await sendTo(threadId, chakaiSettledText(step.count, step.states));
 				await showChakaiProgress(threadId, null, chakaiSettledLine(step.count));
 				await setStatus(threadId, "決めてほしい");
+				await releaseChakai(threadId, chakaiLeftReason(step.states));
 				await closeSeat(seat);
 				const chosen = deps.seats.modelOf(threadId);
 				if (seat.modelChange && chosen !== null && chosen !== seat.model) {
@@ -2542,14 +2619,21 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		if (!chakai) return err({ type: "RunFailed", reason: "chakai の口が無い" });
 		const { parent, first, partner, repo } = input;
 		const line = chakaiWorkingLine(1, first);
+		const retry = (reason: string) =>
+			err({ type: "PostFailed" as const, reason });
 		const known = deps.seats.chakaiThreadOf(parent.id);
-		// 同じ投稿で続けるのは、担当が同じで投稿が残っているときだけ
-		const reused =
-			known !== null &&
-			deps.seats.partnerOf(known) === partner &&
-			(await deps.discord.getChannel(known)).ok
-				? known
-				: null;
+		let reused: string | null = null;
+		if (known !== null) {
+			// 投稿があるかを確かめられないまま新しい投稿を立てると、同じ親の投稿が重なる
+			const exists = await deps.discord.threadExists(known);
+			if (!exists.ok) return retry(exists.error.type);
+			// 同じ投稿で続けるのは、担当が同じで投稿が残っているときだけ
+			if (exists.value && deps.seats.partnerOf(known) === partner) {
+				reused = known;
+			} else if (!(await forgetChakai(known))) {
+				return retry("前の投稿の run を閉じられない");
+			}
+		}
 		let threadId = reused;
 		if (threadId === null) {
 			const tags = await statusTags();
@@ -2571,6 +2655,15 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			}
 			threadId = post.value.threadId;
 			await deps.seats.assign(threadId, partner);
+			// 台帳を動かす前に親と投稿の対応を残し、途中で落ちても次の見回りが同じ投稿を使えるようにする
+			await deps.seats.setChakai(threadId, {
+				parentId: parent.id,
+				runId: null,
+				taskId: null,
+				count: 0,
+				nudged: false,
+				closing: false,
+			});
 			parentOf.set(threadId, deps.workForumChannelId);
 			log.info("forum post created", {
 				task: parent.id,
@@ -2584,13 +2677,19 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		});
 		await queue.run(id, async () => {
 			const fail = async (type: TaskStartError["type"], reason: string) => {
-				if (first.id !== parent.id) {
-					await chakai.updateTask(partner, first.id, { state: "todo" });
-				}
+				if (first.id !== parent.id) await chakaiToTodo(partner, first.id);
 				result = err({ type, reason });
 			};
+			const runFailed = async (reason: string) => {
+				await sendTo(id, CHAKAI_RUN_FAILED_TEXT);
+				await setStatus(id, "決めてほしい");
+				result = err({ type: "RunFailed", reason });
+			};
 			// 前の run が開いたまま親が todo に戻されていたら、閉じてから始め直す
-			await endChakaiRun(id);
+			if (!(await endChakaiRun(id))) {
+				result = retry("前の run を閉じられない");
+				return;
+			}
 			const number = await ensureNumber(id, repo);
 			const run = await chakai.startRun(partner, {
 				taskId: parent.id,
@@ -2599,9 +2698,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				hishakuNo: number,
 			});
 			if (!run.ok) {
-				await sendTo(id, CHAKAI_RUN_FAILED_TEXT);
-				await setStatus(id, "決めてほしい");
-				result = err({ type: "RunFailed", reason: run.error.reason });
+				await runFailed(run.error.reason);
 				return;
 			}
 			const work: ChakaiWork = {
@@ -2610,17 +2707,17 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				taskId: first.id,
 				count: 1,
 				nudged: false,
+				closing: false,
 			};
 			await deps.seats.setChakai(id, work);
-			if (first.id !== parent.id) {
-				const moved = await chakai.updateTask(partner, first.id, {
+			// run を始めてから親と子を doing にする。途中で落ちても、席の無い doing は見回りが todo に戻す
+			for (const task of first.id === parent.id ? [parent] : [parent, first]) {
+				const moved = await chakai.updateTask(partner, task.id, {
 					state: "doing",
 				});
 				if (!moved.ok) {
 					await endChakaiRun(id);
-					await sendTo(id, CHAKAI_RUN_FAILED_TEXT);
-					await setStatus(id, "決めてほしい");
-					result = err({ type: "RunFailed", reason: moved.error.reason });
+					await runFailed(moved.error.reason);
 					return;
 				}
 			}
@@ -2656,6 +2753,50 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			if (reused !== null) await showChakaiProgress(id, 1, line);
 		});
 		return result;
+	};
+
+	/**
+	 * 使えなくなった親と投稿の対応を捨てる。席が残っていれば閉じ、run を閉じる。
+	 * run を閉じられなければ対応を残し（run の ID を失わないため）、false を返す。
+	 */
+	const forgetChakai = async (threadId: string): Promise<boolean> => {
+		let closed = false;
+		await queue.run(threadId, async () => {
+			const seat = seats.get(threadId);
+			if (seat !== null) await closeSeat(seat);
+			closed = await endChakaiRun(threadId);
+			if (closed) await deps.seats.deleteChakai(threadId);
+		});
+		return closed;
+	};
+
+	const chakaiHolds = async (taskId: string): Promise<boolean> => {
+		const threadId = deps.seats.chakaiThreadOf(taskId);
+		const work = threadId === null ? null : deps.seats.chakaiOf(threadId);
+		if (threadId === null || work === null) return false;
+		if (work.runId === null || work.closing) return false;
+		if (seats.get(threadId) === null) return false;
+		const exists = await deps.discord.threadExists(threadId);
+		if (!exists.ok || exists.value) return true;
+		// 投稿が消されていた。持ち主が席を閉じたのと同じに扱い、親は review で残す
+		log.warn("chakai post is gone; seat closed", { thread_id: threadId });
+		await forgetChakai(threadId);
+		return true;
+	};
+
+	const sweepChakai = async () => {
+		if (!deps.chakai) return;
+		await Promise.all(
+			deps.seats.chakaiThreads().map((threadId) =>
+				queue.run(threadId, async () => {
+					const work = deps.seats.chakaiOf(threadId);
+					if (work === null || work.runId === null) return;
+					// 席のある run は回っている。席が無いのに開いている run は、受付が落ちる前の残り
+					if (!work.closing && seats.get(threadId) !== null) return;
+					await endChakaiRun(threadId);
+				}),
+			),
+		);
 	};
 
 	/** 担当と違う相手の `/ai` を投稿の中で打たれた。 */
@@ -3154,6 +3295,8 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		},
 		startFromIssue,
 		startFromTask,
+		chakaiHolds,
+		sweepChakai,
 		startStandup: async (spec, kind = "standup", partner = "yukarin") => {
 			const threadId = `${kind}-${randomUUID()}`;
 			if (partner !== "yukarin") await deps.seats.assign(threadId, partner);

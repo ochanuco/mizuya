@@ -12,22 +12,31 @@ const setup = (opts: { akarinEnabled?: boolean } = {}) => {
 	const c = fakeChakai();
 	c.repos.set("pj1", ["example/repo"]);
 	const started: TaskStart[] = [];
+	/** 席が回している親。 */
+	const held = new Set<string>();
+	// 本物と同じく、席を立てる側が親を doing にする
 	const start = vi.fn<TaskPickupDeps["start"]>(async (input) => {
 		started.push(input);
+		c.move(input.parent.id, "doing");
+		held.add(input.parent.id);
 		return ok({ threadId: `thread${started.length}` });
 	});
+	const sweep = vi.fn(async () => {});
 	const run = () =>
 		pickupTasks({
 			chakai: c.chakai,
 			akarinEnabled: opts.akarinEnabled ?? true,
 			start,
+			sweep,
+			holds: async (id) => held.has(id),
 			logger: silentLogger,
 		});
-	return { c, start, started, run };
+	const writes = () => c.calls.filter((x) => x.startsWith("updateTask"));
+	return { c, start, started, held, sweep, run, writes };
 };
 
 describe("chakai のタスクの見回り", () => {
-	it("担当が付いた todo の親を doing にして、最初の todo の子と repo を渡して席を立てる", async () => {
+	it("担当が付いた todo の親に、最初の todo の子と repo を渡して席を立てる", async () => {
 		const s = setup();
 		s.c.add({ id: "p", assigneeId: "yukarin" });
 		s.c.add({ id: "c1", parentId: "p", state: "done" });
@@ -42,7 +51,9 @@ describe("chakai のタスクの見回り", () => {
 			partner: "yukarin",
 			repo: "example/repo",
 		});
-		expect(s.c.tasks.get("p")?.state).toBe("doing");
+		// 親を doing にするのは席を立てる側。見回りは台帳を動かさない
+		expect(s.writes()).toEqual([]);
+		expect(s.sweep).toHaveBeenCalledTimes(1);
 	});
 
 	it("todo の子孫が無ければ、親そのものを最初の作業にする", async () => {
@@ -56,12 +67,13 @@ describe("chakai のタスクの見回り", () => {
 		});
 	});
 
-	it("doing になった親は、次の見回りでは拾わない", async () => {
+	it("席が回している親は、次の見回りでは拾わず、todo にも戻さない", async () => {
 		const s = setup();
 		s.c.add({ id: "p", assigneeId: "yukarin" });
 		await s.run();
 		await s.run();
 		expect(s.start).toHaveBeenCalledTimes(1);
+		expect(s.c.tasks.get("p")?.state).toBe("doing");
 	});
 
 	it("担当の無い todo と、backlog のタスクは拾わない", async () => {
@@ -110,13 +122,14 @@ describe("chakai のタスクの見回り", () => {
 		expect(s.c.tasks.get("p")?.state).toBe("todo");
 	});
 
-	it("投稿を立てられなかったら、todo に戻して次の見回りで拾い直す", async () => {
+	it("投稿を立てられなかったら台帳を動かさず、次の見回りで拾い直す", async () => {
 		const s = setup();
 		s.c.add({ id: "p", assigneeId: "yukarin" });
 		s.start.mockResolvedValueOnce(
 			err({ type: "PostFailed", reason: "ExternalServiceUnavailable" }),
 		);
 		await s.run();
+		expect(s.writes()).toEqual([]);
 		expect(s.c.tasks.get("p")?.state).toBe("todo");
 		await s.run();
 		expect(s.c.tasks.get("p")?.state).toBe("doing");
@@ -125,9 +138,10 @@ describe("chakai のタスクの見回り", () => {
 	it("run を始められない・席を起こせないときは、review にして理由を書く", async () => {
 		const s = setup();
 		s.c.add({ id: "p", assigneeId: "yukarin" });
-		s.start.mockResolvedValueOnce(
-			err({ type: "SeatFailed", reason: "席の agent を起こせなかった" }),
-		);
+		s.start.mockImplementationOnce(async (input) => {
+			s.c.move(input.parent.id, "doing");
+			return err({ type: "SeatFailed", reason: "席の agent を起こせなかった" });
+		});
 		await s.run();
 		expect(s.c.tasks.get("p")).toMatchObject({
 			state: "review",
@@ -141,19 +155,73 @@ describe("chakai のタスクの見回り", () => {
 		s.c.failOn.add("nextTask");
 		await s.run();
 		expect(s.start).not.toHaveBeenCalled();
-		expect(s.c.calls.filter((c) => c.startsWith("updateTask"))).toEqual([]);
-		expect(s.c.tasks.get("p")?.state).toBe("todo");
+		expect(s.writes()).toEqual([]);
 	});
 
-	it("検索が失敗した担当は飛ばし、もう一方の担当は見る", async () => {
+	it("プロジェクトの一覧を読めない担当は飛ばし、もう一方の担当は見る", async () => {
 		const s = setup();
 		s.c.add({ id: "p", assigneeId: "akarin" });
-		const search = s.c.chakai.assignedTodos;
-		s.c.chakai.assignedTodos = async (actor) =>
+		const projects = s.c.chakai.projects;
+		s.c.chakai.projects = async (actor) =>
 			actor === "yukarin"
 				? err({ type: "ChakaiFailed", code: null, reason: "down" })
-				: search(actor);
+				: projects(actor);
 		await s.run();
 		expect(s.started.map((t) => t.partner)).toEqual(["akarin"]);
+	});
+
+	it("担当の付いた doing なのに回している席が無い親は todo に戻し、同じ回で席を立て直す", async () => {
+		const s = setup();
+		s.c.add({ id: "p", assigneeId: "yukarin", state: "doing" });
+		s.c.add({ id: "c1", parentId: "p", state: "doing" });
+		s.c.add({ id: "c2", parentId: "p" });
+		await s.run();
+		expect(s.writes().slice(0, 2)).toEqual([
+			"updateTask p todo",
+			"updateTask c1 todo",
+		]);
+		// 前の席が渡されたまま残した子も、もう一度渡す
+		expect(s.started[0]).toMatchObject({
+			parent: { id: "p" },
+			first: { id: "c1" },
+			remaining: 1,
+		});
+	});
+
+	it("席が回している親の子孫は、担当の付いた doing でも todo に戻さない", async () => {
+		const s = setup();
+		s.c.add({ id: "p", assigneeId: "yukarin", state: "doing" });
+		s.c.add({ id: "c1", parentId: "p", assigneeId: "yukarin", state: "doing" });
+		s.held.add("p");
+		await s.run();
+		expect(s.writes()).toEqual([]);
+		expect(s.start).not.toHaveBeenCalled();
+	});
+
+	it("席が分けた doing の子（子を持つ）は、親を拾い直すときも todo に戻さない", async () => {
+		const s = setup();
+		s.c.add({ id: "p", assigneeId: "yukarin" });
+		s.c.add({ id: "mid", parentId: "p", state: "doing" });
+		s.c.add({ id: "g1", parentId: "mid", state: "doing" });
+		s.c.add({ id: "g2", parentId: "mid" });
+		await s.run();
+		expect(s.writes()).toEqual(["updateTask g1 todo"]);
+		expect(s.started[0]).toMatchObject({ first: { id: "g1" }, remaining: 1 });
+	});
+
+	it("検索はプロジェクトごとに分け、上限に届いたプロジェクトがあっても次のプロジェクトを見る", async () => {
+		const s = setup();
+		s.c.repos.set("pj2", ["example/other"]);
+		s.c.searchLimit.value = 2;
+		s.c.add({ id: "run", state: "doing" });
+		// 席が回している親の子孫が、プロジェクト 1 の検索の先頭を埋めている
+		s.c.add({ id: "k1", parentId: "run", assigneeId: "yukarin" });
+		s.c.add({ id: "k2", parentId: "run", assigneeId: "yukarin" });
+		s.c.add({ id: "late", assigneeId: "yukarin" });
+		s.c.add({ id: "q", assigneeId: "yukarin", projectId: "pj2" });
+		await s.run();
+		expect(s.started.map((t) => [t.parent.id, t.repo])).toEqual([
+			["q", "example/other"],
+		]);
 	});
 });

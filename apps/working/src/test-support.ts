@@ -123,6 +123,8 @@ export const fakeDiscord = () => {
 	/** bot が送ったメッセージの本文。getMessage で読み直せる。 */
 	const botMessages = new Map<string, string>();
 	const refuseSendTo = new Set<string>();
+	/** threadExists が確かめられない投稿。 */
+	const unreachable = new Set<string>();
 	const sent: {
 		channelId: string;
 		content: string;
@@ -156,6 +158,10 @@ export const fakeDiscord = () => {
 				? ok(ch)
 				: err(externalServiceUnavailable({ service: "discord" }));
 		}),
+		threadExists: async (id) =>
+			unreachable.has(id)
+				? err(externalServiceUnavailable({ service: "discord" }))
+				: ok(channels.has(id)),
 		getMessage: async (_c, id) => {
 			const m = messages.get(id);
 			if (m) return ok(m);
@@ -297,6 +303,7 @@ export const fakeDiscord = () => {
 		posts,
 		history,
 		refuseSendTo,
+		unreachable,
 		typing,
 		reactionsOn,
 		edited,
@@ -581,6 +588,8 @@ export const fakeChakai = () => {
 	}[] = [];
 	const calls: string[] = [];
 	const failOn = new Set<string>();
+	/** 検索が 1 回に返す数。本物は 90。 */
+	const searchLimit = { value: 90 };
 	const failed = (code: string | null, reason: string) =>
 		err({ type: "ChakaiFailed" as const, code, reason });
 	const guard = (op: string, detail: string) => {
@@ -626,13 +635,33 @@ export const fakeChakai = () => {
 		settle(t.parentId);
 	};
 	const chakai: Chakai = {
-		assignedTodos: async (actor) =>
-			guard("assignedTodos", actor) ??
+		projects: async (actor) =>
+			guard("projects", actor) ??
 			ok(
-				[...tasks.values()].filter(
-					(t) => t.state === "todo" && t.assigneeId === actor,
-				),
+				[
+					...new Set([
+						...repos.keys(),
+						...[...tasks.values()].map((t) => t.projectId),
+					]),
+				]
+					.sort()
+					.map((id) => ({ id, repos: repos.get(id) ?? [] })),
 			),
+		assigned: async (actor, projectId, state) => {
+			const bad = guard("assigned", `${actor} ${projectId} ${state}`);
+			if (bad) return bad;
+			const all = [...tasks.values()].filter(
+				(t) =>
+					t.projectId === projectId &&
+					t.state === state &&
+					t.assigneeId === actor,
+			);
+			return ok({
+				tasks: all.slice(0, searchLimit.value),
+				full: all.length >= searchLimit.value,
+			});
+		},
+		children: async (_actor, id) => guard("children", id) ?? ok(childrenOf(id)),
 		getTask: async (_actor, id) => {
 			const t = tasks.get(id);
 			return (
@@ -640,8 +669,6 @@ export const fakeChakai = () => {
 				(t ? ok(t) : failed("task_not_found", "404 task_not_found"))
 			);
 		},
-		reposOf: async (_actor, projectId) =>
-			guard("reposOf", projectId) ?? ok(repos.get(projectId) ?? []),
 		hasChildren: async (_actor, id) =>
 			guard("hasChildren", id) ?? ok(childrenOf(id).length > 0),
 		updateTask: async (_actor, id, patch) => {
@@ -693,5 +720,5 @@ export const fakeChakai = () => {
 			return ok(undefined);
 		},
 	};
-	return { chakai, tasks, repos, runs, calls, failOn, add, move };
+	return { chakai, tasks, repos, runs, calls, failOn, searchLimit, add, move };
 };

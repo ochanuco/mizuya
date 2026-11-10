@@ -528,15 +528,31 @@ export const chakaiNudgePrompt = (task: ChakaiTaskText) =>
 export const CHAKAI_STUCK_TEXT =
 	"渡したタスクが chakai で doing のまま残っているので、次のタスクに進まずに止めました。続けるなら、ここで指示をください。";
 
+/** 同じタスクが続けて次の todo に出た。doing にできなかったか、席が todo に戻している。 */
+export const CHAKAI_REPEAT_TEXT =
+	"渡したタスクが chakai で todo のまま残っているので、同じタスクを渡し直さずに止めました。続けるなら、ここで指示をください。";
+
+/** 席を閉じたときに、doing のまま残る親の waiting_on に書く。 */
+export const CHAKAI_CLOSED_REASON = "席が閉じられた。続けるなら todo に戻す";
+
 const CHAKAI_LEFT_STATES = ["doing", "review", "backlog"] as const;
+
+const chakaiLeft = (states: Readonly<Record<string, number>>) =>
+	CHAKAI_LEFT_STATES.flatMap((s) =>
+		(states[s] ?? 0) > 0 ? [`${s} ${states[s]} 件`] : [],
+	).join("、");
+
+/** todo が無くなって席を解放したのに、片付いていない子孫があって親が doing のまま残るときの waiting_on。 */
+export const chakaiLeftReason = (states: Readonly<Record<string, number>>) => {
+	const left = chakaiLeft(states);
+	return `todo の子タスクが無くなり、席を解放した${left === "" ? "" : `。子孫に ${left}が残っている`}`;
+};
 
 /** todo の子孫が無くなって席を解放するときに書く。 */
 export const chakaiSettledText = (
 	count: number,
 	states: Readonly<Record<string, number>>,
 ) => {
-	const left = CHAKAI_LEFT_STATES.flatMap((s) =>
-		(states[s] ?? 0) > 0 ? [`${s} ${states[s]} 件`] : [],
-	);
-	return `chakai の todo のタスクが無くなったので、席を解放しました（渡したのは ${count} 件）。${left.length > 0 ? `子孫に ${left.join("、")}が残っています。` : ""}chakai で確かめてください。`;
+	const left = chakaiLeft(states);
+	return `chakai の todo のタスクが無くなったので、席を解放しました（渡したのは ${count} 件）。${left === "" ? "" : `子孫に ${left}が残っています。`}chakai で確かめてください。`;
 };

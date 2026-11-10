@@ -734,6 +734,8 @@ const taskPickupTimer = chakai
 					chakai,
 					akarinEnabled: akarin !== null,
 					start: intake.startFromTask,
+					sweep: intake.sweepChakai,
+					holds: intake.chakaiHolds,
 					logger,
 				}),
 			intervalMs: ISSUE_PICKUP_INTERVAL_MS,

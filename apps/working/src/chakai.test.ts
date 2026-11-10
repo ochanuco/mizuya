@@ -34,23 +34,26 @@ const json = (body: unknown, status = 200) =>
 describe("chakai の REST の口", () => {
 	it("MCP の URL の origin の /v1 を、service token と X-Actor を付けて呼ぶ", async () => {
 		const { chakai, calls } = make(() => json({ tasks: [TASK] }));
-		const r = await chakai.assignedTodos("akarin");
+		const r = await chakai.assigned("akarin", "pj1", "todo");
 		expect(r).toEqual({
 			ok: true,
-			value: [
-				{
-					id: "t1",
-					projectId: "pj1",
-					parentId: null,
-					title: "親",
-					body: "本文",
-					state: "todo",
-					assigneeId: "yukarin",
-				},
-			],
+			value: {
+				tasks: [
+					{
+						id: "t1",
+						projectId: "pj1",
+						parentId: null,
+						title: "親",
+						body: "本文",
+						state: "todo",
+						assigneeId: "yukarin",
+					},
+				],
+				full: false,
+			},
 		});
 		expect(calls[0]?.url).toBe(
-			"https://chakai.example.com/v1/tasks?state=todo&assignee_id=akarin",
+			"https://chakai.example.com/v1/tasks?project_id=pj1&state=todo&assignee_id=akarin&limit=90",
 		);
 		expect(calls[0]?.init.headers).toMatchObject({
 			"CF-Access-Client-Id": "cid",
@@ -118,19 +121,30 @@ describe("chakai の REST の口", () => {
 				? json({ projects: [{ id: "pj1", repos: ["example/repo"] }] })
 				: json({ tasks: [] }),
 		);
-		expect(await chakai.reposOf("yukarin", "pj1")).toEqual({
+		expect(await chakai.projects("yukarin")).toEqual({
 			ok: true,
-			value: ["example/repo"],
+			value: [{ id: "pj1", repos: ["example/repo"] }],
 		});
-		expect(await chakai.reposOf("yukarin", "pj9")).toEqual({
+		expect(await chakai.children("yukarin", "t1")).toEqual({
 			ok: true,
 			value: [],
 		});
+		expect(calls.at(-1)?.url).toContain("/v1/tasks?parent_id=t1&limit=90");
 		expect(await chakai.hasChildren("yukarin", "t1")).toEqual({
 			ok: true,
 			value: false,
 		});
 		expect(calls.at(-1)?.url).toContain("/v1/tasks?parent_id=t1&limit=1");
+	});
+
+	it("検索が 1 回の上限に届いたら、続きがあるかもしれないと知らせる", async () => {
+		const { chakai } = make(() =>
+			json({
+				tasks: Array.from({ length: 90 }, (_, i) => ({ ...TASK, id: `t${i}` })),
+			}),
+		);
+		const r = await chakai.assigned("yukarin", "pj1", "doing");
+		expect(r.ok && r.value.full).toBe(true);
 	});
 
 	it("chakai が拒んだら、その error を code にして返す", async () => {
@@ -150,13 +164,17 @@ describe("chakai の REST の口", () => {
 		const thrown = make(() => {
 			throw new Error("network");
 		});
-		expect((await thrown.chakai.assignedTodos("yukarin")).ok).toBe(false);
+		expect((await thrown.chakai.assigned("yukarin", "pj1", "todo")).ok).toBe(
+			false,
+		);
 		const html = make(() => new Response("<html>", { status: 302 }));
-		expect(await html.chakai.assignedTodos("yukarin")).toMatchObject({
+		expect(await html.chakai.assigned("yukarin", "pj1", "todo")).toMatchObject({
 			ok: false,
 			error: { code: null },
 		});
 		const odd = make(() => json({ tasks: [{ id: 1 }] }));
-		expect((await odd.chakai.assignedTodos("yukarin")).ok).toBe(false);
+		expect((await odd.chakai.assigned("yukarin", "pj1", "todo")).ok).toBe(
+			false,
+		);
 	});
 });

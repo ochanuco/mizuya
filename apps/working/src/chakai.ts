@@ -6,19 +6,25 @@ import { err, ok, type PartnerId, type Result } from "./lib/core.ts";
  * actor は席の人格で、chakai は X-Actor で誰の操作かを記録する。
  */
 export type Chakai = {
-	/** 担当が actor の todo のタスク。 */
-	assignedTodos: (
+	projects: (actor: PartnerId) => Promise<Result<ChakaiProject[], ChakaiError>>;
+	/**
+	 * プロジェクトの中で、担当が actor の state のタスク。
+	 * chakai の検索は続きを読めないので、1 回の上限まで読み、上限に届いていれば full で知らせる。
+	 */
+	assigned: (
 		actor: PartnerId,
+		projectId: string,
+		state: ChakaiState,
+	) => Promise<Result<{ tasks: ChakaiTask[]; full: boolean }, ChakaiError>>;
+	/** 直下の子。上限を超える分は返らない。 */
+	children: (
+		actor: PartnerId,
+		id: string,
 	) => Promise<Result<ChakaiTask[], ChakaiError>>;
 	getTask: (
 		actor: PartnerId,
 		id: string,
 	) => Promise<Result<ChakaiTask, ChakaiError>>;
-	/** プロジェクトに紐付いた repo（`owner/repo`）。プロジェクトが無ければ空。 */
-	reposOf: (
-		actor: PartnerId,
-		projectId: string,
-	) => Promise<Result<string[], ChakaiError>>;
 	hasChildren: (
 		actor: PartnerId,
 		id: string,
@@ -67,6 +73,9 @@ export type ChakaiTask = {
 	state: ChakaiState;
 	assigneeId: string | null;
 };
+
+/** repos はプロジェクトに紐付いた repo（`owner/repo`）。 */
+export type ChakaiProject = { id: string; repos: string[] };
 
 export type ChakaiNext = {
 	task: ChakaiTask | null;
@@ -125,6 +134,8 @@ const failureSchema = v.object({
 });
 
 const TIMEOUT_MS = 30_000;
+/** chakai の検索が 1 回に返す上限。 */
+const SEARCH_LIMIT = 90;
 
 export const createChakai = (opts: {
 	/** MCP の URL。REST は同じ origin の /v1 にある。 */
@@ -184,22 +195,35 @@ export const createChakai = (opts: {
 	const id = encodeURIComponent;
 
 	return {
-		assignedTodos: async (actor) => {
+		projects: async (actor) => {
+			const r = await call(actor, "GET", "/projects", projectsSchema);
+			return r.ok ? ok(r.value.projects) : r;
+		},
+		assigned: async (actor, projectId, state) => {
 			const r = await call(
 				actor,
 				"GET",
-				`/tasks?state=todo&assignee_id=${id(actor)}`,
+				`/tasks?project_id=${id(projectId)}&state=${state}&assignee_id=${id(actor)}&limit=${SEARCH_LIMIT}`,
+				tasksSchema,
+			);
+			return r.ok
+				? ok({
+						tasks: r.value.tasks,
+						full: r.value.tasks.length >= SEARCH_LIMIT,
+					})
+				: r;
+		},
+		children: async (actor, taskId) => {
+			const r = await call(
+				actor,
+				"GET",
+				`/tasks?parent_id=${id(taskId)}&limit=${SEARCH_LIMIT}`,
 				tasksSchema,
 			);
 			return r.ok ? ok(r.value.tasks) : r;
 		},
 		getTask: (actor, taskId) =>
 			call(actor, "GET", `/tasks/${id(taskId)}`, taskSchema),
-		reposOf: async (actor, projectId) => {
-			const r = await call(actor, "GET", "/projects", projectsSchema);
-			if (!r.ok) return r;
-			return ok(r.value.projects.find((p) => p.id === projectId)?.repos ?? []);
-		},
 		hasChildren: async (actor, taskId) => {
 			const r = await call(
 				actor,
