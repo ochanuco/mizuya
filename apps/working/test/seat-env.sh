@@ -5,7 +5,8 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 out="$(HOME=/home/w PATH="$PATH" GH_TOKEN=gh DISCORD_TOKEN=secret WORKING_TOKEN=secret \
 	CF_ACCESS_CLIENT_SECRET=secret CHIMERA_ACCESS_CLIENT_ID=cid \
-	CHIMERA_ACCESS_CLIENT_SECRET=secret STATE_DIR=/s "$here/../seat-env.sh" env)"
+	CHIMERA_ACCESS_CLIENT_SECRET=secret CHAKAI_ACCESS_CLIENT_ID=cid \
+	CHAKAI_ACCESS_CLIENT_SECRET=secret STATE_DIR=/s "$here/../seat-env.sh" env)"
 failures=0
 expect() {
 	if ! grep -qx "$1" <<<"$out"; then
@@ -28,5 +29,7 @@ reject WORKING_TOKEN
 reject CF_ACCESS_CLIENT_SECRET
 reject CHIMERA_ACCESS_CLIENT_ID
 reject CHIMERA_ACCESS_CLIENT_SECRET
+reject CHAKAI_ACCESS_CLIENT_ID
+reject CHAKAI_ACCESS_CLIENT_SECRET
 [ "$failures" -eq 0 ] && echo "seat-env: ok"
 exit "$failures"

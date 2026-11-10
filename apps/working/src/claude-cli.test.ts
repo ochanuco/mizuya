@@ -38,7 +38,12 @@ describe("createSummarizer", () => {
 		expect(r).toEqual({ ok: true, value: "請求書の整理" });
 		const [, args, o] = exec.mock.calls[0] ?? [];
 		expect(args).toEqual(
-			expect.arrayContaining(["--no-session-persistence", "--tools", ""]),
+			expect.arrayContaining([
+				"--no-session-persistence",
+				"--tools",
+				"",
+				"--strict-mcp-config",
+			]),
 		);
 		expect(args?.[(args?.indexOf("--system-prompt") ?? -2) + 1]).toContain(
 			"件名を付ける係",

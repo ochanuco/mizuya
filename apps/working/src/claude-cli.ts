@@ -63,6 +63,8 @@ export const createSummarizer =
 				"--no-session-persistence",
 				"--tools",
 				"",
+				// 設定にある席の MCP サーバー（chakai など）に、要約がつなぎに行かないように
+				"--strict-mcp-config",
 				"--system-prompt",
 				SUMMARY_SYSTEM_PROMPT,
 			],

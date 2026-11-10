@@ -44,6 +44,7 @@ describe("loadConfig", () => {
 				memoryBin: "yunomi-memory",
 				chimera: null,
 				playwright: null,
+				chakai: null,
 				hishaku: null,
 				macState: null,
 				seatStatus: null,
@@ -242,6 +243,25 @@ describe("loadConfig", () => {
 			PLAYWRIGHT_MCP_URL: "https://playwright.example/mcp",
 		});
 		expect(partial.ok && partial.value.playwright).toBeNull();
+	});
+
+	it("chakai の MCPは URL と service token がそろったときだけ使う", () => {
+		const r = loadConfig({
+			...base,
+			CHAKAI_MCP_URL: "https://chakai.example/mcp",
+			CHAKAI_ACCESS_CLIENT_ID: "cid",
+			CHAKAI_ACCESS_CLIENT_SECRET: "csecret",
+		});
+		expect(r.ok && r.value.chakai).toEqual({
+			url: "https://chakai.example/mcp",
+			clientId: "cid",
+			clientSecret: "csecret",
+		});
+		const partial = loadConfig({
+			...base,
+			CHAKAI_MCP_URL: "https://chakai.example/mcp",
+		});
+		expect(partial.ok && partial.value.chakai).toBeNull();
 	});
 
 	describe("Dkron", () => {
