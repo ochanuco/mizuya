@@ -25,6 +25,7 @@ import {
 	isRestartRequest,
 	seatStartFailedText,
 } from "./intake.ts";
+import type { IssueTracker } from "./issue-close.ts";
 import { err, ok, type PartnerId } from "./lib/core.ts";
 import { externalServiceUnavailable, rateLimited } from "./lib/errors.ts";
 import { silentLogger } from "./logger.ts";
@@ -88,6 +89,7 @@ const setup = async (
 		chimera?: ChimeraImages;
 		akarin?: boolean;
 		seatReplied?: () => void;
+		issues?: IssueTracker;
 		hishaku?: ReturnType<typeof fakeHishaku>;
 		findWorkBranches?: IntakeDeps["findWorkBranches"];
 		/** 受付を作り直すときに、同じ Discord を渡す。 */
@@ -156,6 +158,8 @@ const setup = async (
 		systemUserId: SYSTEM_BOT,
 		roleIds: { yukarin: YUKARIN_ROLE, akarin: AKARIN_ROLE },
 		ownerUserIds: new Set([OWNER]),
+		notifyUserId: OWNER,
+		issues: opts.issues ?? null,
 		workTextChannelId: TEXT,
 		workForumChannelId: FORUM,
 		seatLimit: opts.seatLimit ?? 6,
@@ -2241,6 +2245,84 @@ describe("GitHub の issue", () => {
 		expect(start?.spec).toContain("Closes example/repo#7");
 		expect(start?.spec).toContain("起動すると落ちる");
 		expect(s.writes.yukarin).toEqual([]);
+	});
+
+	const tracker = (open: boolean) => ({
+		isOpen: vi.fn<IssueTracker["isOpen"]>(async () => ok(open)),
+		close: vi.fn<IssueTracker["close"]>(async () => ok(undefined)),
+	});
+
+	/** issue から投稿を立て、席に完了を報告させる。 */
+	const finishIssue = async (s: Awaited<ReturnType<typeof setup>>) => {
+		await s.intake.startFromIssue(ISSUE, "yukarin");
+		const seat = s.seats.get("thread1");
+		if (!seat?.dispatchId) throw new Error("seat not started");
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "worker_done",
+				dispatchId: seat.dispatchId,
+				body: "直しました\n状態: 完了",
+			}),
+		);
+	};
+
+	it("完了したら持ち主にメンションして知らせ、issue を閉じるボタンを付ける", async () => {
+		const issues = tracker(true);
+		const s = await setup({ issues });
+		await finishIssue(s);
+		const notice = s.sys.sent.find((m) => m.content.includes("repo#7"));
+		expect(notice).toMatchObject({
+			channelId: "thread1",
+			buttons: ["issue:close"],
+			notify: [OWNER],
+		});
+		expect(notice?.content.startsWith(`<@${OWNER}> `)).toBe(true);
+		expect(issues.close).not.toHaveBeenCalled();
+	});
+
+	it("issue がもう閉じていれば、知らせるだけでボタンは付けない", async () => {
+		const s = await setup({ issues: tracker(false) });
+		await finishIssue(s);
+		const notice = s.sys.sent.find((m) => m.content.includes("repo#7"));
+		expect(notice?.content).toContain("もう閉じています");
+		expect(notice?.buttons).toBeUndefined();
+	});
+
+	it("閉じるボタンは持ち主が押したときだけ issue を閉じ、ボタンを外す", async () => {
+		const issues = tracker(true);
+		const s = await setup({ issues });
+		await finishIssue(s);
+		const at = s.sys.sent.findIndex((m) => m.buttons?.includes("issue:close"));
+		const messageId = `sent${at + 1}`;
+
+		await s.intake.press(press("thread1", messageId, "issue:close", "someone"));
+		expect(issues.close).not.toHaveBeenCalled();
+
+		await s.intake.press(press("thread1", messageId, "issue:close"));
+		expect(issues.close).toHaveBeenCalledWith({
+			repo: "example/repo",
+			number: 7,
+		});
+		expect(s.sys.edited.get(messageId)?.content).toContain(
+			"issue を閉じました",
+		);
+	});
+
+	it("issue から立てていない投稿の完了では、issue の知らせを出さない", async () => {
+		const issues = tracker(true);
+		const s = await setup({ issues });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "worker_done",
+				dispatchId: seat.dispatchId ?? "",
+				body: "直しました\n状態: 完了",
+			}),
+		);
+		expect(issues.isOpen).not.toHaveBeenCalled();
+		expect(s.sys.sent.some((m) => m.buttons?.includes("issue:close"))).toBe(
+			false,
+		);
 	});
 
 	it("席が上限なら、投稿を立てて順番待ちにする", async () => {

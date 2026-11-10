@@ -161,10 +161,17 @@ const fileSchema = v.object({
 	seats: v.record(v.string(), seatSchema),
 	partners: v.optional(v.record(v.string(), v.picklist(PARTNER_IDS)), {}),
 	models: v.optional(v.record(v.string(), v.string()), {}),
+	issues: v.optional(
+		v.record(v.string(), v.object({ repo: v.string(), number: v.number() })),
+		{},
+	),
 	numbers: v.optional(v.record(v.string(), v.number()), {}),
 	titles: v.optional(v.record(v.string(), v.string()), {}),
 	titles_due: v.optional(v.record(v.string(), v.number()), {}),
 });
+
+/** 投稿の元になった GitHub の issue。 */
+export type IssueRef = { repo: string; number: number };
 
 export type SeatStore = {
 	get: (threadId: string) => Seat | null;
@@ -180,6 +187,9 @@ export type SeatStore = {
 	/** 投稿で選ばれたモデル。席を閉じたあとも残し、同じ投稿で席を開き直すときも同じモデルで動かす。 */
 	modelOf: (threadId: string) => string | null;
 	setModel: (threadId: string, model: string) => Promise<void>;
+	/** 投稿の元になった issue。席を閉じたあとも残し、完了の後に issue を閉じるボタンが引く。 */
+	issueOf: (threadId: string) => IssueRef | null;
+	setIssue: (threadId: string, issue: IssueRef) => Promise<void>;
 	/** 投稿の hishaku の番号。席を閉じたあとも残し、同じ投稿でまた席を開くときに同じセッションを続ける。 */
 	numberOf: (threadId: string) => number | null;
 	setNumber: (threadId: string, number: number) => Promise<void>;
@@ -238,6 +248,7 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 	const seats = new Map<string, Seat>();
 	const partners = new Map<string, PartnerId>();
 	const models = new Map<string, string>();
+	const issues = new Map<string, IssueRef>();
 	const numbers = new Map<string, number>();
 	const titles = new Map<string, string>();
 	const titlesDue = new Map<string, number>();
@@ -264,6 +275,9 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 		}
 		for (const [id, m] of Object.entries(parsed.output.models)) {
 			models.set(id, m);
+		}
+		for (const [id, i] of Object.entries(parsed.output.issues)) {
+			issues.set(id, i);
 		}
 		for (const [id, n] of Object.entries(parsed.output.numbers)) {
 			numbers.set(id, n);
@@ -377,6 +391,7 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 			),
 			partners: Object.fromEntries(partners),
 			models: Object.fromEntries(models),
+			issues: Object.fromEntries(issues),
 			numbers: Object.fromEntries(numbers),
 			titles: Object.fromEntries(titles),
 			titles_due: Object.fromEntries(titlesDue),
@@ -425,6 +440,11 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 		setModel: (id, model) => {
 			if (models.get(id) === model) return Promise.resolve();
 			models.set(id, model);
+			return flush();
+		},
+		issueOf: (id) => issues.get(id) ?? null,
+		setIssue: (id, issue) => {
+			issues.set(id, issue);
 			return flush();
 		},
 		numberOf: (id) => numbers.get(id) ?? null,
