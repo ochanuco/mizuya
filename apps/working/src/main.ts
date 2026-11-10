@@ -346,6 +346,7 @@ const intake = createIntake({
 	seatLimit: cfg.seatLimit,
 	sleepAfterMs: cfg.seatSleepAfterMs,
 	doneLingerMs: cfg.seatDoneLingerMs,
+	titleSettleMs: cfg.titleSettleMs,
 	logger,
 });
 await intake.reconcile();
@@ -372,6 +373,9 @@ void (async () => {
 const sleepTimer = setInterval(() => {
 	void intake.sleepIdle().catch((e: unknown) => {
 		logger.error("seat sleep crashed", { error: String(e) });
+	});
+	void intake.applyDueTitles().catch((e: unknown) => {
+		logger.error("thread title apply crashed", { error: String(e) });
 	});
 	void intake.watchLends().catch((e: unknown) => {
 		logger.error("hishaku lend watch crashed", { error: String(e) });

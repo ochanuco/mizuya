@@ -37,6 +37,7 @@ describe("loadConfig", () => {
 				seatLimit: 6,
 				seatSleepAfterMs: 7_200_000,
 				seatDoneLingerMs: 3_600_000,
+				titleSettleMs: 3_600_000,
 				logLevel: "info",
 				memory: null,
 				memoryBin: "yunomi-memory",
@@ -120,12 +121,15 @@ describe("loadConfig", () => {
 			SEAT_LIMIT: "3",
 			SEAT_SLEEP_AFTER_MINUTES: "30",
 			SEAT_DONE_LINGER_MINUTES: "15",
+			TITLE_SETTLE_MINUTES: "5",
 			SEATS_DIR: "",
 		});
 		expect(r.ok && r.value.port).toBe(9000);
 		expect(r.ok && r.value.seatLimit).toBe(3);
 		expect(r.ok && r.value.seatSleepAfterMs).toBe(1_800_000);
 		expect(r.ok && r.value.seatDoneLingerMs).toBe(900_000);
+		expect(r.ok && r.value.titleSettleMs).toBe(300_000);
+		expect(loadConfig({ ...base, TITLE_SETTLE_MINUTES: "0" }).ok).toBe(false);
 		expect(loadConfig({ ...base, SEAT_DONE_LINGER_MINUTES: "0" }).ok).toBe(
 			false,
 		);
