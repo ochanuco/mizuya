@@ -143,6 +143,11 @@ export type DiscordApi = {
 		threadId: string,
 		tagIds: string[],
 	) => Promise<Result<void, DomainError>>;
+	/**
+	 * 投稿（スレッド）がまだあるか。消されていれば false。
+	 * getChannel は届かないのと無いのを見分けないので、古い対応を捨ててよいかはこれで確かめる。
+	 */
+	threadExists: (threadId: string) => Promise<Result<boolean, DomainError>>;
 	/** 投稿（スレッド）の件名を変える。 */
 	renameThread: (
 		threadId: string,
@@ -343,6 +348,20 @@ export const createDiscordRest = (opts: DiscordRestOptions): DiscordApi => {
 		getChannel: async (id) => {
 			const r = await callJson("GET", `/channels/${id}`, channelSchema);
 			return r.ok ? ok(toChannel(r.value)) : r;
+		},
+		threadExists: async (threadId) => {
+			let res: Response;
+			try {
+				res = await doFetch(`${API}/channels/${threadId}`, {
+					headers: { authorization: `Bot ${opts.token}` },
+					signal: AbortSignal.timeout(timeoutMs),
+				});
+			} catch {
+				return err(externalServiceUnavailable({ service: "discord" }));
+			}
+			if (res.ok) return ok(true);
+			if (res.status === 404) return ok(false);
+			return err(externalServiceUnavailable({ service: "discord" }));
 		},
 		getMessage: async (channelId, messageId) => {
 			const r = await callJson(

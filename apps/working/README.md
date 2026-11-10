@@ -381,6 +381,51 @@ CI の失敗、PR のレビュー、issue と PR のコメントがあると、�
 - 席には、PR の本文に `Closes <repo>#<番号>` を書いてマージで issue を閉じること、label を付け外ししないことを渡す。分からないことは投稿で聞く。
 - 席が完了を報告したら、mizuya の bot が持ち主（朝会と同じ人）にメンションして知らせる。issue が開いていれば「issue を閉じる」のボタンを付け、持ち主が押すとコメントを添えて閉じる。席には閉じさせない。PR のマージでもう閉じていれば、知らせるだけにする。どの issue から立てた投稿かは `seats.json` の `issues` に残すので、受付を起動し直してもボタンは効く。
 
+### chakai のタスク
+
+chakai（タスク台帳）で、状態が todo、担当が `yukarin` か `akarin` のタスクを 10 分ごとに探し、そのタスクを親として仕事フォーラムに投稿を立て、担当の席に子タスクを続けて渡す。GitHub の issue を拾う見回りと並んで動き、`CHAKAI_*` がそろったときだけ動く（朝会が無効でも動く）。受付は MCP の URL と同じ origin の REST（`/v1`）を、席に渡すのと同じ service token に `X-Actor`（席の担当）を付けて呼ぶ。
+
+run を始める・閉じる、次のタスクを取る、タスクを doing にする操作は受付がする。席の agent が呼び忘れても台帳がずれないようにするため。渡されたタスクを done にする、判断を仰いで review にする、子を足して分けるのは、席の agent が MCP でする。
+
+拾うとき。
+
+- 検索はプロジェクトごと、担当ごとに分ける。chakai の検索は続きを読めない（1 回に 90 件まで）ので、ほかのプロジェクトの拾えないタスクが先頭を埋めても、後ろのプロジェクトが拾われるようにするため。上限に届いたプロジェクトは warn を残す。
+- 親をたどって doing のタスクか、担当の付いた todo のタスクがあるものは拾わない。そのタスクは親の席が順に受け取る。
+- あかりんの席が無いときのあかりん宛てのタスクは、todo のまま残す。
+- 席の作業場所の repo は、親のプロジェクトに紐付いた repo から決める。ちょうど 1 つならそれを使い、依頼文と hishaku の番号の meta に渡す。0 か 2 つ以上なら席を立てず、親を review にして `waiting_on` に理由を書く。
+- 台帳を読む操作（プロジェクト、検索、祖先、子孫、次のタスク）をすべて済ませてから書く。読めなければその親は飛ばし、台帳を動かさない。
+- 台帳は、投稿を立てて親との対応を `seats.json` の `chakai` に残し、run を始めてから、親、最初の子の順に doing にする。途中で受付が落ちても、親は todo のままか、次に書く「席の無い doing」として拾い直される。
+- 投稿を立てられなければ、台帳を動かさずに次の回に拾い直す。run を始められない・席の agent を起こせないときは投稿が残るので、親を review にして `waiting_on` に理由を書く。
+- その親の投稿がもうあれば、新しい投稿を立てずに同じ投稿で席を開き直し、新しい run を始める。席が無ければ、返事で席を開き直すときと同じく前の会話を続ける。使う前に、投稿がまだあるか（`GET /channels/<ID>` が 404 でないか）と担当が同じかを確かめる。投稿が消されたか担当が付け替えられていれば、古い対応を捨てて（残っていた席は閉じて）新しい投稿を立てる。確かめられないときは投稿を立てず、次の回に回す。
+
+落ちた席の残りを片付けるとき（見回りのたび）。
+
+- 閉じそこねた run（`end_run` が失敗して ID を残したもの）と、席が無いのに開いている run を閉じ直す。
+- 担当の付いた doing のタスクのうち、そのタスクも祖先も席が回していないものは、todo に戻す。同じ回の検索が拾い直す。席が回しているかは `seats.json` の対応（run が開いていて、席がある）で見る。その投稿が消されていたら、席を閉じて親を review にする。
+- 親を拾うとき、その子孫に残った子の無い doing（前の席が渡されたまま残したタスク）を todo に戻してから、次のタスクを取る。子を持つ doing は席が分けたタスクなので、そのままにする。
+
+席を回すとき。
+
+- run には席の名前（`seat-<投稿の ID>`）、投稿で選ばれたモデル（あれば）、hishaku の番号を記録する。
+- 最初に渡すのは、親の子孫のうち木の順で最初の todo。todo の子孫が無ければ親そのものを渡し、終えたら done ではなく review にするよう伝える。子の無い親は chakai が自動で review にしないので、owner が見ないまま閉じないようにするため。
+- 席のターンが終わるたびに、渡したタスクの台帳の状態を読んで次を決める。席の返事の `状態:` の行では決めない。
+
+| 渡したタスク                      | 受付の動き                                                                                   |
+| --------------------------------- | -------------------------------------------------------------------------------------------- |
+| done・dropped                     | 次の todo を doing にして、同じ席に渡す                                                      |
+| 子を持つ（席が分けた）            | 状態によらず、次の todo に進む。分けたタスクの状態は chakai が子から決める                   |
+| 子の無い review                   | 次を渡さず、タグを `決めてほしい` にして待つ。持ち主が投稿で答えた後のターンの終わりに続ける |
+| 子の無い doing（動かし忘れ）      | done か review にするよう 1 回だけ促す。それでも doing なら止めて `決めてほしい` にする      |
+| 読めない（chakai に届かないなど） | 次を渡さず、`決めてほしい` にして待つ                                                        |
+
+次の todo が、渡したばかりのタスクと同じとき（席が todo に戻した）は、渡し直さずに止めて `決めてほしい` にする。次の todo を doing にできなかったときも渡さずに待ち、次のターンの終わりにやり直す。
+
+- 止めた操作の許可待ち、失敗の報告、`hs ask` の質問、引き継ぎは、ほかの投稿と同じ扱いのままにし、その間は次を渡さない。
+- todo の子孫が無くなったら、run を閉じ、タグを `決めてほしい` にして席を閉じる（worktree を消し、会話は hishaku に預ける）。親は、子がすべて片付いていれば chakai が review にしている。片付いていない子孫（doing、review、backlog）が残って親が doing のままなら、受付が親を review にして `waiting_on` に残りの数を書く。持ち主がその投稿に返事をすれば、前の会話を続けた席が開く。
+- 席が眠る、受付の作り直しで止まる、Mac に貸す、の間は run を開いたままにし、起きて次のターンが終われば続きを渡す。席を閉じたとき（不要のボタン、閉じる一言、引き継ぎ）に run を閉じ、渡したままの子の無い doing の子を todo に戻し、doing の親を review にする（`waiting_on` は「席が閉じられた。続けるなら todo に戻す」）。席の無い doing を残すと、見回りが落ちた席の残りと見て拾い直すため。
+- 投稿の件名は `chakai <N> 件目 <親の件名>`、本文は親の件名と本文に `作業中: <N> 件目 <子の件名>` の行。タスクを渡すたびに、投稿に `<N> 件目: <子の件名>（残りの todo <M> 件）` を書き、件名と本文の行を付け替える。席が子を足すと全体の数は動くので、残りの数だけを出す。
+- 子を 1 つ終えただけでは、完了の扱い（記憶、活動ログ、席を残す）はしない。
+
 ### 取り消せない操作の許可
 
 1. hook と auto モードが止めた操作は `STATE_DIR/guard/pending/` に投稿ごとに残る。席の Claude は止められると `hs ask` で許可を求める。受付は席から質問か報告が届くとそれを取り出し、席の言葉に続けて「決めてほしいこと」としてコマンドそのものを投稿に書き、タグを `決めてほしい` にする。止めた操作が残っていれば、完了の報告でも完了にしない。
@@ -394,66 +439,66 @@ CI の失敗、PR のレビュー、issue と PR のコメントがあると、�
 
 ### 環境変数
 
-| 変数                                                              | 必須   | 内容                                                                                                                         |
-| ----------------------------------------------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| `DISCORD_TOKEN`                                                   | はい   | mizuya の bot トークン。Gateway での受信とボタンに使う                                                                       |
-| `YUKARIN_DISCORD_TOKEN`                                           | はい   | ゆかりんの bot トークン。Yukarin の席の発言・投稿・リアクション・入力中の表示に REST で使う                                  |
-| `AKARIN_DISCORD_TOKEN`                                            | いいえ | あかりんの bot トークン。無ければ Akarin の席を作らず、Akarin 宛ての依頼も Yukarin が受ける                                  |
-| `YUKARIN_ROLE_ID` / `AKARIN_ROLE_ID`                              | いいえ | 依頼の宛先の席を決める role（chabatake の `discord/chanuco` の output `working_role_ids`）                                   |
-| `MIZUYA_INBOX_URL`                                                | いいえ | mizuya の Worker の受け箱（`wss://mizuya.chanu.co/working/inbox`）。下の 3 つとそろわなければつながず、ボタンを受け取れない  |
-| `MIZUYA_INBOX_TOKEN`                                              | いいえ | 受け箱の token。Worker の `WORKING_INBOX_TOKEN` と同じ値                                                                     |
-| `MIZUYA_ACCESS_CLIENT_ID` / `MIZUYA_ACCESS_CLIENT_SECRET`         | いいえ | 受け箱につなぐ Access の service token（`mizuya-working-inbox`）                                                             |
-| `CODEX_HOME`                                                      | いいえ | Codex CLI の設定とログイン情報の置き場所。イメージでは `~/.codex`                                                            |
-| `WORK_TEXT_CHANNEL_ID`                                            | はい   | 依頼を受ける仕事テキストチャンネル                                                                                           |
-| `WORK_FORUM_CHANNEL_ID`                                           | はい   | 投稿を立てる仕事フォーラム                                                                                                   |
-| `WORKING_OWNER_DISCORD_USER_IDS`                                  | はい   | 作業を頼める人の Discord ユーザー ID（カンマ区切り）                                                                         |
-| `PORT`                                                            | いいえ | 生存確認（`/healthz`）を待ち受けるポート。既定は `8080`                                                                      |
-| `STATE_DIR`                                                       | いいえ | 対応表の置き場所。既定は `~/state`                                                                                           |
-| `WORK_DIR`                                                        | いいえ | 受付が動かす CLI（件名の要約、記憶、`gh`）の作業ディレクトリ。既定は `~/work`                                                |
-| `PERSONA_SCRIPT`                                                  | いいえ | 人格を出力するスクリプト。既定は `~/bin/persona.sh`                                                                          |
-| `PERSONA_DIR`                                                     | いいえ | 人格の元ファイルの置き場。既定は `~/persona`                                                                                 |
-| `HANDOFF_DIR`                                                     | いいえ | `prompt.md` と `issue-template.md` の置き場所。既定は `~/handoff`                                                            |
-| `GH_TOKEN`                                                        | いいえ | 席の Claude の `gh` と `git push` が使う fine-grained PAT。要る権限は「席の Claude の権限」                                  |
-| `GIT_AUTHOR_NAME` など                                            | いいえ | 席の Claude の commit の作者。`GIT_AUTHOR_*` と `GIT_COMMITTER_*` を渡す                                                     |
-| `YUNOMI_URL`                                                      | いいえ | Worker の URL。`yunomi-memory` が Working の記憶の口（`/v1/partners/:partnerId/working/memory`）を呼ぶ                       |
-| `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET`                 | いいえ | Working 用の Access service token。yunomi の Worker の `accessCallers` で `working` に引かれる。席の Claude には渡さない     |
-| `CHIMERA_URL`                                                     | いいえ | chimera の URL。`chimera:` の行の画像を取る                                                                                  |
-| `CHIMERA_ACCESS_CLIENT_ID` / `CHIMERA_ACCESS_CLIENT_SECRET`       | いいえ | chimera の Access service token。受付だけが使い、席の Claude には渡さない                                                    |
-| `PLAYWRIGHT_MCP_URL`                                              | いいえ | Playwright MCP の URL（`https://playwright.chanu.co/mcp`）。Akarin の席の Codex に MCP サーバー `playwright` として渡す      |
-| `PLAYWRIGHT_ACCESS_CLIENT_ID` / `PLAYWRIGHT_ACCESS_CLIENT_SECRET` | いいえ | Playwright MCP の Cloudflare Access の service token。URL とそろったときだけ渡す                                             |
-| `CHAKAI_MCP_URL`                                                  | いいえ | chakai（タスク台帳）の MCP の URL。席の agent に MCP サーバー `chakai` として渡す                                            |
-| `CHAKAI_ACCESS_CLIENT_ID` / `CHAKAI_ACCESS_CLIENT_SECRET`         | いいえ | chakai の Cloudflare Access の service token。URL とそろったときだけ渡し、席は `X-Actor`（`yukarin` / `akarin`）を付けて呼ぶ |
-| `MEMORY_BIN`                                                      | いいえ | 朝会で記憶を読む CLI。既定は `yunomi-memory`                                                                                 |
-| `MAC_STATE_TOKEN`                                                 | いいえ | Mac と共有するトークン。設定したときだけ席の状態の受け口を開く                                                               |
-| `MAC_STATE_PORT`                                                  | いいえ | 席の状態の受け口のポート。既定は `8090`                                                                                      |
-| `SEAT_STATUS_TOKEN`                                               | いいえ | yunomi の gateway と共有するトークン。設定したときだけ席の状態を渡す口を開く                                                 |
-| `SEAT_STATUS_PORT`                                                | いいえ | 席の状態を渡す口のポート。既定は `8091`                                                                                      |
-| `STANDUP_ENABLED`                                                 | いいえ | `false` で朝会・見回り・見張り・GitHub の出来事を止める。既定は `true`                                                       |
-| `STANDUP_TIME`                                                    | いいえ | 朝会の時刻（`HH:MM`、Asia/Tokyo）。既定は `09:00`                                                                            |
-| `STANDUP_GITHUB_OWNER`                                            | いいえ | 朝会で PR と申し送りを探す GitHub の owner。既定は `ochanuco`                                                                |
-| `HEARTBEAT_ENABLED`                                               | いいえ | `false` で見回りを止め、朝会だけにする。既定は `true`                                                                        |
-| `HEARTBEAT_INTERVAL_MINUTES`                                      | いいえ | 見回りの間隔（分、30 以上）。既定は `120`。Dkron に任せるときは、朝会の直前の見回りを飛ばす幅（この半分）にだけ使う          |
-| `SCHEDULER_URL`                                                   | いいえ | Dkron の URL（`https://<scheduler host>`）。下の 4 つとそろえると Dkron に任せる                                             |
-| `SCHEDULER_ACCESS_CLIENT_ID` / `SCHEDULER_ACCESS_CLIENT_SECRET`   | いいえ | Dkron の前の Cloudflare Access の service token。受付だけが使い、席には渡さない                                              |
-| `SCHEDULER_TOKEN`                                                 | いいえ | Dkron が起こされる口に付けるトークン。ジョブに書く                                                                           |
-| `SCHEDULER_SELF_URL`                                              | いいえ | Dkron から届く起こされる口（`http://<host>:<公開したポート>/run`）                                                           |
-| `SCHEDULER_PORT`                                                  | いいえ | 起こされる口のポート。既定は `8092`                                                                                          |
-| `SCHEDULER_SYNC_INTERVAL_MINUTES`                                 | いいえ | Dkron のジョブを突き合わせる間隔（分）。既定は `10`                                                                          |
-| `PATROL_SCHEDULE`                                                 | いいえ | Dkron の見回りのジョブの schedule（先頭が秒の 6 フィールドの cron、Asia/Tokyo）。既定は `0 0 */2 * * *`                      |
-| `ACTIVITY_LOG_THREAD_ID`                                          | いいえ | 活動ログを投稿するスレッドの ID。設定したときだけ活動ログをまとめる                                                          |
-| `ACTIVITY_LOG_TIME`                                               | いいえ | 活動ログをまとめる時刻（`HH:MM`、Asia/Tokyo）。既定は `23:30`                                                                |
-| `HISHAKU_URL`                                                     | いいえ | hishaku の Manager の URL。下の 2 つとそろったときだけ席のセッションを預ける                                                 |
-| `HISHAKU_ACCESS_CLIENT_ID` / `HISHAKU_ACCESS_CLIENT_SECRET`       | いいえ | Manager の前の Cloudflare Access の service token。受付だけが使い、席には渡さない                                            |
-| `HISHAKU_HOLDER`                                                  | いいえ | 貸し出しの持ち主として名乗る Commander の ID。既定は `docker01`                                                              |
-| `HS_BIN`                                                          | いいえ | `hs` のパス。既定は `hs`                                                                                                     |
-| `CLAUDE_BIN`                                                      | いいえ | 受付が件名の要約とログインの期限に使う Claude CLI のパス。既定は `claude`                                                    |
-| `SEATS_REPO`                                                      | いいえ | 席の元にする空の git リポジトリ。既定は `~/work/seats`                                                                       |
-| `SEATS_DIR`                                                       | いいえ | 席の worktree を作る場所。既定は `~/work/orca/workspaces/seats`。hook と席の agent には `MIZUYA_SEATS_DIR` で渡す            |
-| `SEAT_LIMIT`                                                      | いいえ | 同時に動かしておく席の上限。既定は `6`                                                                                       |
-| `SEAT_SLEEP_AFTER_MINUTES`                                        | いいえ | `決めてほしい` のままこれだけたった席の agent を止める。既定は `120`                                                         |
-| `SEAT_DONE_LINGER_MINUTES`                                        | いいえ | `完了` か `見張り中` で手を止めた席を、これだけ閉じずに残す。既定は `60`                                                     |
-| `TITLE_SETTLE_MINUTES`                                            | いいえ | `決めてほしい` などになってからこれだけ投稿が放っておかれたら、件名に状態の絵文字を付ける。既定は `60`                       |
-| `LOG_LEVEL`                                                       | いいえ | `debug` / `info` / `warn` / `error`。既定は `info`                                                                           |
+| 変数                                                              | 必須   | 内容                                                                                                                                                           |
+| ----------------------------------------------------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DISCORD_TOKEN`                                                   | はい   | mizuya の bot トークン。Gateway での受信とボタンに使う                                                                                                         |
+| `YUKARIN_DISCORD_TOKEN`                                           | はい   | ゆかりんの bot トークン。Yukarin の席の発言・投稿・リアクション・入力中の表示に REST で使う                                                                    |
+| `AKARIN_DISCORD_TOKEN`                                            | いいえ | あかりんの bot トークン。無ければ Akarin の席を作らず、Akarin 宛ての依頼も Yukarin が受ける                                                                    |
+| `YUKARIN_ROLE_ID` / `AKARIN_ROLE_ID`                              | いいえ | 依頼の宛先の席を決める role（chabatake の `discord/chanuco` の output `working_role_ids`）                                                                     |
+| `MIZUYA_INBOX_URL`                                                | いいえ | mizuya の Worker の受け箱（`wss://mizuya.chanu.co/working/inbox`）。下の 3 つとそろわなければつながず、ボタンを受け取れない                                    |
+| `MIZUYA_INBOX_TOKEN`                                              | いいえ | 受け箱の token。Worker の `WORKING_INBOX_TOKEN` と同じ値                                                                                                       |
+| `MIZUYA_ACCESS_CLIENT_ID` / `MIZUYA_ACCESS_CLIENT_SECRET`         | いいえ | 受け箱につなぐ Access の service token（`mizuya-working-inbox`）                                                                                               |
+| `CODEX_HOME`                                                      | いいえ | Codex CLI の設定とログイン情報の置き場所。イメージでは `~/.codex`                                                                                              |
+| `WORK_TEXT_CHANNEL_ID`                                            | はい   | 依頼を受ける仕事テキストチャンネル                                                                                                                             |
+| `WORK_FORUM_CHANNEL_ID`                                           | はい   | 投稿を立てる仕事フォーラム                                                                                                                                     |
+| `WORKING_OWNER_DISCORD_USER_IDS`                                  | はい   | 作業を頼める人の Discord ユーザー ID（カンマ区切り）                                                                                                           |
+| `PORT`                                                            | いいえ | 生存確認（`/healthz`）を待ち受けるポート。既定は `8080`                                                                                                        |
+| `STATE_DIR`                                                       | いいえ | 対応表の置き場所。既定は `~/state`                                                                                                                             |
+| `WORK_DIR`                                                        | いいえ | 受付が動かす CLI（件名の要約、記憶、`gh`）の作業ディレクトリ。既定は `~/work`                                                                                  |
+| `PERSONA_SCRIPT`                                                  | いいえ | 人格を出力するスクリプト。既定は `~/bin/persona.sh`                                                                                                            |
+| `PERSONA_DIR`                                                     | いいえ | 人格の元ファイルの置き場。既定は `~/persona`                                                                                                                   |
+| `HANDOFF_DIR`                                                     | いいえ | `prompt.md` と `issue-template.md` の置き場所。既定は `~/handoff`                                                                                              |
+| `GH_TOKEN`                                                        | いいえ | 席の Claude の `gh` と `git push` が使う fine-grained PAT。要る権限は「席の Claude の権限」                                                                    |
+| `GIT_AUTHOR_NAME` など                                            | いいえ | 席の Claude の commit の作者。`GIT_AUTHOR_*` と `GIT_COMMITTER_*` を渡す                                                                                       |
+| `YUNOMI_URL`                                                      | いいえ | Worker の URL。`yunomi-memory` が Working の記憶の口（`/v1/partners/:partnerId/working/memory`）を呼ぶ                                                         |
+| `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET`                 | いいえ | Working 用の Access service token。yunomi の Worker の `accessCallers` で `working` に引かれる。席の Claude には渡さない                                       |
+| `CHIMERA_URL`                                                     | いいえ | chimera の URL。`chimera:` の行の画像を取る                                                                                                                    |
+| `CHIMERA_ACCESS_CLIENT_ID` / `CHIMERA_ACCESS_CLIENT_SECRET`       | いいえ | chimera の Access service token。受付だけが使い、席の Claude には渡さない                                                                                      |
+| `PLAYWRIGHT_MCP_URL`                                              | いいえ | Playwright MCP の URL（`https://playwright.chanu.co/mcp`）。Akarin の席の Codex に MCP サーバー `playwright` として渡す                                        |
+| `PLAYWRIGHT_ACCESS_CLIENT_ID` / `PLAYWRIGHT_ACCESS_CLIENT_SECRET` | いいえ | Playwright MCP の Cloudflare Access の service token。URL とそろったときだけ渡す                                                                               |
+| `CHAKAI_MCP_URL`                                                  | いいえ | chakai（タスク台帳）の MCP の URL。席の agent に MCP サーバー `chakai` として渡す。受付は同じ origin の REST（`/v1`）で担当の付いたタスクを拾い、席を回す      |
+| `CHAKAI_ACCESS_CLIENT_ID` / `CHAKAI_ACCESS_CLIENT_SECRET`         | いいえ | chakai の Cloudflare Access の service token。URL とそろったときだけ席に渡し、タスクの見回りを動かす。席も受付も `X-Actor`（`yukarin` / `akarin`）を付けて呼ぶ |
+| `MEMORY_BIN`                                                      | いいえ | 朝会で記憶を読む CLI。既定は `yunomi-memory`                                                                                                                   |
+| `MAC_STATE_TOKEN`                                                 | いいえ | Mac と共有するトークン。設定したときだけ席の状態の受け口を開く                                                                                                 |
+| `MAC_STATE_PORT`                                                  | いいえ | 席の状態の受け口のポート。既定は `8090`                                                                                                                        |
+| `SEAT_STATUS_TOKEN`                                               | いいえ | yunomi の gateway と共有するトークン。設定したときだけ席の状態を渡す口を開く                                                                                   |
+| `SEAT_STATUS_PORT`                                                | いいえ | 席の状態を渡す口のポート。既定は `8091`                                                                                                                        |
+| `STANDUP_ENABLED`                                                 | いいえ | `false` で朝会・見回り・見張り・GitHub の出来事を止める。既定は `true`                                                                                         |
+| `STANDUP_TIME`                                                    | いいえ | 朝会の時刻（`HH:MM`、Asia/Tokyo）。既定は `09:00`                                                                                                              |
+| `STANDUP_GITHUB_OWNER`                                            | いいえ | 朝会で PR と申し送りを探す GitHub の owner。既定は `ochanuco`                                                                                                  |
+| `HEARTBEAT_ENABLED`                                               | いいえ | `false` で見回りを止め、朝会だけにする。既定は `true`                                                                                                          |
+| `HEARTBEAT_INTERVAL_MINUTES`                                      | いいえ | 見回りの間隔（分、30 以上）。既定は `120`。Dkron に任せるときは、朝会の直前の見回りを飛ばす幅（この半分）にだけ使う                                            |
+| `SCHEDULER_URL`                                                   | いいえ | Dkron の URL（`https://<scheduler host>`）。下の 4 つとそろえると Dkron に任せる                                                                               |
+| `SCHEDULER_ACCESS_CLIENT_ID` / `SCHEDULER_ACCESS_CLIENT_SECRET`   | いいえ | Dkron の前の Cloudflare Access の service token。受付だけが使い、席には渡さない                                                                                |
+| `SCHEDULER_TOKEN`                                                 | いいえ | Dkron が起こされる口に付けるトークン。ジョブに書く                                                                                                             |
+| `SCHEDULER_SELF_URL`                                              | いいえ | Dkron から届く起こされる口（`http://<host>:<公開したポート>/run`）                                                                                             |
+| `SCHEDULER_PORT`                                                  | いいえ | 起こされる口のポート。既定は `8092`                                                                                                                            |
+| `SCHEDULER_SYNC_INTERVAL_MINUTES`                                 | いいえ | Dkron のジョブを突き合わせる間隔（分）。既定は `10`                                                                                                            |
+| `PATROL_SCHEDULE`                                                 | いいえ | Dkron の見回りのジョブの schedule（先頭が秒の 6 フィールドの cron、Asia/Tokyo）。既定は `0 0 */2 * * *`                                                        |
+| `ACTIVITY_LOG_THREAD_ID`                                          | いいえ | 活動ログを投稿するスレッドの ID。設定したときだけ活動ログをまとめる                                                                                            |
+| `ACTIVITY_LOG_TIME`                                               | いいえ | 活動ログをまとめる時刻（`HH:MM`、Asia/Tokyo）。既定は `23:30`                                                                                                  |
+| `HISHAKU_URL`                                                     | いいえ | hishaku の Manager の URL。下の 2 つとそろったときだけ席のセッションを預ける                                                                                   |
+| `HISHAKU_ACCESS_CLIENT_ID` / `HISHAKU_ACCESS_CLIENT_SECRET`       | いいえ | Manager の前の Cloudflare Access の service token。受付だけが使い、席には渡さない                                                                              |
+| `HISHAKU_HOLDER`                                                  | いいえ | 貸し出しの持ち主として名乗る Commander の ID。既定は `docker01`                                                                                                |
+| `HS_BIN`                                                          | いいえ | `hs` のパス。既定は `hs`                                                                                                                                       |
+| `CLAUDE_BIN`                                                      | いいえ | 受付が件名の要約とログインの期限に使う Claude CLI のパス。既定は `claude`                                                                                      |
+| `SEATS_REPO`                                                      | いいえ | 席の元にする空の git リポジトリ。既定は `~/work/seats`                                                                                                         |
+| `SEATS_DIR`                                                       | いいえ | 席の worktree を作る場所。既定は `~/work/orca/workspaces/seats`。hook と席の agent には `MIZUYA_SEATS_DIR` で渡す                                              |
+| `SEAT_LIMIT`                                                      | いいえ | 同時に動かしておく席の上限。既定は `6`                                                                                                                         |
+| `SEAT_SLEEP_AFTER_MINUTES`                                        | いいえ | `決めてほしい` のままこれだけたった席の agent を止める。既定は `120`                                                                                           |
+| `SEAT_DONE_LINGER_MINUTES`                                        | いいえ | `完了` か `見張り中` で手を止めた席を、これだけ閉じずに残す。既定は `60`                                                                                       |
+| `TITLE_SETTLE_MINUTES`                                            | いいえ | `決めてほしい` などになってからこれだけ投稿が放っておかれたら、件名に状態の絵文字を付ける。既定は `60`                                                         |
+| `LOG_LEVEL`                                                       | いいえ | `debug` / `info` / `warn` / `error`。既定は `info`                                                                                                             |
 
 mizuya の bot には、仕事チャンネルと仕事フォーラムで、読む・送る・スレッドでの送信・履歴の読み取りの権限が要る。人格の bot には、読む・送る・スレッドでの送信・公開スレッドの作成・スレッドの管理（タグの付け替え）・埋め込み・ファイル・履歴の読み取り・リアクションの権限が要る（どちらも chabatake の `discord/chanuco` の上書き）。mizuya の application では Message Content intent を有効にする。
 
