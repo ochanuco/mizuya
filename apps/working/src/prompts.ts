@@ -427,3 +427,116 @@ ${issue.url}
 本文:
 ${issue.body.trim() === "" ? "（なし）" : issue.body}`;
 };
+
+/** 席に渡す chakai のタスク。 */
+export type ChakaiTaskText = { id: string; title: string; body: string };
+
+const CHAKAI_TITLE = /^chakai(?: \d+ 件目)? /;
+
+/** 件名は `chakai <親の件名>`。子を渡し始めたら `chakai <N> 件目 <親の件名>`。 */
+export const chakaiThreadName = (parentTitle: string, count: number | null) => {
+	const name = `chakai ${count === null ? "" : `${count} 件目 `}${parentTitle}`;
+	return name.length > THREAD_NAME_LIMIT
+		? `${name.slice(0, THREAD_NAME_LIMIT - 1)}…`
+		: name;
+};
+
+/** 件名の何件目かを付け替える。chakai の投稿の件名でなければ null。 */
+export const chakaiProgressTitle = (base: string, count: number) =>
+	CHAKAI_TITLE.test(base)
+		? `chakai ${count} 件目 ${base.replace(CHAKAI_TITLE, "")}`
+		: null;
+
+const CHAKAI_PROGRESS_LINE = /^(?:作業中|進み具合): .*$/m;
+
+export const chakaiPostBody = (parent: ChakaiTaskText, line: string) =>
+	`chakai のタスクから拾った仕事\n\n${parent.title}\n${line}${parent.body.trim() === "" ? "" : `\n\n${quote(parent.body, 1500)}`}`;
+
+/** 投稿の本文の進み具合の行を書き換える。行が無ければ null。 */
+export const chakaiPostProgress = (content: string, line: string) =>
+	CHAKAI_PROGRESS_LINE.test(content)
+		? content.replace(CHAKAI_PROGRESS_LINE, () => line)
+		: null;
+
+const CHAKAI_LINE_TITLE_LIMIT = 100;
+
+/** 本文は書き換えても Discord の 1 件の上限に収まるよう、子の件名を詰める。 */
+export const chakaiWorkingLine = (count: number, task: ChakaiTaskText) =>
+	`作業中: ${count} 件目 ${
+		task.title.length > CHAKAI_LINE_TITLE_LIMIT
+			? `${task.title.slice(0, CHAKAI_LINE_TITLE_LIMIT)}…`
+			: task.title
+	}`;
+
+export const chakaiSettledLine = (count: number) =>
+	`進み具合: ${count} 件を渡し終えた`;
+
+/** 子を渡すたびに投稿に書く。分母は席が子を足すと動くので、残りの数だけを出す。 */
+export const chakaiHandoffText = (
+	count: number,
+	task: ChakaiTaskText,
+	remaining: number,
+) => `${count} 件目: ${task.title}（残りの todo ${remaining} 件）`;
+
+const chakaiTaskText = (
+	count: number,
+	task: ChakaiTaskText,
+	isParent: boolean,
+) => `## ${count} 件目のタスク
+
+件名: ${task.title}
+ID: ${task.id}
+${
+	isParent
+		? "todo の子タスクが無いので、親タスクそのものを作業する。終えたら done にせず、review にして waiting_on に結果を一言書く（owner が確かめて閉じる）。範囲内で分けたら、このタスクは doing のまま残す。\n"
+		: ""
+}
+本文:
+${task.body.trim() === "" ? "（なし）" : task.body}`;
+
+export const chakaiPrompt = (input: {
+	now: Date;
+	parent: ChakaiTaskText;
+	repo: string;
+	task: ChakaiTaskText;
+	count: number;
+}) => `${clock(input.now)}
+chakai（タスク台帳）で担当に割り当てられたタスクを受付が拾い、この投稿を立てた。受付がタスクを 1 つずつ渡すので、渡されたタスクを作業して、この投稿で返事をする。
+
+親タスク: ${input.parent.title}（ID: ${input.parent.id}）
+repo: ${input.repo}
+
+- 渡されたタスクを終えたら、chakai の MCP でそのタスクを done にする。owner の判断が要るなら review にして、waiting_on に仰ぐ内容を書く。
+- 渡されたタスクの範囲内で分けるなら、そのタスクの子を todo で足してよい。足した子は受付が順に渡す。範囲の外で見つけた課題は backlog に積む。
+- タスクを doing にする操作と次のタスクの割り当ては受付がする。渡されていないタスクには手を付けない。
+- 読んでも分からないことは、この投稿で聞く。
+
+${chakaiTaskText(input.count, input.task, input.task.id === input.parent.id)}`;
+
+/** 2 件目からのターンに渡す。決まりは最初の依頼文にある。 */
+export const chakaiNextPrompt = (input: {
+	task: ChakaiTaskText;
+	count: number;
+	isParent: boolean;
+}) =>
+	`受付が chakai の次のタスクを渡す。終えたら done に、owner の判断が要るなら review（waiting_on 付き）にする。\n\n${chakaiTaskText(input.count, input.task, input.isParent)}`;
+
+export const chakaiNudgePrompt = (task: ChakaiTaskText) =>
+	`渡したタスク「${task.title}」（ID: ${task.id}）が chakai で doing のまま残っている。終えたなら done に、owner の判断が要るなら review（waiting_on 付き）にして、何をしたかを一言返す。まだ途中なら続きを進める。`;
+
+/** 渡したタスクが doing のまま残り、促しても動かなかった。 */
+export const CHAKAI_STUCK_TEXT =
+	"渡したタスクが chakai で doing のまま残っているので、次のタスクに進まずに止めました。続けるなら、ここで指示をください。";
+
+const CHAKAI_LEFT_STATES = ["doing", "review", "backlog"] as const;
+
+/** todo の子孫が無くなって席を解放するときに書く。 */
+export const chakaiSettledText = (
+	count: number,
+	states: Readonly<Record<string, number>>,
+) => {
+	const left = CHAKAI_LEFT_STATES.flatMap((s) =>
+		(states[s] ?? 0) > 0 ? [`${s} ${states[s]} 件`] : [],
+	);
+	return `chakai の todo のタスクが無くなったので、席を解放しました（渡したのは ${count} 件）。${left.length > 0 ? `子孫に ${left.join("、")}が残っています。` : ""}chakai で確かめてください。`;
+};

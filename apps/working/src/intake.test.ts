@@ -36,6 +36,7 @@ import {
 	EMOJI_TAGS,
 	envelope,
 	FORUM,
+	fakeChakai,
 	fakeDiscord,
 	fakeEngine,
 	fakeHishaku,
@@ -90,6 +91,7 @@ const setup = async (
 		seatReplied?: () => void;
 		issues?: IssueTracker;
 		hishaku?: ReturnType<typeof fakeHishaku>;
+		chakai?: ReturnType<typeof fakeChakai>;
 		findWorkBranches?: IntakeDeps["findWorkBranches"];
 		/** 受付を作り直すときに、同じ Discord を渡す。 */
 		d?: ReturnType<typeof fakeDiscord>;
@@ -159,6 +161,7 @@ const setup = async (
 		ownerUserIds: new Set([OWNER]),
 		notifyUserId: OWNER,
 		issues: opts.issues ?? null,
+		chakai: opts.chakai?.chakai ?? null,
 		workTextChannelId: TEXT,
 		workForumChannelId: FORUM,
 		seatLimit: opts.seatLimit ?? 6,
@@ -3282,5 +3285,426 @@ describe("件名の状態の絵文字", () => {
 		const s = await setup({ d, stateDir });
 		await s.intake.reconcile();
 		await vi.waitFor(() => expect(nameOf(s)).toBe("🎉[1234] README の誤字"));
+	});
+});
+
+describe("chakai の親タスクの席", () => {
+	const done = (
+		dispatchId: string | null | undefined,
+		body = "やりました\n状態: 完了",
+	) =>
+		seatMessage({ type: "worker_done", dispatchId: dispatchId ?? null, body });
+
+	/** 親 p に todo の子 c1、c2 を持つ台帳。 */
+	const ledger = () => {
+		const c = fakeChakai();
+		c.repos.set("pj1", ["example/repo"]);
+		const parent = c.add({
+			id: "p",
+			title: "設定を直す",
+			body: "親の本文",
+			state: "doing",
+			assigneeId: "yukarin",
+		});
+		const c1 = c.add({ id: "c1", parentId: "p", title: "読み込みを直す" });
+		const c2 = c.add({ id: "c2", parentId: "p", title: "テストを足す" });
+		return { c, parent, c1, c2 };
+	};
+
+	const begin = async (
+		opts: Parameters<typeof setup>[0] = {},
+		l = ledger(),
+	) => {
+		const s = await setup({ chakai: l.c, ...opts });
+		const r = await s.intake.startFromTask({
+			parent: l.parent,
+			first: l.c1,
+			remaining: 1,
+			partner: "yukarin",
+			repo: "example/repo",
+		});
+		return { s, r, ...l };
+	};
+
+	const turnEnd = async (s: Awaited<ReturnType<typeof setup>>, body?: string) =>
+		s.intake.onSeatMessage(done(s.seats.get("thread1")?.dispatchId, body));
+
+	it("投稿を立てて run を始め、最初の子を doing にして席に渡す", async () => {
+		const h = fakeHishaku();
+		const { s, r, c } = await begin({ hishaku: h });
+		expect(r).toEqual({ ok: true, value: { threadId: "thread1" } });
+		expect(s.d.posts[0]).toMatchObject({
+			name: "chakai 1 件目 設定を直す",
+			tagIds: ["tag-working"],
+		});
+		expect(s.d.posts[0]?.content).toContain("設定を直す");
+		expect(s.d.posts[0]?.content).toContain("作業中: 1 件目 読み込みを直す");
+		expect(c.runs).toEqual([
+			{
+				id: "run1",
+				actor: "yukarin",
+				taskId: "p",
+				seat: "seat-thread1",
+				model: null,
+				hishakuNo: 1234,
+				ended: false,
+			},
+		]);
+		expect(c.tasks.get("c1")?.state).toBe("doing");
+		expect(s.d.sentTo("thread1")).toContain(
+			"1 件目: 読み込みを直す（残りの todo 1 件）",
+		);
+		const [start] = s.o.opsOf("startSeat") as { spec: string }[];
+		expect(start?.spec).toContain("親タスク: 設定を直す（ID: p）");
+		expect(start?.spec).toContain("repo: example/repo");
+		expect(start?.spec).toContain("件名: 読み込みを直す");
+		expect(start?.spec).toContain("ID: c1");
+		expect(h.opsOf("createSession")).toMatchObject([{ repo: "example/repo" }]);
+		expect(s.seats.chakaiOf("thread1")).toEqual({
+			parentId: "p",
+			runId: "run1",
+			taskId: "c1",
+			count: 1,
+			nudged: false,
+		});
+	});
+
+	it("渡した子が done になったら、次の子を doing にして同じ席に渡す", async () => {
+		const { s, c } = await begin();
+		c.move("c1", "done");
+		await turnEnd(s);
+		expect(c.tasks.get("c2")?.state).toBe("doing");
+		const [send] = s.o.opsOf("send") as { body: string }[];
+		expect(send?.body).toContain("## 2 件目のタスク");
+		expect(send?.body).toContain("ID: c2");
+		expect(s.seats.get("thread1")?.status).toBe("working");
+		expect(s.d.tagsOf("thread1")).toEqual(["tag-working"]);
+		expect(s.d.sentTo("thread1")).toEqual(
+			expect.arrayContaining([
+				"やりました",
+				"2 件目: テストを足す（残りの todo 0 件）",
+			]),
+		);
+		expect(s.d.channels.get("thread1")?.name).toBe("chakai 2 件目 設定を直す");
+		expect(s.d.edited.get("thread1")?.content).toContain(
+			"作業中: 2 件目 テストを足す",
+		);
+		// 子を 1 つ終えただけなので、完了の扱い（記憶、活動ログ）はしない
+		expect(s.remembered).toEqual([]);
+		expect(s.activity.filter((a) => a.kind === "done")).toEqual([]);
+		expect(c.runs[0]?.ended).toBe(false);
+	});
+
+	it("todo の子孫が無くなったら run を閉じ、決めてほしいのタグを付けて席を解放する", async () => {
+		const { s, c } = await begin();
+		c.move("c1", "done");
+		await turnEnd(s);
+		c.move("c2", "done");
+		await turnEnd(s);
+		expect(c.runs[0]?.ended).toBe(true);
+		expect(c.tasks.get("p")?.state).toBe("review");
+		expect(s.d.tagsOf("thread1")).toEqual(["tag-decide"]);
+		expect(s.seats.get("thread1")).toBeNull();
+		expect(s.o.opsOf("removeWorktree")).toHaveLength(1);
+		expect(s.d.sentTo("thread1").at(-1)).toContain(
+			"席を解放しました（渡したのは 2 件）",
+		);
+		expect(s.d.edited.get("thread1")?.content).toContain(
+			"進み具合: 2 件を渡し終えた",
+		);
+		expect(s.seats.chakaiOf("thread1")).toMatchObject({
+			parentId: "p",
+			runId: null,
+		});
+	});
+
+	it("席が足した子も、順に渡す", async () => {
+		const { s, c } = await begin();
+		// c1 を分けて子を足した。c1 は doing のまま残る
+		c.add({ id: "g1", parentId: "c1", title: "孫" });
+		await turnEnd(s);
+		expect(c.tasks.get("g1")?.state).toBe("doing");
+		expect((s.o.opsOf("send")[0] as { body: string }).body).toContain("ID: g1");
+		// 孫が片付いたあとの c1 の状態は chakai が決める。受付はそれを見ずに次へ進む
+		c.move("g1", "done");
+		expect(c.tasks.get("c1")?.state).toBe("review");
+		await turnEnd(s);
+		expect(c.tasks.get("c2")?.state).toBe("doing");
+		c.move("c2", "done");
+		await turnEnd(s);
+		expect(c.runs[0]?.ended).toBe(true);
+		expect(s.d.sentTo("thread1").at(-1)).toContain("review 1 件");
+	});
+
+	it("席が子を review にしたら次を渡さず、決めてほしいで待ち、答えのあとで続ける", async () => {
+		const { s, c } = await begin();
+		c.move("c1", "review", "どちらの形にするか");
+		await turnEnd(s, "どちらにしますか\n状態: 完了");
+		expect(s.o.opsOf("send")).toEqual([]);
+		expect(c.tasks.get("c2")?.state).toBe("todo");
+		expect(s.d.tagsOf("thread1")).toEqual(["tag-decide"]);
+		expect(s.seats.get("thread1")?.status).toBe("waiting");
+		expect(c.runs[0]?.ended).toBe(false);
+
+		s.d.messages.set("m1", {
+			id: "m1",
+			authorId: OWNER,
+			authorName: "owner",
+			isBot: false,
+			content: "A で",
+		});
+		await s.intake.handle(say("thread1", "A で"));
+		c.move("c1", "done");
+		await turnEnd(s);
+		expect(c.tasks.get("c2")?.state).toBe("doing");
+		expect((s.o.opsOf("send") as { body: string }[]).at(-1)?.body).toContain(
+			"ID: c2",
+		);
+	});
+
+	it("渡した子が doing のまま残ったら 1 回だけ促し、それでも残れば止めて決めてほしいにする", async () => {
+		const { s, c } = await begin();
+		await turnEnd(s);
+		const sends = () => s.o.opsOf("send") as { body: string }[];
+		expect(sends()).toHaveLength(1);
+		expect(sends()[0]?.body).toContain("doing のまま残っている");
+		expect(c.tasks.get("c1")?.state).toBe("doing");
+		expect(c.tasks.get("c2")?.state).toBe("todo");
+
+		await turnEnd(s);
+		expect(sends()).toHaveLength(1);
+		expect(s.d.tagsOf("thread1")).toEqual(["tag-decide"]);
+		expect(s.d.sentTo("thread1").at(-1)).toContain("doing のまま残っている");
+		expect(c.tasks.get("c1")?.state).toBe("doing");
+		expect(c.runs[0]?.ended).toBe(false);
+	});
+
+	it("todo の子孫が無い親は親そのものを渡し、review になったら解放する", async () => {
+		const c = fakeChakai();
+		c.repos.set("pj1", ["example/repo"]);
+		const parent = c.add({ id: "p", title: "調べる", state: "doing" });
+		const s = await setup({ chakai: c });
+		await s.intake.startFromTask({
+			parent,
+			first: parent,
+			remaining: 0,
+			partner: "yukarin",
+			repo: "example/repo",
+		});
+		const [start] = s.o.opsOf("startSeat") as { spec: string }[];
+		expect(start?.spec).toContain("親タスクそのものを作業する");
+		expect(c.tasks.get("p")?.state).toBe("doing");
+		c.move("p", "review", "調べた結果を見てほしい");
+		await turnEnd(s);
+		expect(c.runs[0]?.ended).toBe(true);
+		expect(s.seats.get("thread1")).toBeNull();
+		expect(s.d.tagsOf("thread1")).toEqual(["tag-decide"]);
+	});
+
+	it("台帳を読めないときは次を渡さず、決めてほしいで待つ", async () => {
+		const { s, c } = await begin();
+		c.move("c1", "done");
+		c.failOn.add("nextTask");
+		await turnEnd(s);
+		expect(s.o.opsOf("send")).toEqual([]);
+		expect(s.d.tagsOf("thread1")).toEqual(["tag-decide"]);
+		expect(c.tasks.get("c2")?.state).toBe("todo");
+	});
+
+	it("止めた操作の許可待ちの間は、台帳が done でも次を渡さない", async () => {
+		const { s, c } = await begin();
+		c.move("c1", "done");
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "worker_done",
+				dispatchId: s.seats.get("thread1")?.dispatchId ?? null,
+				body: "失敗しました",
+				outcome: "failed",
+			}),
+		);
+		expect(s.o.opsOf("send")).toEqual([]);
+		expect(c.tasks.get("c2")?.state).toBe("todo");
+		expect(s.d.tagsOf("thread1")).toEqual(["tag-decide"]);
+	});
+
+	it("run を始められなければ席を立てず、投稿に知らせて失敗を返す", async () => {
+		const l = ledger();
+		l.c.failOn.add("startRun");
+		const { s, r } = await begin({}, l);
+		expect(r).toMatchObject({ ok: false, error: { type: "RunFailed" } });
+		expect(s.o.opsOf("startSeat")).toEqual([]);
+		expect(l.c.tasks.get("c1")?.state).toBe("todo");
+		expect(s.d.tagsOf("thread1")).toEqual(["tag-decide"]);
+	});
+
+	it("投稿を立てられなければ、台帳に触らずに PostFailed を返す", async () => {
+		const l = ledger();
+		const d = fakeDiscord();
+		vi.mocked(d.api.createForumPost).mockResolvedValueOnce(
+			err(externalServiceUnavailable({ service: "discord" })),
+		);
+		const { r } = await begin({ d }, l);
+		expect(r).toMatchObject({ ok: false, error: { type: "PostFailed" } });
+		expect(l.c.runs).toEqual([]);
+		expect(l.c.tasks.get("c1")?.state).toBe("todo");
+	});
+
+	it("席を起こせなければ run を閉じ、渡した子を todo に戻して失敗を返す", async () => {
+		const l = ledger();
+		const o = fakeEngine();
+		vi.mocked(o.engine.startSeat).mockResolvedValueOnce(
+			err({ type: "EngineFailed", command: "hs turn", reason: "boom" }),
+		);
+		const { r } = await begin({ seatEngine: o }, l);
+		expect(r).toMatchObject({ ok: false, error: { type: "SeatFailed" } });
+		expect(l.c.runs[0]?.ended).toBe(true);
+		expect(l.c.tasks.get("c1")?.state).toBe("todo");
+	});
+
+	it("持ち主が席を閉じたら、run も閉じる", async () => {
+		const { s, c } = await begin();
+		c.move("c1", "review", "聞きたい");
+		await turnEnd(s);
+		s.d.messages.set("m1", {
+			id: "m1",
+			authorId: OWNER,
+			authorName: "owner",
+			isBot: false,
+			content: "閉じて",
+		});
+		await s.intake.handle(say("thread1", "閉じて"));
+		expect(s.seats.get("thread1")).toBeNull();
+		expect(c.runs[0]?.ended).toBe(true);
+	});
+
+	it("親がもう一度 todo になって拾われたら、同じ投稿で前の会話を続けて新しい run を始める", async () => {
+		const h = fakeHishaku();
+		const { s, c, parent } = await begin({ hishaku: h });
+		c.move("c1", "done");
+		await turnEnd(s);
+		c.move("c2", "done");
+		await turnEnd(s);
+		expect(s.seats.get("thread1")).toBeNull();
+
+		// owner が子を足して、親を todo に戻した。見回りが親を doing にして、もう一度渡す
+		const c3 = c.add({ id: "c3", parentId: "p", title: "文書を直す" });
+		c.move("p", "doing");
+		const r = await s.intake.startFromTask({
+			parent,
+			first: c3,
+			remaining: 0,
+			partner: "yukarin",
+			repo: "example/repo",
+		});
+		expect(r).toEqual({ ok: true, value: { threadId: "thread1" } });
+		expect(s.d.posts).toHaveLength(1);
+		expect(c.runs.map((x) => [x.id, x.ended])).toEqual([
+			["run1", true],
+			["run2", false],
+		]);
+		expect(c.tasks.get("c3")?.state).toBe("doing");
+		expect(s.seats.get("thread1")?.status).toBe("working");
+		expect(s.d.tagsOf("thread1")).toEqual(["tag-working"]);
+		expect(s.d.channels.get("thread1")?.name).toContain(
+			"chakai 1 件目 設定を直す",
+		);
+		expect(s.d.edited.get("thread1")?.content).toContain(
+			"作業中: 1 件目 文書を直す",
+		);
+		const starts = s.o.opsOf("startSeat") as { spec: string }[];
+		expect(starts.at(-1)?.spec).toContain("ID: c3");
+	});
+
+	it("親がもう一度拾われたときに席が待っていれば、その席に受付からの言葉として渡す", async () => {
+		const { s, c, parent } = await begin();
+		c.move("c1", "review", "聞きたい");
+		await turnEnd(s);
+		expect(s.seats.get("thread1")?.status).toBe("waiting");
+		// owner が台帳で答えて、親を todo に戻した
+		c.move("c1", "done");
+		const r = await s.intake.startFromTask({
+			parent,
+			first: c.tasks.get("c2") ?? parent,
+			remaining: 0,
+			partner: "yukarin",
+			repo: "example/repo",
+		});
+		expect(r.ok).toBe(true);
+		expect(s.d.posts).toHaveLength(1);
+		expect(c.runs.map((x) => x.ended)).toEqual([true, false]);
+		const [send] = s.o.opsOf("send") as { subject: string; body: string }[];
+		expect(send?.subject).toBe("受付からの chakai のタスク");
+		expect(send?.body).toContain("ID: c2");
+		expect(s.seats.get("thread1")?.status).toBe("working");
+		expect(s.o.opsOf("startSeat")).toHaveLength(1);
+	});
+
+	it("親がもう一度拾われたときに席が止まっていれば、前の会話のまま起こして渡す", async () => {
+		const { s, c, parent } = await begin();
+		c.move("c1", "review", "聞きたい");
+		await turnEnd(s);
+		s.advance(3 * 60 * 60_000);
+		await s.intake.sleepIdle();
+		expect(s.seats.get("thread1")?.status).toBe("sleeping");
+		c.move("c1", "done");
+		const r = await s.intake.startFromTask({
+			parent,
+			first: c.tasks.get("c2") ?? parent,
+			remaining: 0,
+			partner: "yukarin",
+			repo: "example/repo",
+		});
+		expect(r.ok).toBe(true);
+		const [resume] = s.o.opsOf("resumeSeat") as { spec: string }[];
+		expect(resume?.spec).toContain("ID: c2");
+		expect(s.seats.get("thread1")?.status).toBe("working");
+		expect(c.runs.map((x) => x.ended)).toEqual([true, false]);
+	});
+
+	it("作業の途中に持ち主が書いた言葉のターンの終わりでも、渡したタスクの状態で決める", async () => {
+		const { s, c } = await begin();
+		s.d.messages.set("m1", {
+			id: "m1",
+			authorId: OWNER,
+			authorName: "owner",
+			isBot: false,
+			content: "ついでにここも見て",
+		});
+		await s.intake.handle(say("thread1", "ついでにここも見て"));
+		c.move("c1", "done");
+		await turnEnd(s);
+		const sends = s.o.opsOf("send") as { subject: string; body: string }[];
+		expect(sends.map((x) => x.subject)).toEqual([
+			"持ち主の返事",
+			"受付からの chakai のタスク",
+		]);
+		expect(sends[1]?.body).toContain("ID: c2");
+		expect(s.seats.chakaiOf("thread1")).toMatchObject({ count: 2 });
+	});
+
+	it("受付を作り直しても、開いている run の続きを渡す", async () => {
+		const { s, c } = await begin();
+		const again = await setup({
+			chakai: c,
+			stateDir: s.stateDir,
+			seatEngine: s.o,
+			d: s.d,
+			sys: s.sys,
+		});
+		c.move("c1", "done");
+		await turnEnd(again);
+		expect(c.tasks.get("c2")?.state).toBe("doing");
+		expect(again.seats.chakaiOf("thread1")).toMatchObject({
+			runId: "run1",
+			taskId: "c2",
+			count: 2,
+		});
+	});
+
+	it("席が上限なら順番待ちにし、run は始めておく", async () => {
+		const { s, r, c } = await begin({ seatLimit: 0 });
+		expect(r.ok).toBe(true);
+		expect(s.seats.get("thread1")?.status).toBe("queued");
+		expect(c.runs[0]?.ended).toBe(false);
 	});
 });

@@ -3,6 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { vi } from "vitest";
 import type { ApprovalRequest, ApprovalStore } from "./approval-store.ts";
+import {
+	CHAKAI_STATES,
+	type Chakai,
+	type ChakaiState,
+	type ChakaiTask,
+} from "./chakai.ts";
 import type {
 	ButtonPressEvent,
 	CommandEvent,
@@ -23,6 +29,7 @@ import {
 	err,
 	externalServiceUnavailable,
 	ok,
+	type PartnerId,
 	permissionDenied,
 	type Result,
 } from "./lib/core.ts";
@@ -551,4 +558,140 @@ export const fakeHishaku = () => {
 	const opsOf = (op: string) =>
 		calls.filter((c) => c.op === op).map((c) => c.args);
 	return { hishaku, calls, behavior, opsOf };
+};
+
+type FakeTask = ChakaiTask & { waitingOn: string | null };
+
+/**
+ * chakai の偽物。台帳を手元に持ち、本物と同じ決まり（review には waiting_on が要る、
+ * 子がすべて片付いた親は review になる、next は木の順で最初の todo）で動く。
+ * failOn に入れた操作は失敗させる。
+ */
+export const fakeChakai = () => {
+	const tasks = new Map<string, FakeTask>();
+	const repos = new Map<string, string[]>();
+	const runs: {
+		id: string;
+		actor: PartnerId;
+		taskId: string;
+		seat: string;
+		model: string | null;
+		hishakuNo: number | null;
+		ended: boolean;
+	}[] = [];
+	const calls: string[] = [];
+	const failOn = new Set<string>();
+	const failed = (code: string | null, reason: string) =>
+		err({ type: "ChakaiFailed" as const, code, reason });
+	const guard = (op: string, detail: string) => {
+		calls.push(`${op} ${detail}`.trim());
+		return failOn.has(op) ? failed(null, `${op} failed`) : null;
+	};
+	const add = (t: Partial<FakeTask> & Pick<FakeTask, "id">): FakeTask => {
+		const task: FakeTask = {
+			projectId: "pj1",
+			parentId: null,
+			title: `タスク ${t.id}`,
+			body: "",
+			state: "todo",
+			assigneeId: null,
+			waitingOn: null,
+			...t,
+		};
+		tasks.set(task.id, task);
+		return task;
+	};
+	const childrenOf = (id: string) =>
+		[...tasks.values()].filter((t) => t.parentId === id);
+	const descendantsOf = (id: string): FakeTask[] =>
+		childrenOf(id).flatMap((c) => [c, ...descendantsOf(c.id)]);
+	const settle = (parentId: string | null) => {
+		const parent = parentId === null ? undefined : tasks.get(parentId);
+		if (!parent || (parent.state !== "todo" && parent.state !== "doing"))
+			return;
+		const kids = childrenOf(parent.id);
+		if (kids.every((k) => k.state === "done" || k.state === "dropped")) {
+			tasks.set(parent.id, {
+				...parent,
+				state: "review",
+				waitingOn: "子タスクがすべて片付いた",
+			});
+		}
+	};
+	/** 席の agent が MCP で動かしたことにする。 */
+	const move = (id: string, state: ChakaiState, waitingOn?: string) => {
+		const t = tasks.get(id);
+		if (!t) throw new Error(`no task ${id}`);
+		tasks.set(id, { ...t, state, waitingOn: waitingOn ?? null });
+		settle(t.parentId);
+	};
+	const chakai: Chakai = {
+		assignedTodos: async (actor) =>
+			guard("assignedTodos", actor) ??
+			ok(
+				[...tasks.values()].filter(
+					(t) => t.state === "todo" && t.assigneeId === actor,
+				),
+			),
+		getTask: async (_actor, id) => {
+			const t = tasks.get(id);
+			return (
+				guard("getTask", id) ??
+				(t ? ok(t) : failed("task_not_found", "404 task_not_found"))
+			);
+		},
+		reposOf: async (_actor, projectId) =>
+			guard("reposOf", projectId) ?? ok(repos.get(projectId) ?? []),
+		hasChildren: async (_actor, id) =>
+			guard("hasChildren", id) ?? ok(childrenOf(id).length > 0),
+		updateTask: async (_actor, id, patch) => {
+			const bad = guard(
+				"updateTask",
+				`${id} ${patch.state}${patch.waiting_on ? ` ${patch.waiting_on}` : ""}`,
+			);
+			if (bad) return bad;
+			const t = tasks.get(id);
+			if (!t) return failed("task_not_found", "404 task_not_found");
+			if (patch.state === "review" && !patch.waiting_on) {
+				return failed("waiting_on_required", "400 waiting_on_required");
+			}
+			if (patch.state !== "review" && patch.waiting_on) {
+				return failed(
+					"waiting_on_only_in_review",
+					"400 waiting_on_only_in_review",
+				);
+			}
+			move(id, patch.state, patch.waiting_on);
+			return ok(tasks.get(id) ?? t);
+		},
+		nextTask: async (_actor, parentId) => {
+			const bad = guard("nextTask", parentId);
+			if (bad) return bad;
+			const all = descendantsOf(parentId);
+			const states = Object.fromEntries(
+				CHAKAI_STATES.map((s) => [s, all.filter((t) => t.state === s).length]),
+			) as Record<ChakaiState, number>;
+			return ok({ task: all.find((t) => t.state === "todo") ?? null, states });
+		},
+		startRun: async (actor, input) => {
+			const bad = guard("startRun", input.taskId);
+			if (bad) return bad;
+			const task = tasks.get(input.taskId);
+			if (!task || (repos.get(task.projectId) ?? []).length === 0) {
+				return failed("repo_required", "400 repo_required");
+			}
+			const id = `run${runs.length + 1}`;
+			runs.push({ id, actor, ...input, ended: false });
+			return ok({ id });
+		},
+		endRun: async (_actor, runId) => {
+			const bad = guard("endRun", runId);
+			if (bad) return bad;
+			const run = runs.find((r) => r.id === runId);
+			if (!run) return failed("run_not_found", "404 run_not_found");
+			run.ended = true;
+			return ok(undefined);
+		},
+	};
+	return { chakai, tasks, repos, runs, calls, failOn, add, move };
 };

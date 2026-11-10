@@ -13,6 +13,8 @@ import {
 	createAttachmentCollector,
 	createChimeraImages,
 } from "./attachments.ts";
+import { createChakai } from "./chakai.ts";
+import { pickupTasks } from "./chakai-pickup.ts";
 import { childEnv, createSummarizer } from "./claude-cli.ts";
 import {
 	claudeConfigPathOf,
@@ -347,6 +349,15 @@ const collectAttachments = createAttachmentCollector({
 // 同期は intake より後に作るので、席の返事の時点で決まっている方を呼ぶ
 let syncScheduler: (() => void) | null = null;
 
+// 席の agent は MCP で使い、受付は同じ service token で REST を呼ぶ
+const chakai = cfg.chakai
+	? createChakai({
+			mcpUrl: cfg.chakai.url,
+			clientId: cfg.chakai.clientId,
+			clientSecret: cfg.chakai.clientSecret,
+		})
+	: null;
+
 const intake = createIntake({
 	seatReplied: () => syncScheduler?.(),
 	discord,
@@ -391,6 +402,7 @@ const intake = createIntake({
 	ownerUserIds: cfg.ownerUserIds,
 	notifyUserId: cfg.ownerDiscordUserId,
 	issues: createGhIssueTracker({ exec: spawnExec, env, cwd: cfg.workDir }),
+	chakai,
 	seatLimit: cfg.seatLimit,
 	sleepAfterMs: cfg.seatSleepAfterMs,
 	doneLingerMs: cfg.seatDoneLingerMs,
@@ -714,6 +726,22 @@ const issuePickupTimer = cfg.standup.enabled
 		})
 	: null;
 
+// chakai で担当を割り当てた todo のタスクも、issue と同じ間隔の見回りで拾って席を立てる
+const taskPickupTimer = chakai
+	? startIssuePickupTimer({
+			run: () =>
+				pickupTasks({
+					chakai,
+					akarinEnabled: akarin !== null,
+					start: intake.startFromTask,
+					logger,
+				}),
+			intervalMs: ISSUE_PICKUP_INTERVAL_MS,
+			logger,
+			name: "chakai task pickup",
+		})
+	: null;
+
 // 受け箱は GitHub の出来事の渡し先ができてからつなぐ。つないだ直後に溜まっていた行が届く
 if (!cfg.inbox) {
 	logger.warn("mizuya inbox disabled; buttons are not received", {
@@ -760,6 +788,7 @@ const shutdown = (signal: string) => {
 	activityLogTimer?.stop();
 	githubEvents?.stop();
 	issuePickupTimer?.stop();
+	taskPickupTimer?.stop();
 	macStateServer?.close();
 	server.close();
 	inbox?.stop();

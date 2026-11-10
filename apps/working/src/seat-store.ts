@@ -158,12 +158,41 @@ const fileSchema = v.object({
 		{},
 	),
 	numbers: v.optional(v.record(v.string(), v.number()), {}),
+	chakai: v.optional(
+		v.record(
+			v.string(),
+			v.object({
+				parent_id: v.string(),
+				run_id: v.nullable(v.string()),
+				task_id: v.nullable(v.string()),
+				count: v.number(),
+				nudged: v.boolean(),
+			}),
+		),
+		{},
+	),
 	titles: v.optional(v.record(v.string(), v.string()), {}),
 	titles_due: v.optional(v.record(v.string(), v.number()), {}),
 });
 
 /** 投稿の元になった GitHub の issue。 */
 export type IssueRef = { repo: string; number: number };
+
+/**
+ * 投稿が受け持つ chakai の親タスクと、その連続実行。
+ * 席を閉じたあとも残し、同じ親がまた todo になったら同じ投稿で続ける。
+ */
+export type ChakaiWork = {
+	parentId: string;
+	/** 開いている run。連続実行を終えたか、席を閉じたら null。 */
+	runId: string | null;
+	/** 席に渡してあるタスク。 */
+	taskId: string | null;
+	/** この run で渡したタスクの数。 */
+	count: number;
+	/** 渡したタスクが doing のまま残ったので、状態を動かすよう促した。 */
+	nudged: boolean;
+};
 
 export type SeatStore = {
 	get: (threadId: string) => Seat | null;
@@ -180,6 +209,10 @@ export type SeatStore = {
 	/** 投稿の元になった issue。席を閉じたあとも残し、完了の後に issue を閉じるボタンが引く。 */
 	issueOf: (threadId: string) => IssueRef | null;
 	setIssue: (threadId: string, issue: IssueRef) => Promise<void>;
+	chakaiOf: (threadId: string) => ChakaiWork | null;
+	setChakai: (threadId: string, work: ChakaiWork) => Promise<void>;
+	/** chakai の親タスクを受け持つ投稿。 */
+	chakaiThreadOf: (parentId: string) => string | null;
 	/** 投稿の hishaku の番号。席を閉じたあとも残し、同じ投稿でまた席を開くときに同じセッションを続ける。 */
 	numberOf: (threadId: string) => number | null;
 	setNumber: (threadId: string, number: number) => Promise<void>;
@@ -238,6 +271,7 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 	const models = new Map<string, string>();
 	const issues = new Map<string, IssueRef>();
 	const numbers = new Map<string, number>();
+	const chakai = new Map<string, ChakaiWork>();
 	const titles = new Map<string, string>();
 	const titlesDue = new Map<string, number>();
 	const raw = await readFile(path, "utf8").catch(() => null);
@@ -264,6 +298,15 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 		}
 		for (const [id, n] of Object.entries(parsed.output.numbers)) {
 			numbers.set(id, n);
+		}
+		for (const [id, c] of Object.entries(parsed.output.chakai)) {
+			chakai.set(id, {
+				parentId: c.parent_id,
+				runId: c.run_id,
+				taskId: c.task_id,
+				count: c.count,
+				nudged: c.nudged,
+			});
 		}
 		for (const [id, t] of Object.entries(parsed.output.titles)) {
 			titles.set(id, t);
@@ -370,6 +413,18 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 			models: Object.fromEntries(models),
 			issues: Object.fromEntries(issues),
 			numbers: Object.fromEntries(numbers),
+			chakai: Object.fromEntries(
+				[...chakai].map(([id, c]) => [
+					id,
+					{
+						parent_id: c.parentId,
+						run_id: c.runId,
+						task_id: c.taskId,
+						count: c.count,
+						nudged: c.nudged,
+					},
+				]),
+			),
 			titles: Object.fromEntries(titles),
 			titles_due: Object.fromEntries(titlesDue),
 		};
@@ -419,6 +474,13 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 			issues.set(id, issue);
 			return flush();
 		},
+		chakaiOf: (id) => chakai.get(id) ?? null,
+		setChakai: (id, work) => {
+			chakai.set(id, work);
+			return flush();
+		},
+		chakaiThreadOf: (parentId) =>
+			[...chakai].find(([, c]) => c.parentId === parentId)?.[0] ?? null,
 		numberOf: (id) => numbers.get(id) ?? null,
 		setNumber: (id, number) => {
 			if (numbers.get(id) === number) return Promise.resolve();

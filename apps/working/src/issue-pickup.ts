@@ -181,6 +181,8 @@ export const startIssuePickupTimer = (input: {
 	run: () => Promise<void>;
 	intervalMs: number;
 	logger: Logger;
+	/** ログに出す見回りの名前。 */
+	name?: string;
 }) => {
 	let running = false;
 	const tick = () => {
@@ -189,7 +191,9 @@ export const startIssuePickupTimer = (input: {
 		void input
 			.run()
 			.catch((e: unknown) => {
-				input.logger.error("issue pickup crashed", { error: String(e) });
+				input.logger.error(`${input.name ?? "issue pickup"} crashed`, {
+					error: String(e),
+				});
 			})
 			.finally(() => {
 				running = false;
