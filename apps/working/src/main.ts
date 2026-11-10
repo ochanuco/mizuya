@@ -67,6 +67,7 @@ import {
 	startStandupTimer,
 } from "./standup-timer.ts";
 import { createSystemPoster } from "./system.ts";
+import { createTurnEngine, seatEnv } from "./turn-engine.ts";
 import {
 	claudeCredentialsPathOf,
 	createClaudeUsageReader,
@@ -106,10 +107,12 @@ const issueTemplate = await readFile(
 	join(cfg.handoffDir, "issue-template.md"),
 	"utf8",
 );
+const seatTool = cfg.seatEngine === "hishaku" ? "hs" : "orca";
 const preamble = buildSeatPreamble({
 	persona: await personaOf([]),
 	handoffPrompt,
 	issueTemplate,
+	tool: seatTool,
 });
 
 // yunomi-memory はこのファイルから接続情報を読む。Claude CLI の環境変数に service token を載せないため
@@ -176,6 +179,7 @@ const akarin: SeatPartner | null = await (async () => {
 			handoffPrompt,
 			issueTemplate,
 			partnerName: "Akarin",
+			tool: seatTool,
 		}),
 	};
 })();
@@ -187,18 +191,46 @@ const summarize = createSummarizer({
 	env,
 	exec: spawnExec,
 });
-const orca = createOrcaCli({
-	bin: cfg.orcaBin,
-	exec: spawnExec,
-	env,
-	cwd: cfg.workDir,
-	seatsRepo: cfg.seatsRepo,
-	seatsDir: cfg.seatsDir,
-	specDir: join(cfg.stateDir, "specs"),
-	trust: (dir) => trustWorkspace(claudeConfigPathOf(process.env), dir),
-	logger,
-});
+const trustSeat = (dir: string) =>
+	trustWorkspace(claudeConfigPathOf(process.env), dir);
 // hs は prepare と push の間の状態を XDG_CACHE_HOME に残す。受付を作り直しても続きを預けられるよう state の volume に置く
+const hsCacheDir = join(cfg.stateDir, "cache");
+const orca =
+	cfg.seatEngine === "hishaku"
+		? createTurnEngine({
+				hsBin: cfg.hishaku?.bin ?? "hs",
+				exec: spawnExec,
+				seatEnv: seatEnv(process.env, {
+					stateDir: cfg.stateDir,
+					seatsDir: cfg.seatsDir,
+				}),
+				hishakuEnv: cfg.hishaku
+					? {
+							HISHAKU_URL: cfg.hishaku.url,
+							HISHAKU_ACCESS_CLIENT_ID: cfg.hishaku.clientId,
+							HISHAKU_ACCESS_CLIENT_SECRET: cfg.hishaku.clientSecret,
+							HISHAKU_HOLDER: cfg.hishaku.holder,
+							CODEX_HOME: cfg.codexHome,
+							XDG_CACHE_HOME: hsCacheDir,
+						}
+					: {},
+				seatsRepo: cfg.seatsRepo,
+				seatsDir: cfg.seatsDir,
+				specDir: join(cfg.stateDir, "specs"),
+				trust: trustSeat,
+				logger,
+			})
+		: createOrcaCli({
+				bin: cfg.orcaBin,
+				exec: spawnExec,
+				env,
+				cwd: cfg.workDir,
+				seatsRepo: cfg.seatsRepo,
+				seatsDir: cfg.seatsDir,
+				specDir: join(cfg.stateDir, "specs"),
+				trust: trustSeat,
+				logger,
+			});
 const hishaku = cfg.hishaku
 	? createHishaku({
 			...cfg.hishaku,
@@ -206,7 +238,7 @@ const hishaku = cfg.hishaku
 			env: {
 				...env,
 				CODEX_HOME: cfg.codexHome,
-				XDG_CACHE_HOME: join(cfg.stateDir, "cache"),
+				XDG_CACHE_HOME: hsCacheDir,
 			},
 			cwd: cfg.workDir,
 		})
@@ -243,10 +275,10 @@ const standupDeps = {
 logger.info("discord connected", { bot_user_id: me.value.id });
 const ready = await orca.waitReady(ORCA_READY_TIMEOUT_MS);
 if (!ready.ok) {
-	logger.error("orca serve not ready", { reason: ready.error.reason });
+	logger.error("seat engine not ready", { reason: ready.error.reason });
 	process.exit(1);
 }
-logger.info("orca serve ready");
+logger.info("seat engine ready", { engine: cfg.seatEngine });
 const prepared = await orca.prepare(seats.orca());
 if (!prepared.ok) {
 	logger.error("orca prepare failed", { reason: prepared.error.reason });

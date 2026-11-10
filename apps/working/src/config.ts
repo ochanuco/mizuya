@@ -34,6 +34,7 @@ const envSchema = v.object({
 	HANDOFF_DIR: v.optional(nonEmpty),
 	CLAUDE_BIN: v.optional(nonEmpty),
 	ORCA_BIN: v.optional(nonEmpty),
+	SEAT_ENGINE: v.optional(v.picklist(["orca", "hishaku"])),
 	SEATS_REPO: v.optional(nonEmpty),
 	SEATS_DIR: v.optional(nonEmpty),
 	SEAT_LIMIT: v.optional(positiveInt),
@@ -119,6 +120,8 @@ export type WorkingConfig = {
 	handoffDir: string;
 	claudeBin: string;
 	orcaBin: string;
+	/** 席を回すもの。orca は Orca の端末と orchestration、hishaku は hs turn で指示ごとに 1 ターン走らせる。 */
+	seatEngine: "orca" | "hishaku";
 	/** 席の worktree の元にする空の git リポジトリ。 */
 	seatsRepo: string;
 	/** Orca が席の worktree を作る場所。start.sh が hook に渡す値と揃える。 */
@@ -278,6 +281,7 @@ export const loadConfig = (
 		handoffDir: e.HANDOFF_DIR ?? `${home}/handoff`,
 		claudeBin: e.CLAUDE_BIN ?? "claude",
 		orcaBin: e.ORCA_BIN ?? "orca-ide",
+		seatEngine: e.SEAT_ENGINE ?? "orca",
 		seatsRepo: e.SEATS_REPO ?? `${home}/work/seats`,
 		// Orca は worktree を ~/orca/workspaces/<リポジトリ名> に作り、~/orca は work の volume への symlink
 		seatsDir: e.SEATS_DIR ?? `${home}/work/orca/workspaces/seats`,

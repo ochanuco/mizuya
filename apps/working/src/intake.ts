@@ -1223,8 +1223,11 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 							return ok({ how: fallback });
 						}
 						lease = r.value.generation;
+						const held = { number, generation: r.value.generation };
 						// 正本が無いのに worktree の会話が残っている席は、新しい ID で始めずに手元の会話を続ける
-						if (!r.value.resume && seat.path) return ok({ how: fallback });
+						if (!r.value.resume && seat.path) {
+							return ok({ how: fallback, lease: held });
+						}
 						const how: SeatHow = {
 							sessionId: r.value.sessionId,
 							resume: r.value.resume,
@@ -1233,10 +1236,11 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 						if (r.value.resume && seat.continuation && !seat.path) {
 							return ok({
 								how,
+								lease: held,
 								spec: `${numberNote(number)}\n\n${seat.continuation.join("\n\n---\n\n")}`,
 							});
 						}
-						return ok({ how });
+						return ok({ how, lease: held });
 					};
 		const r = seat.path
 			? await deps.orca.resumeSeat({
@@ -2106,7 +2110,8 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	/** 途中経過や、持ち主の質問への答え。完了を待たずに投稿に書く。 */
 	const onStatus = async (seat: Seat, msg: SeatMessage) => {
 		if (seat.standup) return;
-		const reply = await seatReply(seat, msg.body);
+		// hs turn の席は、続きを渡すために途中経過にしたターンの返事が状態の行を持つ
+		const reply = await seatReply(seat, takeStatus(msg.body).body);
 		if (reply.body === "" && reply.files.length === 0) return;
 		if (reply.text !== "") {
 			await seats.set({ ...seat, lastStatus: reply.text });
