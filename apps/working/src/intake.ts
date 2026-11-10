@@ -62,16 +62,7 @@ import {
 import { PARTNER_IDS, type PartnerId } from "./lib/core.ts";
 import { err, ok, type Result } from "./lib/result.ts";
 import type { Logger } from "./logger.ts";
-import type {
-	Orca,
-	OrcaError,
-	SeatAgent,
-	SeatHow,
-	SeatMessage,
-	SeatPrepare,
-} from "./orca.ts";
 import {
-	backgroundReplyNote,
 	composeTitle,
 	fallbackTitle,
 	forumPostBody,
@@ -95,6 +86,14 @@ import {
 	unnumberedTitle,
 	wakeNote,
 } from "./prompts.ts";
+import type {
+	SeatAgent,
+	SeatEngine,
+	SeatEngineError,
+	SeatHow,
+	SeatMessage,
+	SeatPrepare,
+} from "./seat-engine.ts";
 import {
 	MODEL_TAGS,
 	modelChangedText,
@@ -159,7 +158,7 @@ export type IntakeDeps = {
 	system: DiscordApi;
 	/** mizuya の bot のユーザー。メンションされたら Yukarin 宛てとみなす。 */
 	systemUserId: string;
-	orca: Orca;
+	engine: SeatEngine;
 	/**
 	 * 席の agent のセッションを預ける hishaku。あれば投稿ごとに番号を取り、席の会話を Manager に預けて同じ番号で続ける。
 	 * 無いか Manager に届かなければ、席は手元の会話だけで動く。
@@ -264,17 +263,13 @@ const runKindOf = (seat: Seat): RunKind =>
 
 /**
  * 席を始められなかったときに投稿に書く文。持ち主が次に何をすればよいか分かるよう、止まった所だけを短く書く。
- * Orca の理由の文はパスや ID を含むので、そのまま出さない。
+ * 席エンジンの理由の文はパスや ID を含むので、そのまま出さない。
  */
-export const seatStartFailedText = (error: OrcaError) => {
+export const seatStartFailedText = (error: SeatEngineError) => {
 	const where =
 		error.type === "SeatTrustFailed"
 			? "Claude の作業場所を信頼済みにできなかった"
-			: error.reason.includes("agent-trust-workspace")
-				? "Claude の作業場所の確認で止まった"
-				: error.reason.includes("agent_readiness")
-					? "Claude が起動しきらなかった"
-					: "Orca が席を作れなかった";
+			: "席の作業場所を作れなかった";
 	return `席を始められませんでした（${where}）。返事をくれれば、もう一度始めます。`;
 };
 
@@ -303,29 +298,7 @@ export const isCloseRequest = (content: string) =>
 			.replace(/[。!！]+$/, ""),
 	);
 
-/**
- * escalation の本文（席の端末の末尾）に、裏で動いている shell やタスクが出ているか。
- * Claude CLI は裏の作業が残っていると「1 shell still running」「· 2 shells ·」のように書く。
- */
-export const backgroundRunning = (body: string) =>
-	/\b\d+ (?:background )?(?:shells?|tasks?|monitors?)(?: still)? running\b|· \d+ (?:shells?|tasks?|monitors?) ·/i.test(
-		body,
-	);
-
 const ALIVE = new Set(["working", "asking", "waiting"]);
-
-const STATUS_SUMMARY_LIMIT = 200;
-
-/** 裏の作業を待っている席に持ち主が書いたとき、受付がすぐ返す文。 */
-export const busyText = (lastStatus: string | null) => {
-	const doing = (lastStatus ?? "").replace(/\s+/g, " ").trim();
-	if (doing === "") return "作業中です。";
-	const short =
-		doing.length > STATUS_SUMMARY_LIMIT
-			? `${doing.slice(0, STATUS_SUMMARY_LIMIT)}…`
-			: doing;
-	return `作業中です。（${short}）`;
-};
 
 export type Intake = {
 	/** 受け付けた仕事が終わるまで待つ Promise を返す。HTTP は待たずに 202 を返す。 */
@@ -351,7 +324,7 @@ export type Intake = {
 	sleepIdle: () => Promise<void>;
 	/** 付けてよい時刻が来た件名を付ける。 */
 	applyDueTitles: () => Promise<void>;
-	/** 起動時に、対応表と Orca の席を突き合わせる。 */
+	/** 起動時に、対応表と席エンジンの席を突き合わせる。 */
 	reconcile: () => Promise<void>;
 	/** 作業中の席の数。gateway が自分のパートナーの数を bot のステータスに出す。 */
 	summary: () => SeatSummary;
@@ -970,8 +943,6 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		doneStatus: null,
 		pending: [],
 		queuedAt: null,
-		background: false,
-		lastStatus: null,
 		lease: null,
 		continuation: null,
 		releaseRequested: null,
@@ -1243,7 +1214,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 						return ok({ how, lease: held });
 					};
 		const r = seat.path
-			? await deps.orca.resumeSeat({
+			? await deps.engine.resumeSeat({
 					path: seat.path,
 					title,
 					spec: text,
@@ -1251,7 +1222,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 					model,
 					prepare,
 				})
-			: await deps.orca.startSeat({
+			: await deps.engine.startSeat({
 					name: seatNameOf(threadId),
 					title,
 					spec: seatSpec(speaker(partner).preamble, noted),
@@ -1335,8 +1306,6 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			doneStatus: null,
 			pending: [],
 			queuedAt: null,
-			background: false,
-			lastStatus: null,
 			model,
 			modelChange: null,
 			lease,
@@ -1394,7 +1363,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	 */
 	const closeSeat = async (seat: Seat): Promise<boolean> => {
 		await clearLendButtons(seat);
-		const stopped = await deps.orca.stopSeat(seat);
+		const stopped = await deps.engine.stopSeat(seat);
 		if (!stopped.ok) {
 			log.error("seat stop failed", {
 				thread_id: seat.threadId,
@@ -1403,7 +1372,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		}
 		const { released } = await releaseSession(seat);
 		if (seat.path) {
-			const removed = await deps.orca.removeWorktree(seat.path);
+			const removed = await deps.engine.removeWorktree(seat.path);
 			if (!removed.ok) {
 				log.error("seat worktree remove failed", {
 					thread_id: seat.threadId,
@@ -1480,8 +1449,6 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		waitingSince: now(),
 		doneAt: null,
 		doneStatus: null,
-		background: false,
-		lastStatus: null,
 	});
 
 	/** 持ち主の言葉を席に渡す。席の状態で渡し方が変わる。 */
@@ -1533,7 +1500,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			}
 			case "asking":
 				if (seat.questionId) {
-					const r = await deps.orca.reply({
+					const r = await deps.engine.reply({
 						messageId: seat.questionId,
 						body: text,
 					});
@@ -1567,23 +1534,10 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				break;
 		}
 		if (seat.dispatchId === null) return;
-		// 裏の作業を待つ席は、手が空くまで返事をしないことがある。受付が先に作業中だと返す
-		if (seat.status === "working" && seat.background) {
-			const busy = await sendTo(threadId, busyText(seat.lastStatus));
-			if (!busy.ok) {
-				log.warn("busy reply failed", {
-					thread_id: threadId,
-					error: busy.error.type,
-				});
-			}
-		}
-		const sent = await deps.orca.send({
+		const sent = await deps.engine.send({
 			dispatchId: seat.dispatchId,
 			subject: "持ち主の返事",
-			body:
-				seat.status === "working" && seat.background
-					? `${backgroundReplyNote}\n\n${text}`
-					: text,
+			body: text,
 		});
 		if (!sent.ok) {
 			log.error("seat send failed", {
@@ -1624,7 +1578,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		}
 		let next: Seat;
 		if (agentOf(partnerOf(threadId)) === "claude" && seat.terminal) {
-			const r = await deps.orca.switchModel({
+			const r = await deps.engine.switchModel({
 				terminal: seat.terminal,
 				model: to,
 			});
@@ -1637,7 +1591,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			}
 			next = { ...seat, model: to, modelChange: null };
 		} else {
-			const stopped = await deps.orca.stopSeat(seat);
+			const stopped = await deps.engine.stopSeat(seat);
 			if (!stopped.ok) {
 				log.error("seat model switch failed", {
 					thread_id: threadId,
@@ -1653,7 +1607,6 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				terminal: null,
 				questionId: null,
 				expectStop: false,
-				background: false,
 				model: to,
 				modelChange: null,
 			};
@@ -1666,7 +1619,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	const onQuestion = async (seat: Seat, msg: SeatMessage) => {
 		const threadId = seat.threadId;
 		if (seat.standup) {
-			await deps.orca.reply({ messageId: msg.id, body: STANDUP_NO_ASK });
+			await deps.engine.reply({ messageId: msg.id, body: STANDUP_NO_ASK });
 			return;
 		}
 		expireGrant(threadId);
@@ -1884,7 +1837,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		if (number === null || seat.standup) return;
 		const generation = seat.lease;
 		if (seat.status !== "sleeping") {
-			const stopped = await deps.orca.stopSeat(seat);
+			const stopped = await deps.engine.stopSeat(seat);
 			if (!stopped.ok) {
 				log.error("seat lend stop failed", {
 					thread_id: threadId,
@@ -1901,14 +1854,13 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				terminal: null,
 				questionId: null,
 				expectStop: false,
-				background: false,
 				releaseRequested: null,
 			});
 			dequeue();
 			return;
 		}
 		if (seat.path) {
-			const removed = await deps.orca.removeWorktree(seat.path);
+			const removed = await deps.engine.removeWorktree(seat.path);
 			if (!removed.ok) {
 				log.error("seat worktree remove failed", {
 					thread_id: threadId,
@@ -2107,15 +2059,12 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		);
 	};
 
-	/** 途中経過や、持ち主の質問への答え。完了を待たずに投稿に書く。 */
+	/** 途中経過。ターンの終わりを待たずに投稿に書く。 */
 	const onStatus = async (seat: Seat, msg: SeatMessage) => {
 		if (seat.standup) return;
-		// hs turn の席は、続きを渡すために途中経過にしたターンの返事が状態の行を持つ
+		// 続きを渡すために途中経過にしたターンの返事は、状態の行を持つ
 		const reply = await seatReply(seat, takeStatus(msg.body).body);
 		if (reply.body === "" && reply.files.length === 0) return;
-		if (reply.text !== "") {
-			await seats.set({ ...seat, lastStatus: reply.text });
-		}
 		const sent = await sendTo(seat.threadId, reply.body, reply.files);
 		if (!sent.ok) {
 			log.error("status post failed", {
@@ -2136,7 +2085,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		)
 			return false;
 		if (seat.status !== "sleeping") {
-			const stopped = await deps.orca.stopSeat(seat);
+			const stopped = await deps.engine.stopSeat(seat);
 			if (!stopped.ok) {
 				log.error("seat restart stop failed", {
 					thread_id: threadId,
@@ -2170,12 +2119,6 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			return;
 		}
 		if (msg.stopReason !== null && seat.status !== "working") return;
-		// 裏の shell やタイマーを待つためにターンを終えただけなので、止まったとは書かない
-		if (msg.stopReason !== null && backgroundRunning(msg.body)) {
-			if (!seat.background) await seats.set({ ...seat, background: true });
-			log.info("seat waiting on background work", { thread_id: threadId });
-			return;
-		}
 		expireGrant(threadId);
 		const blocked = uniquePending(deps.ledger.takePending(threadId));
 		if (seat.standup) {
@@ -2183,14 +2126,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			await closeSeat(seat);
 			return;
 		}
-		// 止まった知らせの本文は端末の出力なので投稿に出さない
-		await postWithApproval(
-			threadId,
-			msg.stopReason !== null ? STOPPED_TEXT : msg.body,
-			blocked,
-			[],
-			true,
-		);
+		await postWithApproval(threadId, STOPPED_TEXT, blocked, [], true);
 		await seats.set(toWaiting(seat, null));
 		await setStatus(threadId, "決めてほしい");
 		await applyModelChange(threadId);
@@ -2664,7 +2600,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			(seat.status !== "asking" && seat.status !== "waiting")
 		)
 			return;
-		const stopped = await deps.orca.stopSeat(seat);
+		const stopped = await deps.engine.stopSeat(seat);
 		if (!stopped.ok) {
 			log.error("seat sleep failed", {
 				thread_id: threadId,
@@ -2679,7 +2615,6 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			terminal: null,
 			questionId: null,
 			expectStop: false,
-			background: false,
 		});
 		log.info("seat sleeping", { thread_id: threadId });
 		dequeue();
@@ -2921,8 +2856,8 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				});
 			}
 			const [live, residue] = await Promise.all([
-				deps.orca.liveTerminals(),
-				deps.orca.residue(),
+				deps.engine.liveTerminals(),
+				deps.engine.residue(),
 			]);
 			if (!live.ok || !residue.ok) {
 				log.error("seat reconcile failed", {
@@ -2938,7 +2873,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				if (!ALIVE.has(seat.status)) continue;
 				if (seat.terminal && live.value.has(seat.terminal)) continue;
 				// 席の Claude はもういない。worktree と会話は残っているので、返事で起こす
-				await deps.orca.stopSeat({
+				await deps.engine.stopSeat({
 					dispatchId: seat.dispatchId,
 					terminal: null,
 				});
@@ -2960,7 +2895,6 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 					terminal: null,
 					questionId: null,
 					expectStop: false,
-					background: false,
 				});
 				if (seat.status === "working") {
 					await sendTo(seat.threadId, RESTARTED_TEXT);
@@ -2974,12 +2908,12 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			for (const t of residue.value.terminals) {
 				const owner = known.get(t.path);
 				if (owner?.terminal === t.handle) continue;
-				await deps.orca.closeTerminal(t.handle);
+				await deps.engine.closeTerminal(t.handle);
 				log.info("stray seat terminal closed", { terminal: t.handle });
 			}
 			for (const path of residue.value.worktrees) {
 				if (known.has(path) || closed.has(path)) continue;
-				const r = await deps.orca.removeWorktree(path);
+				const r = await deps.engine.removeWorktree(path);
 				log.info("stray seat worktree removed", { path, ok: r.ok });
 			}
 			for (const seat of seats.all()) syncTyping(seat.threadId, seat);

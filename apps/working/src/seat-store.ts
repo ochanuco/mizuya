@@ -43,7 +43,7 @@ export type Seat = {
 	/** 席の worktree。作る前（queued）は null。 */
 	path: string | null;
 	terminal: string | null;
-	/** いまの Dispatch。席に続きを渡すと Orca は新しい Dispatch を作る。 */
+	/** いまの Dispatch。席から届いたメッセージをこの席に引き当てる。 */
 	dispatchId: string | null;
 	/** この席の Dispatch すべて。席から届いたメッセージを投稿に引き当てる。 */
 	dispatchIds: string[];
@@ -51,7 +51,7 @@ export type Seat = {
 	questionId: string | null;
 	/** 最後に聞かれたこと。止めた席を起こすときに、何への答えかを伝える。 */
 	question: string | null;
-	/** ask のあとターンを終えると Orca は「報告せずに止まった」と知らせてくるので、1 回だけ読み流す。 */
+	/** ask のあとのターンの終わりは返事の無い終わり（escalation）として届くので、1 回だけ読み流す。 */
 	expectStop: boolean;
 	/** 決めてほしいになった時刻。止めるまでの時間を数える。 */
 	waitingSince: Date | null;
@@ -67,10 +67,6 @@ export type Seat = {
 	queuedAt: Date | null;
 	/** 朝会の席。終わったら決めてほしいことを投稿にする。 */
 	standup: boolean;
-	/** 席の Claude が裏の shell やタイマーを待つためにターンを終えている。 */
-	background: boolean;
-	/** 席の Claude が最後に送った途中経過。持ち主に「いまやっていること」として返す。 */
-	lastStatus: string | null;
 	/** 受付の絵文字を付けた、持ち主の最新の依頼メッセージ。 */
 	request: MessageRef | null;
 	/** request に bot が付けているリアクション。 */
@@ -126,8 +122,6 @@ const seatSchema = v.object({
 	pending: v.array(v.string()),
 	queued_at: dateSchema,
 	standup: v.boolean(),
-	background: v.optional(v.boolean(), false),
-	last_status: v.optional(v.nullable(v.string()), null),
 	request: v.optional(
 		v.nullable(v.object({ channel_id: v.string(), message_id: v.string() })),
 		null,
@@ -156,8 +150,6 @@ const seatSchema = v.object({
 });
 
 const fileSchema = v.object({
-	run_id: v.nullable(v.string()),
-	reception: v.nullable(v.string()),
 	seats: v.record(v.string(), seatSchema),
 	partners: v.optional(v.record(v.string(), v.picklist(PARTNER_IDS)), {}),
 	models: v.optional(v.record(v.string(), v.string()), {}),
@@ -179,8 +171,6 @@ export type SeatStore = {
 	byDispatch: (dispatchId: string) => Seat | null;
 	set: (seat: Seat) => Promise<void>;
 	delete: (threadId: string) => Promise<void>;
-	orca: () => { runId: string | null; reception: string | null };
-	setOrca: (o: { runId: string; reception: string }) => Promise<void>;
 	/** 投稿の担当。席を閉じたあとも残し、同じ投稿にまた書かれたら同じ担当が受ける。朝会などの席の担当は席と一緒に消す。 */
 	partnerOf: (threadId: string) => PartnerId | null;
 	assign: (threadId: string, partner: PartnerId) => Promise<void>;
@@ -225,8 +215,6 @@ export const newSeat = (threadId: string, standup = false): Seat => ({
 	pending: [],
 	queuedAt: null,
 	standup,
-	background: false,
-	lastStatus: null,
 	request: null,
 	reaction: null,
 	model: null,
@@ -252,10 +240,6 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 	const numbers = new Map<string, number>();
 	const titles = new Map<string, string>();
 	const titlesDue = new Map<string, number>();
-	let orca: { runId: string | null; reception: string | null } = {
-		runId: null,
-		reception: null,
-	};
 	const raw = await readFile(path, "utf8").catch(() => null);
 	if (raw !== null) {
 		const parsed = v.safeParse(
@@ -269,7 +253,6 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 			})(),
 		);
 		if (!parsed.success) throw new Error(`${path} を読めない`);
-		orca = { runId: parsed.output.run_id, reception: parsed.output.reception };
 		for (const [id, p] of Object.entries(parsed.output.partners)) {
 			partners.set(id, p);
 		}
@@ -305,8 +288,6 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 				pending: s.pending,
 				queuedAt: s.queued_at,
 				standup: s.standup,
-				background: s.background,
-				lastStatus: s.last_status,
 				request: s.request
 					? {
 							channelId: s.request.channel_id,
@@ -338,8 +319,6 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 	let writing: Promise<void> = Promise.resolve();
 	const flush = () => {
 		const body = {
-			run_id: orca.runId,
-			reception: orca.reception,
 			seats: Object.fromEntries(
 				[...seats].map(([id, s]) => [
 					id,
@@ -358,8 +337,6 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 						pending: s.pending,
 						queued_at: s.queuedAt?.getTime() ?? null,
 						standup: s.standup,
-						background: s.background,
-						last_status: s.lastStatus,
 						request: s.request
 							? {
 									channel_id: s.request.channelId,
@@ -423,11 +400,6 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 				partners.delete(id);
 				models.delete(id);
 			}
-			return flush();
-		},
-		orca: () => orca,
-		setOrca: (o) => {
-			orca = o;
 			return flush();
 		},
 		partnerOf: (id) => partners.get(id) ?? null,

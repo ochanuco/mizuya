@@ -37,7 +37,6 @@ import { ok, PARTNER_IDS } from "./lib/core.ts";
 import { createLogger } from "./logger.ts";
 import { createMacStateServer, openMacStateStore } from "./mac-state.ts";
 import { credentialsPathOf } from "./memory-cli/cli.ts";
-import { createOrcaCli } from "./orca.ts";
 import { openPatrolStore } from "./patrol.ts";
 import { readTypicalSleep } from "./persona-profile.ts";
 import { buildSeatPreamble } from "./prompts.ts";
@@ -111,12 +110,10 @@ const issueTemplate = await readFile(
 	join(cfg.handoffDir, "issue-template.md"),
 	"utf8",
 );
-const seatTool = cfg.seatEngine === "hishaku" ? "hs" : "orca";
 const preamble = buildSeatPreamble({
 	persona: await personaOf([]),
 	handoffPrompt,
 	issueTemplate,
-	tool: seatTool,
 });
 
 // yunomi-memory はこのファイルから接続情報を読む。Claude CLI の環境変数に service token を載せないため
@@ -183,7 +180,6 @@ const akarin: SeatPartner | null = await (async () => {
 			handoffPrompt,
 			issueTemplate,
 			partnerName: "Akarin",
-			tool: seatTool,
 		}),
 	};
 })();
@@ -199,42 +195,29 @@ const trustSeat = (dir: string) =>
 	trustWorkspace(claudeConfigPathOf(process.env), dir);
 // hs は prepare と push の間の状態を XDG_CACHE_HOME に残す。受付を作り直しても続きを預けられるよう state の volume に置く
 const hsCacheDir = join(cfg.stateDir, "cache");
-const orca =
-	cfg.seatEngine === "hishaku"
-		? createTurnEngine({
-				hsBin: cfg.hishaku?.bin ?? "hs",
-				exec: spawnExec,
-				seatEnv: seatEnv(process.env, {
-					stateDir: cfg.stateDir,
-					seatsDir: cfg.seatsDir,
-				}),
-				hishakuEnv: cfg.hishaku
-					? {
-							HISHAKU_URL: cfg.hishaku.url,
-							HISHAKU_ACCESS_CLIENT_ID: cfg.hishaku.clientId,
-							HISHAKU_ACCESS_CLIENT_SECRET: cfg.hishaku.clientSecret,
-							HISHAKU_HOLDER: cfg.hishaku.holder,
-							CODEX_HOME: cfg.codexHome,
-							XDG_CACHE_HOME: hsCacheDir,
-						}
-					: {},
-				seatsRepo: cfg.seatsRepo,
-				seatsDir: cfg.seatsDir,
-				specDir: join(cfg.stateDir, "specs"),
-				trust: trustSeat,
-				logger,
-			})
-		: createOrcaCli({
-				bin: cfg.orcaBin,
-				exec: spawnExec,
-				env,
-				cwd: cfg.workDir,
-				seatsRepo: cfg.seatsRepo,
-				seatsDir: cfg.seatsDir,
-				specDir: join(cfg.stateDir, "specs"),
-				trust: trustSeat,
-				logger,
-			});
+const engine = createTurnEngine({
+	hsBin: cfg.hishaku?.bin ?? "hs",
+	exec: spawnExec,
+	seatEnv: seatEnv(process.env, {
+		stateDir: cfg.stateDir,
+		seatsDir: cfg.seatsDir,
+	}),
+	hishakuEnv: cfg.hishaku
+		? {
+				HISHAKU_URL: cfg.hishaku.url,
+				HISHAKU_ACCESS_CLIENT_ID: cfg.hishaku.clientId,
+				HISHAKU_ACCESS_CLIENT_SECRET: cfg.hishaku.clientSecret,
+				HISHAKU_HOLDER: cfg.hishaku.holder,
+				CODEX_HOME: cfg.codexHome,
+				XDG_CACHE_HOME: hsCacheDir,
+			}
+		: {},
+	seatsRepo: cfg.seatsRepo,
+	seatsDir: cfg.seatsDir,
+	specDir: join(cfg.stateDir, "specs"),
+	trust: trustSeat,
+	logger,
+});
 const hishaku = cfg.hishaku
 	? createHishaku({
 			...cfg.hishaku,
@@ -253,7 +236,6 @@ if (!hishaku) {
 			"HISHAKU_URL / HISHAKU_ACCESS_CLIENT_ID / HISHAKU_ACCESS_CLIENT_SECRET",
 	});
 }
-const ORCA_READY_TIMEOUT_MS = 180_000;
 const seats = await openSeatStore(cfg.stateDir);
 const approvals = await openApprovalStore(cfg.stateDir);
 const ledger = createLedger(guardDirOf(cfg.stateDir));
@@ -275,21 +257,14 @@ const standupDeps = {
 	logger,
 };
 
-// start.sh は受付と orca serve を同時に起動するので、serve が受け付けるまで待ってから席の準備をする
 logger.info("discord connected", { bot_user_id: me.value.id });
-const ready = await orca.waitReady(ORCA_READY_TIMEOUT_MS);
-if (!ready.ok) {
-	logger.error("seat engine not ready", { reason: ready.error.reason });
+const started = await engine.start();
+if (!started.ok) {
+	logger.error("seat engine failed to start", {
+		reason: started.error.reason,
+	});
 	process.exit(1);
 }
-logger.info("seat engine ready", { engine: cfg.seatEngine });
-const prepared = await orca.prepare(seats.orca());
-if (!prepared.ok) {
-	logger.error("orca prepare failed", { reason: prepared.error.reason });
-	process.exit(1);
-}
-await seats.setOrca(prepared.value);
-logger.info("orca prepared", { run_id: prepared.value.runId });
 {
 	const added = await trustCodexProject(
 		join(cfg.codexHome, "config.toml"),
@@ -375,7 +350,7 @@ let syncScheduler: (() => void) | null = null;
 const intake = createIntake({
 	seatReplied: () => syncScheduler?.(),
 	discord,
-	orca,
+	engine,
 	hishaku,
 	findWorkBranches: hishaku
 		? createFindWorkBranches({ exec: spawnExec, env })
@@ -430,7 +405,7 @@ let stopped = false;
 const MAIL_WAIT_MS = 10 * 60_000;
 void (async () => {
 	while (!stopped) {
-		const r = await orca.waitMessages(MAIL_WAIT_MS);
+		const r = await engine.waitMessages(MAIL_WAIT_MS);
 		if (!r.ok) {
 			logger.warn("seat mail check failed", { reason: r.error.reason });
 			await new Promise((res) => setTimeout(res, 5_000));

@@ -6,7 +6,7 @@
 	"scripts": {
 		"start": "tsx src/main.ts",
 		"typecheck": "tsc",
-		"test": "vitest run && bash test/release-orcad-lock.sh && bash test/seat-env.sh && bash test/init-seats-repo.sh"
+		"test": "vitest run && bash test/init-seats-repo.sh"
 	},
 	"dependencies": {
 		"discord.js": "^14.28.1",

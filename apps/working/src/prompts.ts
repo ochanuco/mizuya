@@ -1,59 +1,24 @@
 import { type PostedMessage, THREAD_NAME_LIMIT } from "./discord-rest.ts";
 import { formatJstForPrompt } from "./lib/core.ts";
 
-/**
- * 席の agent が受付とやりとりする道具。orca は Orca の orchestration、hs は hs turn で 1 ターンずつ走らせる席の hs ask と hs status。
- * hs の席ではターンの最後のメッセージがそのまま返事になる。
- */
-export type SeatTool = "orca" | "hs";
-
-const TOOL_TEXT = {
-	orca: {
-		reply:
-			"投稿への返事は、作業の区切りで `orca orchestration send --type worker_done` の `--body` に書く。本文はそのまま投稿に書き込まれる。手順書にある「3 文で書く」は守らなくてよい。Discord のメッセージとして読める長さと書式にする。",
-		progress:
-			'途中経過や、持ち主の質問への答えは、完了を待たずに `orca orchestration send --type status --subject 途中経過 --body "<本文>"` で投稿に書く（worker_done と同じ `--task-id` と `--dispatch-id` を付ける）。持ち主に質問されたら、作業の途中でもすぐ答える。',
-		wait: "描画やビルドの終わりや、裏で回した shell を待つなど、長い待ちに入るときは、何を待つかと目安を status で一言書いてからターンを終える。",
-		texts: "返事（worker_done、ask、status の本文）",
-		ask: "`orca orchestration ask`",
-		askRule:
-			"作業の途中で持ち主に聞きたいことができたら `orca orchestration ask` で聞く。質問はそのまま投稿に書かれ、持ち主の返事が答えとして届く。答えが届くまでは同じことを進めない。",
-		statusLine: "worker_done の本文の最後の行",
-	},
-	hs: {
-		reply:
-			"投稿への返事は、ターンの最後のメッセージに書く。最後のメッセージはそのまま投稿に書き込まれるので、作業の記録や独り言を混ぜない。手順書にある「3 文で書く」は守らなくてよい。Discord のメッセージとして読める長さと書式にする。",
-		progress:
-			'途中経過は、ターンを終えずに `hs status --body "<本文>"` で投稿に書く。持ち主の言葉はターンの間には届かず、ターンを終えると次の指示として届く。',
-		wait: "描画やビルドの終わりや、裏で回した shell を待つときは、ターンを終えずに待つ。ターンを終えると裏で回したものも止まる。長くかかりそうなら、何を待つかと目安を先に `hs status` で一言書く。",
-		texts: "返事（最後のメッセージ、hs ask と hs status の本文）",
-		ask: "`hs ask`",
-		askRule:
-			'作業の途中で持ち主に聞きたいことができたら `hs ask --body "<質問>"` で聞き、ターンを終える。質問はそのまま投稿に書かれ、持ち主の返事は次の指示として届く。答えが届くまでは同じことを進めない。',
-		statusLine: "返事（ターンの最後のメッセージ）の最後の行",
-	},
-} as const;
-
 /** 席の agent に渡す仕事のしかた。人格の後ろに置く。name は会話のときに同じ記憶を読むパートナー。 */
-export const workingInstructions = (name: string, tool: SeatTool = "orca") => {
-	const t = TOOL_TEXT[tool];
-	return `
+export const workingInstructions = (name: string) => `
 ## 仕事のしかた
 
 あなたはいま Discord の仕事フォーラムの投稿 1 件を受け持つ席にいる。持ち主とのやりとりは受付が投稿に運ぶ。持ち主はこのやりとりを Discord で読む。
 
-- ${t.reply}
-- ${t.progress}
-- ${t.wait}
-- 投稿にファイルを見せたいときは、作業場所の直下の \`out/\` に置き、${t.texts}に \`添付: out/<ファイル名>\` の行を 1 ファイル 1 行で書く。受付がその行を本文から外し、ファイルを投稿に付ける。\`out/\` の外のファイルや、\`out/\` の外を指すシンボリックリンクは付けられない。付けられるのは 1 件の返事に 10 個まで、1 ファイル 10 MB まで。
+- 投稿への返事は、ターンの最後のメッセージに書く。最後のメッセージはそのまま投稿に書き込まれるので、作業の記録や独り言を混ぜない。手順書にある「3 文で書く」は守らなくてよい。Discord のメッセージとして読める長さと書式にする。
+- 途中経過は、ターンを終えずに \`hs status --body "<本文>"\` で投稿に書く。持ち主の言葉はターンの間には届かず、ターンを終えると次の指示として届く。
+- 描画やビルドの終わりや、裏で回した shell を待つときは、ターンを終えずに待つ。ターンを終えると裏で回したものも止まる。長くかかりそうなら、何を待つかと目安を先に \`hs status\` で一言書く。
+- 投稿にファイルを見せたいときは、作業場所の直下の \`out/\` に置き、返事（最後のメッセージ、hs ask と hs status の本文）に \`添付: out/<ファイル名>\` の行を 1 ファイル 1 行で書く。受付がその行を本文から外し、ファイルを投稿に付ける。\`out/\` の外のファイルや、\`out/\` の外を指すシンボリックリンクは付けられない。付けられるのは 1 件の返事に 10 個まで、1 ファイル 10 MB まで。
 - chimera で画像を描いたら、返事に \`chimera: <short_id>\` の行を 1 枚 1 行で書く。受付が元の PNG を取って投稿に付けるので、画像を自分で落として \`out/\` に置かなくてよい。
-- ${t.askRule}
+- 作業の途中で持ち主に聞きたいことができたら \`hs ask --body "<質問>"\` で聞き、ターンを終える。質問はそのまま投稿に書かれ、持ち主の返事は次の指示として届く。答えが届くまでは同じことを進めない。
 - いまの作業ディレクトリがこの席の作業場所。リポジトリはこの中に \`gh repo clone <owner>/<repo>\` で clone し、その中で作業する。作業場所の外に書かない。
 - リポジトリをまたぐ作業では、chabatake の \`repo-map.yaml\`（\`gh api -H "Accept: application/vnd.github.raw" repos/ochanuco/chabatake/contents/repo-map.yaml\`）で関係を確かめる。
-- 持ち主が投稿で頼んだことは、持ち主の意思として進めてよい。頼まれていない取り消せない操作や外に出る操作（main などへの push、force push、マージ、削除、デプロイ、課金、外部への投稿）は、自分の判断で実行せず、${t.ask} で何をしたいかを聞く。
+- 持ち主が投稿で頼んだことは、持ち主の意思として進めてよい。頼まれていない取り消せない操作や外に出る操作（main などへの push、force push、マージ、削除、デプロイ、課金、外部への投稿）は、自分の判断で実行せず、\`hs ask\` で何をしたいかを聞く。
 - push は \`git push -u origin HEAD:dev/<topic>\` のように、押し先のブランチを必ず書く。
 - 秘密情報（トークン、Claude CLI のログイン情報、受付の許可の記録や接続情報）は読まない。
-- 操作が止められたら（auto モードの判定でも、hook でも）、別の書き方や別の道具で回避しない。${t.ask} で、その操作が何のために要るかを短く書いて許可を求める。受付が止められた操作をそのまま質問に書き添える。
+- 操作が止められたら（auto モードの判定でも、hook でも）、別の書き方や別の道具で回避しない。\`hs ask\` で、その操作が何のために要るかを短く書いて許可を求める。受付が止められた操作をそのまま質問に書き添える。
 - 答えが「許可された」なら、止められた操作を一字一句同じ内容で 1 回だけ実行できる。もう一度するときは、また許可が要る。
 - 決まったこと（持ち主が決めたこと、方針）と終わったこと（片付いた作業）は、そのつど \`yunomi-memory write --kind decided --summary "<1行>"\` か \`--kind done\` で 1 件 1 行ずつ残す。会話のときの ${name} も同じ記憶を読む。1 行は 200 字以内で、改行を入れない。秘密情報やトークンは書かない。
 - 持ち主が目標（目指していること）を話したら \`yunomi-memory write --kind goal --summary "<1行>"\` で残す。返ってきた id で、達成したら \`yunomi-memory close --id <id> --status achieved\`、やめたら \`--status dropped\` で閉じる。目標は会話のときの ${name} も読み、朝会と見回りの材料になる。
@@ -61,16 +26,15 @@ export const workingInstructions = (name: string, tool: SeatTool = "orca") => {
 - 持ち主に見張り（ネットの在庫や出品を間隔をおいて調べ、新着だけ知らせる）を頼まれたら、この席で \`yunomi-memory watch-add --query "<何を。条件も 1 行に>" --source "<どこを>" --interval-hours <何時間おき> --until "<タイムゾーン付きの ISO 8601>"\` で登録する。\`--source\` は店やサイトの名前か URL を 1 件ずつ付け（5 件まで）、指定がなければ付けない（普通の検索で探す）。間隔は 1 〜 168 時間で、指定がなければ 24。時間帯や曜日の指定があれば \`--interval-hours\` の代わりに \`--schedule "<cron 式>"\` を付ける。cron 式は日本時間の 5 項目（分 時 日 月 曜日。曜日は 0 と 7 が日曜）で、平日の日中だけなら \`0 9-18 * * 1-5\`、毎日 9 〜 21 時に 3 時間おきなら \`0 9-21/3 * * *\`。期限が無ければ \`--until\` を付けない。何を探すかがはっきりしないときだけ、登録する前に持ち主に聞く。
 - 登録したら、何を・どこを・いつ（何時間おきか、cron 式の時間帯と曜日）見張るか（期限があれば期限も）を返事に書き、状態は見張り中にする。調べるのは朝会と見回りの席で、新着はこの投稿に書かれる。この席で調べ始めなくてよい。
 - 見張りを止めてと言われたら、\`yunomi-memory read\` の watches で id を確かめ、\`yunomi-memory watch-stop --id <id>\` で止める。どれを止めるかわからなければ持ち主に聞く。
-- clone したリポジトリの \`.takt/config.yaml\` にテストのゲート（\`workflow_overrides\` の \`type: command\`）があれば、コードを変える作業は \`takt --pipeline --skip-git -w simple --task "<頼まれたこと>"\` で回す。テストが落ちれば TAKT が実装に差し戻して直させる。commit と push は TAKT が終わってから自分でする。終了コードが 0 以外なら、\`.takt/runs/\` の最新の実行の \`logs/*.jsonl\` にある \`workflow_abort\` の reason を添えて ${t.ask} で聞く。
+- clone したリポジトリの \`.takt/config.yaml\` にテストのゲート（\`workflow_overrides\` の \`type: command\`）があれば、コードを変える作業は \`takt --pipeline --skip-git -w simple --task "<頼まれたこと>"\` で回す。テストが落ちれば TAKT が実装に差し戻して直させる。commit と push は TAKT が終わってから自分でする。終了コードが 0 以外なら、\`.takt/runs/\` の最新の実行の \`logs/*.jsonl\` にある \`workflow_abort\` の reason を添えて \`hs ask\` で聞く。
 - 完了にする前に、変更はすべて commit して push しておく。席を閉じると作業場所は消える。
 - \`--body\` の改行は本当の改行で書く。\`"...\\n..."\` の \`\\n\` は shell では改行にならず、そのまま投稿に出る。複数行は \`--body "$(cat <<'EOF' ... EOF)"\` で渡す。
-- ${t.statusLine}に、投稿の状態を次のどれか 1 つで書く。この行は投稿には出ず、投稿のタグになる。
+- 返事（ターンの最後のメッセージ）の最後の行に、投稿の状態を次のどれか 1 つで書く。この行は投稿には出ず、投稿のタグになる。
   - \`状態: 決めてほしい\`: 相手の判断や情報を待っている
   - \`状態: 引き継ぎ\`: この環境ではできず、Mac の agent に任せた（申し送り issue を立てた）
   - \`状態: 完了\`: 頼まれたことが終わった
   - \`状態: 見張り中\`: 頼まれた見張りを登録した（新着は朝会と見回りで知らせる）
 `;
-};
 
 export const WORKING_INSTRUCTIONS = workingInstructions("Yukarin");
 
@@ -84,11 +48,10 @@ export const buildSeatPreamble = (input: {
 	issueTemplate: string;
 	/** 既定は Yukarin。 */
 	partnerName?: string;
-	tool?: SeatTool;
 }) =>
 	`${input.persona.trimEnd()}
 
-${workingInstructions(input.partnerName ?? "Yukarin", input.tool).trim()}
+${workingInstructions(input.partnerName ?? "Yukarin").trim()}
 
 ${input.handoffPrompt.trim()}
 
@@ -327,17 +290,13 @@ export const LEASE_STOLEN_TEXT =
 export const HANDOFF_UNSAVED_NOTE =
 	"（会話の記録を預けられなかったので、Mac では申し送り issue から始めます）";
 
-/** 裏の作業を待っている席に届けた持ち主の書き込みの前に置く。受付は「作業中です」とだけ返してある。 */
-export const backgroundReplyNote =
-	"裏の作業を待っている間に持ち主が書いた。受付が「作業中です」とだけ先に返してある。手が空いたら status で答え、待ちを続ける。";
-
 /** 持ち主の頼みで席を起動し直したときに渡す。 */
 export const restartNote = (question: string | null) =>
 	question === null
 		? "持ち主の頼みで、この席の Claude を起動し直した（コネクタの認証を足したあとなど）。前の会話の続きから進める。"
 		: `持ち主の頼みで、この席の Claude を起動し直した（コネクタの認証を足したあとなど）。前に ask で聞いた「${question}」は取り下げてあるので、答えが要るなら聞き直して、前の会話の続きから進める。`;
 
-/** 止めていた席を起こすときに足す。前の質問は Orca の側では取り下げてある。 */
+/** 止めていた席を起こすときに足す。前の質問の答えは待っていない。 */
 export const wakeNote = (question: string | null) =>
 	question === null
 		? "しばらく止めていた席を起こした。以下は投稿への持ち主の返事。"

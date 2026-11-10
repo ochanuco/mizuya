@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { spawnExec } from "./exec.ts";
 import { err, ok } from "./lib/core.ts";
 import { silentLogger } from "./logger.ts";
-import type { SeatMessage } from "./orca.ts";
+import type { SeatMessage } from "./seat-engine.ts";
 import { tempDir } from "./test-support.ts";
 import {
 	createTurnEngine,
@@ -93,7 +93,7 @@ const setup = async () => {
 		stopTimeoutMs: 100,
 	});
 	engines.push(engine);
-	expect((await engine.waitReady(1000)).ok).toBe(true);
+	expect((await engine.start()).ok).toBe(true);
 	return { dir, engine, calls: fake.calls };
 };
 

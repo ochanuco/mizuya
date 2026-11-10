@@ -31,8 +31,6 @@ describe("loadConfig", () => {
 				personaDir: "/home/w/persona",
 				handoffDir: "/home/w/handoff",
 				claudeBin: "claude",
-				orcaBin: "orca-ide",
-				seatEngine: "orca",
 				seatsRepo: "/home/w/work/seats",
 				seatsDir: "/home/w/work/orca/workspaces/seats",
 				seatLimit: 6,

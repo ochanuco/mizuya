@@ -27,13 +27,13 @@ import {
 	type Result,
 } from "./lib/core.ts";
 import type {
-	Orca,
-	OrcaError,
+	SeatEngine,
+	SeatEngineError,
 	SeatHandle,
 	SeatHow,
 	SeatMessage,
 	SeatPrepare,
-} from "./orca.ts";
+} from "./seat-engine.ts";
 
 export const memoryApprovals = (): ApprovalStore & {
 	all: Map<string, ApprovalRequest>;
@@ -301,10 +301,10 @@ export const fakeDiscord = () => {
 };
 
 /**
- * Orca のモック。席を作る・続きを渡す・止める・消す、を呼ばれた順に残す。
+ * 席エンジンのモック。席を作る・続きを渡す・止める・消す、を呼ばれた順に残す。
  * 席から受付に届くメッセージは、テストが intake.onSeatMessage に直接渡す。
  */
-export const fakeOrca = (seatsDir = "/seats") => {
+export const fakeEngine = (seatsDir = "/seats") => {
 	let n = 0;
 	const calls: { op: string; args: unknown }[] = [];
 	const live = new Set<string>();
@@ -322,7 +322,7 @@ export const fakeOrca = (seatsDir = "/seats") => {
 		input: { spec: string; prepare?: SeatPrepare },
 		path: string,
 		how: SeatHow,
-	): Promise<Result<void, OrcaError>> => {
+	): Promise<Result<void, SeatEngineError>> => {
 		const prepared = input.prepare ? await input.prepare(path) : null;
 		if (prepared && !prepared.ok) {
 			calls.push({ op, args: { ...input, how: null } });
@@ -343,9 +343,8 @@ export const fakeOrca = (seatsDir = "/seats") => {
 		});
 		return ok(undefined);
 	};
-	const orca: Orca = {
-		waitReady: vi.fn(async () => ok(undefined)),
-		prepare: vi.fn(async () => ok({ runId: "run1", reception: "rx" })),
+	const engine: SeatEngine = {
+		start: vi.fn(async () => ok(undefined)),
 		startSeat: vi.fn(async (input) => {
 			const path = `${seatsDir}/${input.name}`;
 			const launched = await launch("startSeat", input, path, "start");
@@ -402,7 +401,7 @@ export const fakeOrca = (seatsDir = "/seats") => {
 	};
 	const opsOf = (op: string) =>
 		calls.filter((c) => c.op === op).map((c) => c.args);
-	return { orca, calls, live, worktrees, strayTerminals, opsOf };
+	return { engine, calls, live, worktrees, strayTerminals, opsOf };
 };
 
 let seq = 0;

@@ -13,14 +13,14 @@ import type { Exec } from "./exec.ts";
 import { err, ok, type Result } from "./lib/core.ts";
 import type { Logger } from "./logger.ts";
 import type {
-	Orca,
-	OrcaError,
 	SeatAgent,
+	SeatEngine,
+	SeatEngineError,
 	SeatHandle,
 	SeatHow,
 	SeatMessage,
 	SeatPrepare,
-} from "./orca.ts";
+} from "./seat-engine.ts";
 
 /** 走らせている hs turn。テストでは偽物に差し替える。 */
 export type TurnProcess = {
@@ -207,20 +207,23 @@ const sameToken = (a: string, b: string) => {
 	return x.length === y.length && timingSafeEqual(x, y);
 };
 
-const failed = (command: string, reason: string): OrcaError => ({
-	type: "OrcaFailed",
+const failed = (command: string, reason: string): SeatEngineError => ({
+	type: "EngineFailed",
 	command,
 	reason,
 });
 
 /**
- * Orca の代わりに hs turn で席を回す。席は worktree と、指示が届くたびに走らせる hs turn のターンで表す。
- * 受付から見た口は Orca と同じで、ターンの終わりを worker_done、hs ask と hs status をそれぞれ question と status として届ける。
+ * hs turn で席を回す。席は worktree と、指示が届くたびに走らせる hs turn のターンで表す。
+ * ターンの終わりを worker_done（返事がある）か escalation（返事が無い）、hs ask と hs status をそれぞれ question と status として届ける。
  * 席の状態はこのプロセスの中だけにあるので、受付が作り直されると生きている席は無くなり、reconcile が止めた席にする。
  */
 export const createTurnEngine = (
 	opts: TurnEngineOptions,
-): Orca & { reportUrl: () => string | null; close: () => Promise<void> } => {
+): SeatEngine & {
+	reportUrl: () => string | null;
+	close: () => Promise<void>;
+} => {
 	const log = opts.logger;
 	const spawnFn = opts.spawn ?? spawnTurn;
 	const stopTimeoutMs = opts.stopTimeoutMs ?? STOP_TIMEOUT_MS;
@@ -262,7 +265,7 @@ export const createTurnEngine = (
 
 	const removeWorktree = async (
 		path: string,
-	): Promise<Result<void, OrcaError>> => {
+	): Promise<Result<void, SeatEngineError>> => {
 		const removed = await git(["worktree", "remove", "--force", path]);
 		if (!removed.ok) {
 			// worktree の記録が壊れていても場所は消す
@@ -429,7 +432,7 @@ export const createTurnEngine = (
 		spec: string,
 		agent: SeatAgent,
 		input: { how: SeatHow; model: string | null; prepare?: SeatPrepare },
-	): Promise<Result<SeatHandle, OrcaError>> => {
+	): Promise<Result<SeatHandle, SeatEngineError>> => {
 		let cwd = path;
 		// Codex は worktree の元のリポジトリ（席の元）で信頼を引くので、受付が起動時に 1 度だけ登録する
 		if (agent === "claude") {
@@ -542,20 +545,22 @@ export const createTurnEngine = (
 			await Promise.all([...runs.values()].map(stop));
 			await new Promise<void>((r) => server.close(() => r()));
 		},
-		waitReady: async () => {
+		start: async () => {
 			if (base !== null) return ok(undefined);
 			// 席の agent は同じコンテナで動くので、ループバックだけで待ち受ける
-			const listened = await new Promise<Result<void, OrcaError>>((resolve) => {
-				server.once("error", (e) => resolve(err(failed("listen", String(e)))));
-				server.listen(0, "127.0.0.1", () => resolve(ok(undefined)));
-			});
+			const listened = await new Promise<Result<void, SeatEngineError>>(
+				(resolve) => {
+					server.once("error", (e) =>
+						resolve(err(failed("listen", String(e)))),
+					);
+					server.listen(0, "127.0.0.1", () => resolve(ok(undefined)));
+				},
+			);
 			if (!listened.ok) return listened;
 			const { port } = server.address() as AddressInfo;
 			base = `http://127.0.0.1:${port}`;
 			return ok(undefined);
 		},
-		prepare: async (prev) =>
-			ok({ runId: prev.runId ?? "turn", reception: "turn" }),
 		startSeat: async ({ name, spec, agent, model = null, prepare }) => {
 			const path = join(opts.seatsDir, name);
 			// 前に閉じそこねた同じ名前の worktree があると作れない

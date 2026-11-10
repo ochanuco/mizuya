@@ -13,7 +13,7 @@ import {
 	BOT,
 	FORUM,
 	fakeDiscord,
-	fakeOrca,
+	fakeEngine,
 	OWNER,
 	say,
 	seatMessage,
@@ -25,18 +25,18 @@ const HOOK = join(import.meta.dirname, "guard", "hook.ts");
 
 /**
  * 席の Claude から呼ばれる形で本物の PreToolUse hook（src/guard/hook.ts）を動かす。
- * 席の Claude は orca serve の環境変数を受け継ぎ、Claude CLI は hook に席の場所（CLAUDE_PROJECT_DIR）を渡す。
+ * 席の Claude は受付が渡す環境変数を受け継ぎ、Claude CLI は hook に席の場所（CLAUDE_PROJECT_DIR）を渡す。
  */
 const setup = async () => {
 	const root = tempDir();
 	const stateDir = join(root, "state");
 	const seatsDir = join(root, "seats");
 	const d = fakeDiscord();
-	const o = fakeOrca(seatsDir);
+	const o = fakeEngine(seatsDir);
 	const seats = await openSeatStore(stateDir);
 	const intake = createIntake({
 		discord: d.api,
-		orca: o.orca,
+		engine: o.engine,
 		seats,
 		approvals: await openApprovalStore(stateDir),
 		ledger: createLedger(guardDirOf(stateDir)),
@@ -132,7 +132,7 @@ describe("席の Claude の操作と hook", { timeout: 20_000 }, () => {
 		await s.open("p1");
 		const cases = [
 			["Bash", { command: "git push -u origin HEAD:dev/x" }],
-			["Bash", { command: 'orca orchestration ask --question "どうしますか"' }],
+			["Bash", { command: 'hs ask --body "どうしますか"' }],
 			["ToolSearch", { query: "chimera", max_results: 5 }],
 			["mcp__claude_ai_chimera__create_request", { recipe: "x" }],
 			["mcp__claude_ai_chimera__list_catalog", {}],

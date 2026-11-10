@@ -5,8 +5,8 @@ import type { GuardRun } from "./decide.ts";
 import type { Operation } from "./operation.ts";
 
 /**
- * start.sh が orca serve に渡し、席の Claude と hook が受け継ぐ環境変数。
- * 席は orca serve が起動するので、席ごとの値（投稿や許可）は環境変数ではなく席の場所とファイルで渡す。
+ * 受付が席の agent に渡し、hook が受け継ぐ環境変数。
+ * 席ごとの値（投稿や許可）は環境変数ではなく席の場所とファイルで渡す。
  */
 export const GUARD_ENV = {
 	stateDir: "MIZUYA_STATE_DIR",

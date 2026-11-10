@@ -22,7 +22,6 @@ export const claudeConfigPathOf = (env: Record<string, string | undefined>) =>
 // 同じロックを取れば、動いている席の Claude の書き込みと混ざらない。
 const LOCK_WAIT_MS = 15_000;
 // ロックを持ったまま落ちたプロセスの残り。Claude CLI のロックの既定の期限に合わせる。
-// Orca も起動の前に信頼を書くが、残ったロックを古いとみなさないので、残りがあると書けずに確認の画面で止まる
 const LOCK_STALE_MS = 10_000;
 
 type LockOpts = { sleep?: (ms: number) => Promise<void>; now?: () => number };
@@ -101,7 +100,7 @@ export const updateClaudeConfig = async (
 
 /**
  * 席の作業場所を Claude CLI の信頼済みの場所に登録する。
- * 信頼していない場所で起動した Claude は確認の画面で止まり、Orca は席を始められない。
+ * 信頼していない場所では、Claude CLI は作業場所の .claude の設定を読まない。
  * Claude CLI は場所を realpath で引くので、realpath で登録する。
  */
 export const trustWorkspace = async (

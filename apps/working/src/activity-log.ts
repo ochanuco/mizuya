@@ -69,7 +69,7 @@ export type ActivityLog = {
 };
 
 /**
- * 席が終わるたびに volume に 1 行ずつ足す。あとから記憶や Orca を集め直すより確かで、
+ * 席が終わるたびに volume に 1 行ずつ足す。あとから記憶や席の記録を集め直すより確かで、
  * 受付が落ちていた日も、次にまとめるときに前の回からの分をまとめて拾える。
  */
 export const openActivityLog = (dir: string): ActivityLog => {
