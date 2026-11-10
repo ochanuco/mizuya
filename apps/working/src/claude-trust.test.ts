@@ -11,7 +11,11 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { claudeConfigPathOf, trustWorkspace } from "./claude-trust.ts";
+import {
+	claudeConfigPathOf,
+	syncClaudeMcpServer,
+	trustWorkspace,
+} from "./claude-trust.ts";
 import { tempDir } from "./test-support.ts";
 
 const setup = () => {
@@ -118,5 +122,90 @@ describe("trustWorkspace", () => {
 			"/c/.claude.json",
 		);
 		expect(claudeConfigPathOf({ HOME: "/h" })).toBe("/h/.claude.json");
+	});
+});
+
+describe("syncClaudeMcpServer", () => {
+	const server = {
+		url: "https://chakai.example/mcp",
+		headers: {
+			"CF-Access-Client-Id": "id",
+			"CF-Access-Client-Secret": "secret",
+			"X-Actor": "yukarin",
+		},
+	};
+
+	it("設定が無ければ作って、user スコープの MCP サーバーを 600 で置く", async () => {
+		const t = setup();
+		const r = await syncClaudeMcpServer(t.config, "chakai", server);
+		expect(r).toEqual({ ok: true, value: true });
+		expect(t.read()).toEqual({
+			mcpServers: { chakai: { type: "http", ...server } },
+		});
+		expect(statSync(t.config).mode & 0o777).toBe(0o600);
+		expect(existsSync(`${t.config}.lock`)).toBe(false);
+	});
+
+	it("ほかの設定と MCP サーバーを残して置き換え、同じなら書かない", async () => {
+		const t = setup();
+		writeFileSync(
+			t.config,
+			JSON.stringify({
+				oauthAccount: { emailAddress: "x" },
+				mcpServers: {
+					other: { type: "http", url: "https://other.example/mcp" },
+					chakai: { type: "http", url: "https://old.example/mcp" },
+				},
+			}),
+		);
+		expect(await syncClaudeMcpServer(t.config, "chakai", server)).toEqual({
+			ok: true,
+			value: true,
+		});
+		expect(t.read()).toEqual({
+			oauthAccount: { emailAddress: "x" },
+			mcpServers: {
+				other: { type: "http", url: "https://other.example/mcp" },
+				chakai: { type: "http", ...server },
+			},
+		});
+		expect(await syncClaudeMcpServer(t.config, "chakai", server)).toEqual({
+			ok: true,
+			value: false,
+		});
+	});
+
+	it("server が null なら消し、もともと無ければ書かない", async () => {
+		const t = setup();
+		writeFileSync(
+			t.config,
+			JSON.stringify({
+				mcpServers: {
+					other: { type: "http", url: "https://other.example/mcp" },
+					chakai: { type: "http", ...server },
+				},
+			}),
+		);
+		expect(await syncClaudeMcpServer(t.config, "chakai", null)).toEqual({
+			ok: true,
+			value: true,
+		});
+		expect(t.read()).toEqual({
+			mcpServers: {
+				other: { type: "http", url: "https://other.example/mcp" },
+			},
+		});
+		expect(await syncClaudeMcpServer(t.config, "chakai", null)).toEqual({
+			ok: true,
+			value: false,
+		});
+	});
+
+	it("読めない設定は上書きしない", async () => {
+		const t = setup();
+		writeFileSync(t.config, "{ broken");
+		const r = await syncClaudeMcpServer(t.config, "chakai", server);
+		expect(r.ok).toBe(false);
+		expect(readFileSync(t.config, "utf8")).toBe("{ broken");
 	});
 });

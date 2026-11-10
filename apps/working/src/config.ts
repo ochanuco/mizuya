@@ -52,6 +52,9 @@ const envSchema = v.object({
 	PLAYWRIGHT_MCP_URL: v.optional(v.pipe(v.string(), v.url())),
 	PLAYWRIGHT_ACCESS_CLIENT_ID: v.optional(nonEmpty),
 	PLAYWRIGHT_ACCESS_CLIENT_SECRET: v.optional(nonEmpty),
+	CHAKAI_MCP_URL: v.optional(v.pipe(v.string(), v.url())),
+	CHAKAI_ACCESS_CLIENT_ID: v.optional(nonEmpty),
+	CHAKAI_ACCESS_CLIENT_SECRET: v.optional(nonEmpty),
 	MAC_STATE_TOKEN: v.optional(nonEmpty),
 	MAC_STATE_PORT: v.optional(positiveInt),
 	SEAT_STATUS_TOKEN: v.optional(nonEmpty),
@@ -142,6 +145,8 @@ export type WorkingConfig = {
 	chimera: { url: string; clientId: string; clientSecret: string } | null;
 	/** Akarin の席の Codex に渡す Playwright MCP。3 つそろったときだけ席から使える。 */
 	playwright: { url: string; clientId: string; clientSecret: string } | null;
+	/** 席の agent に渡す chakai（タスク台帳）の MCP。3 つそろったときだけ席から使える。 */
+	chakai: { url: string; clientId: string; clientSecret: string } | null;
 	/**
 	 * 席の agent のセッションを預ける hishaku の Manager。3 つそろったときだけ使う。
 	 * holder はこの受付の Commander の ID で、Mac の hs が貸し出しの持ち主として見る。
@@ -318,6 +323,16 @@ export const loadConfig = (
 						url: e.PLAYWRIGHT_MCP_URL,
 						clientId: e.PLAYWRIGHT_ACCESS_CLIENT_ID,
 						clientSecret: e.PLAYWRIGHT_ACCESS_CLIENT_SECRET,
+					}
+				: null,
+		chakai:
+			e.CHAKAI_MCP_URL &&
+			e.CHAKAI_ACCESS_CLIENT_ID &&
+			e.CHAKAI_ACCESS_CLIENT_SECRET
+				? {
+						url: e.CHAKAI_MCP_URL,
+						clientId: e.CHAKAI_ACCESS_CLIENT_ID,
+						clientSecret: e.CHAKAI_ACCESS_CLIENT_SECRET,
 					}
 				: null,
 		hishaku:

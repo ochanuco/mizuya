@@ -14,7 +14,11 @@ import {
 	createChimeraImages,
 } from "./attachments.ts";
 import { childEnv, createSummarizer } from "./claude-cli.ts";
-import { claudeConfigPathOf, trustWorkspace } from "./claude-trust.ts";
+import {
+	claudeConfigPathOf,
+	syncClaudeMcpServer,
+	trustWorkspace,
+} from "./claude-trust.ts";
 import { syncCodexMcpServer } from "./codex-mcp.ts";
 import { trustCodexProject } from "./codex-trust.ts";
 import { loadConfig } from "./config.ts";
@@ -29,7 +33,7 @@ import { startInbox } from "./inbox.ts";
 import { agentOf, createIntake, type SeatPartner } from "./intake.ts";
 import { createGhIssueTracker } from "./issue-close.ts";
 import { pickupIssues, startIssuePickupTimer } from "./issue-pickup.ts";
-import { PARTNER_IDS } from "./lib/core.ts";
+import { ok, PARTNER_IDS } from "./lib/core.ts";
 import { createLogger } from "./logger.ts";
 import { createMacStateServer, openMacStateStore } from "./mac-state.ts";
 import { credentialsPathOf } from "./memory-cli/cli.ts";
@@ -307,6 +311,43 @@ logger.info("orca prepared", { run_id: prepared.value.runId });
 		logger.info("codex playwright mcp updated", {
 			enabled: cfg.playwright !== null,
 		});
+	}
+	// chakai は X-Actor で席の人格を見分ける。席の agent は人格ごとに決まっているので、agent の設定に人格を書ける
+	for (const partner of PARTNER_IDS) {
+		const server = cfg.chakai && {
+			url: cfg.chakai.url,
+			headers: {
+				"CF-Access-Client-Id": cfg.chakai.clientId,
+				"CF-Access-Client-Secret": cfg.chakai.clientSecret,
+				"X-Actor": partner,
+			},
+		};
+		const agent = agentOf(partner);
+		const synced =
+			agent === "claude"
+				? await syncClaudeMcpServer(
+						claudeConfigPathOf(process.env),
+						"chakai",
+						server,
+					)
+				: ok(
+						await syncCodexMcpServer(
+							join(cfg.codexHome, "config.toml"),
+							"chakai",
+							server,
+						),
+					);
+		if (!synced.ok) {
+			logger.warn("chakai mcp not updated", {
+				agent,
+				reason: synced.error.reason,
+			});
+		} else if (synced.value) {
+			logger.info("chakai mcp updated", {
+				agent,
+				enabled: cfg.chakai !== null,
+			});
+		}
 	}
 }
 

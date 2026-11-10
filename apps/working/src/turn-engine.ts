@@ -62,7 +62,7 @@ export const spawnTurn: SpawnTurn = (bin, args, opts) => {
 };
 
 /**
- * 席の agent に渡してよい環境変数。受付の秘密（Discord のトークン、記憶の口と chimera の service token）は渡さない。
+ * 席の agent に渡してよい環境変数。受付の秘密（Discord のトークン、記憶の口・chimera・chakai の service token）は渡さない。
  * MIZUYA_* は hook（src/guard）が席と許可の記録を探すのに使う。
  */
 const SEAT_ENV_KEYS = [

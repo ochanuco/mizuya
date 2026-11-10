@@ -25,29 +25,23 @@ const LOCK_WAIT_MS = 15_000;
 // Orca も起動の前に信頼を書くが、残ったロックを古いとみなさないので、残りがあると書けずに確認の画面で止まる
 const LOCK_STALE_MS = 10_000;
 
+type LockOpts = { sleep?: (ms: number) => Promise<void>; now?: () => number };
+
 const isRecord = (x: unknown): x is Record<string, unknown> =>
 	typeof x === "object" && x !== null && !Array.isArray(x);
 
 /**
- * 席の作業場所を Claude CLI の信頼済みの場所に登録する。
- * 信頼していない場所で起動した Claude は確認の画面で止まり、Orca は席を始められない。
- * Claude CLI は場所を realpath で引くので、realpath で登録する。
+ * Claude CLI の設定を、Claude CLI と同じロックの中で読んで書き換える。
+ * update が null を返せば書かない。書き換えたら true。
  */
-export const trustWorkspace = async (
+export const updateClaudeConfig = async (
 	configPath: string,
-	dir: string,
-	opts: { sleep?: (ms: number) => Promise<void>; now?: () => number } = {},
-): Promise<Result<string, TrustError>> => {
+	update: (config: Record<string, unknown>) => Record<string, unknown> | null,
+	opts: LockOpts = {},
+): Promise<Result<boolean, TrustError>> => {
 	const sleep =
 		opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
 	const now = opts.now ?? Date.now;
-	let real: string;
-	try {
-		real = await realpath(dir);
-	} catch (e) {
-		return err({ type: "TrustFailed", reason: `realpath: ${String(e)}` });
-	}
-
 	const lock = `${configPath}.lock`;
 	const deadline = now() + LOCK_WAIT_MS;
 	for (;;) {
@@ -92,24 +86,83 @@ export const trustWorkspace = async (
 			}
 			config = parsed;
 		}
-		const projects = isRecord(config.projects) ? config.projects : {};
-		const entry = projects[real];
-		const current: Record<string, unknown> = isRecord(entry) ? entry : {};
-		if (current.hasTrustDialogAccepted === true) return ok(real);
-		const next = {
-			...config,
-			projects: {
-				...projects,
-				[real]: { ...current, hasTrustDialogAccepted: true },
-			},
-		};
+		const next = update(config);
+		if (next === null) return ok(false);
 		const tmp = `${configPath}.tmp.${process.pid}.${now()}`;
 		await writeFile(tmp, JSON.stringify(next, null, 2), { mode: 0o600 });
 		await rename(tmp, configPath);
-		return ok(real);
+		return ok(true);
 	} catch (e) {
 		return err({ type: "TrustFailed", reason: String(e).slice(0, 300) });
 	} finally {
 		await rmdir(lock).catch(() => {});
 	}
 };
+
+/**
+ * 席の作業場所を Claude CLI の信頼済みの場所に登録する。
+ * 信頼していない場所で起動した Claude は確認の画面で止まり、Orca は席を始められない。
+ * Claude CLI は場所を realpath で引くので、realpath で登録する。
+ */
+export const trustWorkspace = async (
+	configPath: string,
+	dir: string,
+	opts: LockOpts = {},
+): Promise<Result<string, TrustError>> => {
+	let real: string;
+	try {
+		real = await realpath(dir);
+	} catch (e) {
+		return err({ type: "TrustFailed", reason: `realpath: ${String(e)}` });
+	}
+	const written = await updateClaudeConfig(
+		configPath,
+		(config) => {
+			const projects = isRecord(config.projects) ? config.projects : {};
+			const entry = projects[real];
+			const current: Record<string, unknown> = isRecord(entry) ? entry : {};
+			if (current.hasTrustDialogAccepted === true) return null;
+			return {
+				...config,
+				projects: {
+					...projects,
+					[real]: { ...current, hasTrustDialogAccepted: true },
+				},
+			};
+		},
+		opts,
+	);
+	return written.ok ? ok(real) : written;
+};
+
+export type ClaudeMcpServer = {
+	url: string;
+	headers: Record<string, string>;
+};
+
+/**
+ * 席の Claude CLI の設定（user スコープ）に、名前 `name` の MCP サーバーを置く。起動のたびに書き直すので、トークンを替えても次の起動で入る。
+ * server が null なら消す。書き換えたら true。
+ * 席の環境変数には秘密を渡さない（seat-env.sh）ので、Access のヘッダーは値のまま書く。設定は hook が読み出しを止める。
+ */
+export const syncClaudeMcpServer = (
+	configPath: string,
+	name: string,
+	server: ClaudeMcpServer | null,
+	opts: LockOpts = {},
+): Promise<Result<boolean, TrustError>> =>
+	updateClaudeConfig(
+		configPath,
+		(config) => {
+			const servers = isRecord(config.mcpServers) ? config.mcpServers : {};
+			const { [name]: current, ...rest } = servers;
+			const want = server && {
+				type: "http",
+				url: server.url,
+				headers: server.headers,
+			};
+			if (JSON.stringify(current ?? null) === JSON.stringify(want)) return null;
+			return { ...config, mcpServers: want ? { ...rest, [name]: want } : rest };
+		},
+		opts,
+	);
