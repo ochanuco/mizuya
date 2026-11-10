@@ -32,6 +32,7 @@ import { dismissedText, isDismissButton } from "./dismiss.ts";
 import { seatNameOf } from "./guard/env.ts";
 import type { Ledger, Pending } from "./guard/ledger.ts";
 import type { Operation } from "./guard/operation.ts";
+import type { Hishaku, SessionMeta } from "./hishaku.ts";
 import {
 	CLOSE_ISSUE_BUTTON,
 	type IssueTracker,
@@ -40,7 +41,6 @@ import {
 	issueDoneText,
 	issueRefText,
 } from "./issue-close.ts";
-import type { Hishaku, SessionMeta } from "./hishaku.ts";
 import { createKeyedQueue } from "./keyed-queue.ts";
 import {
 	backFromMacText,
