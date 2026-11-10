@@ -10,7 +10,7 @@ import {
 	type Result,
 } from "./lib/core.ts";
 import type { Logger } from "./logger.ts";
-import type { SeatAgent } from "./orca.ts";
+import type { SeatAgent } from "./seat-engine.ts";
 
 /** 使用率の枠ひとつ。resetsAt は UNIX ミリ秒で、枠をまだ使い始めていなければ null。 */
 export type UsageWindow = { usedPercent: number; resetsAt: number | null };

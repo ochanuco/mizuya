@@ -344,10 +344,10 @@ describe("startStandup の見回り", () => {
 				store,
 				{ failing_prs: [failingPr(3)] },
 				vi.fn(async () => {
-					throw new Error("orca down");
+					throw new Error("github down");
 				}),
 			),
-		).rejects.toThrow("orca down");
+		).rejects.toThrow("github down");
 		const r = await patrol(store, { failing_prs: [failingPr(3)] });
 		expect(r.start).toHaveBeenCalledOnce();
 	});

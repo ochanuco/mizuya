@@ -33,8 +33,6 @@ const envSchema = v.object({
 	PERSONA_DIR: v.optional(nonEmpty),
 	HANDOFF_DIR: v.optional(nonEmpty),
 	CLAUDE_BIN: v.optional(nonEmpty),
-	ORCA_BIN: v.optional(nonEmpty),
-	SEAT_ENGINE: v.optional(v.picklist(["orca", "hishaku"])),
 	SEATS_REPO: v.optional(nonEmpty),
 	SEATS_DIR: v.optional(nonEmpty),
 	SEAT_LIMIT: v.optional(positiveInt),
@@ -122,12 +120,9 @@ export type WorkingConfig = {
 	/** Mac への引き継ぎの指示（prompt.md と issue-template.md）を置いたディレクトリ。 */
 	handoffDir: string;
 	claudeBin: string;
-	orcaBin: string;
-	/** 席を回すもの。orca は Orca の端末と orchestration、hishaku は hs turn で指示ごとに 1 ターン走らせる。 */
-	seatEngine: "orca" | "hishaku";
 	/** 席の worktree の元にする空の git リポジトリ。 */
 	seatsRepo: string;
-	/** Orca が席の worktree を作る場所。start.sh が hook に渡す値と揃える。 */
+	/** 席の worktree を作る場所。席の agent と hook には MIZUYA_SEATS_DIR で渡す。 */
 	seatsDir: string;
 	/** 同時に Claude を動かしておく席の上限。 */
 	seatLimit: number;
@@ -285,10 +280,8 @@ export const loadConfig = (
 		personaDir: e.PERSONA_DIR ?? `${home}/persona`,
 		handoffDir: e.HANDOFF_DIR ?? `${home}/handoff`,
 		claudeBin: e.CLAUDE_BIN ?? "claude",
-		orcaBin: e.ORCA_BIN ?? "orca-ide",
-		seatEngine: e.SEAT_ENGINE ?? "orca",
 		seatsRepo: e.SEATS_REPO ?? `${home}/work/seats`,
-		// Orca は worktree を ~/orca/workspaces/<リポジトリ名> に作り、~/orca は work の volume への symlink
+		// 既にある席の worktree をそのまま使えるよう、Orca が作っていた場所のままにする
 		seatsDir: e.SEATS_DIR ?? `${home}/work/orca/workspaces/seats`,
 		seatLimit: e.SEAT_LIMIT ?? 6,
 		seatSleepAfterMs: (e.SEAT_SLEEP_AFTER_MINUTES ?? 120) * 60_000,

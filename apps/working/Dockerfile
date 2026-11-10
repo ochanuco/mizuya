@@ -1,4 +1,4 @@
-# Working のコンテナ。orca serve と Claude CLI・Codex CLI と Working 受付を同じコンテナで動かす。
+# Working のコンテナ。Working 受付と、受付が hs turn で走らせる席の Claude CLI・Codex CLI を同じコンテナで動かす。
 # ビルドコンテキストはリポジトリルート: docker build -f apps/working/Dockerfile .
 FROM node:26.12.1-slim AS build
 ENV PNPM_HOME=/pnpm
@@ -30,7 +30,6 @@ RUN for p in yukarin akarin; do \
 
 FROM debian:bookworm-slim
 
-ARG ORCA_VERSION=1.4.248
 ARG MISE_VERSION=2026.11.2
 ARG MISE_SHA256_AMD64=62cad463c1413f05398ca339168a8f655120b6f0b0b8adce3bc6758bafaf0602
 ARG MISE_SHA256_ARM64=18bf3ac02033c2a50b772b411e35528cd1888386b4316895fcae626db6ad96f3
@@ -67,14 +66,6 @@ RUN curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o /usr/share/keyri
 	&& apt-get update \
 	&& apt-get install -y --no-install-recommends gh \
 	&& rm -rf /var/lib/apt/lists/*
-
-# orca-ide の deb は Electron アプリ一式で、GUI 用ライブラリを依存に持つ。apt に解決させる。
-RUN arch="$(dpkg --print-architecture)" \
-	&& curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o /tmp/orca.deb \
-		"https://github.com/stablyai/orca/releases/download/v${ORCA_VERSION}/orca-ide_${ORCA_VERSION}_${arch}.deb" \
-	&& apt-get update \
-	&& apt-get install -y --no-install-recommends /tmp/orca.deb \
-	&& rm -rf /var/lib/apt/lists/* /tmp/orca.deb
 
 # Akarin の席で動かす Codex CLI。codex はコマンドを横に置いた codex-code-mode-host と codex-exec-server で動かすので、
 # 本体だけでなく配布の一式（codex-package）を /opt/codex に展開する。codex は自分の実体の場所から一式を探すので、PATH には symlink で出す。
@@ -138,9 +129,6 @@ RUN arch="$(dpkg --print-architecture)" \
 ARG TOKENECONOMIZER_VERSION=v0.1.0
 ADD https://github.com/microsoft/TokenEconomizer.git#${TOKENECONOMIZER_VERSION} /opt/tokeneconomizer
 
-# 席の Claude の手順書（orchestration の preamble）はコマンドを orca と書く。
-RUN ln -s /usr/bin/orca-ide /usr/local/bin/orca
-
 # 取り消せない操作を止める PreToolUse hook。managed settings も hook も root の持ち物にし、
 # Claude CLI（worker で動く）が書き換えて止めるのをやめさせられないようにする。
 COPY apps/working/guard/managed-settings.json /etc/claude-code/managed-settings.json
@@ -164,8 +152,6 @@ USER worker
 WORKDIR /home/worker
 # named volume は空のときマウント先の所有者を引き継ぐ。先に worker 所有で作っておかないと root 所有になり書けない。
 RUN mkdir -p /home/worker/.claude /home/worker/.codex /home/worker/.config /home/worker/state /home/worker/work
-# Orca は席の worktree を ~/orca/workspaces に作る。作り直しても席が残るよう work の volume に置く。
-RUN ln -s /home/worker/work/orca /home/worker/orca
 # TokenEconomizer が repo ごとに学んだことも、作り直しで消えないよう work の volume に置く。
 RUN ln -s /home/worker/work/.tokeneconomizer /home/worker/.tokeneconomizer
 
@@ -197,11 +183,10 @@ COPY --chown=worker:worker apps/working/takt/ /home/worker/.takt/
 
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=build --chown=worker:worker /out /home/worker/app
-COPY --chown=worker:worker apps/working/start.sh apps/working/seat-env.sh apps/working/init-seats-repo.sh apps/working/release-orcad-lock.sh /home/worker/bin/
+COPY --chown=worker:worker apps/working/start.sh apps/working/init-seats-repo.sh /home/worker/bin/
 
 # 8080 は生存確認（healthz）、8090 は Mac からの席の状態
 EXPOSE 8080 8090 8092
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 	CMD ["curl", "-fsS", "http://127.0.0.1:8080/healthz"]
-# 引数（orca-ide serve …）を受付と並べて動かす。引数がなければ受付だけを動かす。
 ENTRYPOINT ["/home/worker/bin/start.sh"]

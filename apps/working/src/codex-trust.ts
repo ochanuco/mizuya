@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 /**
  * 席の元のリポジトリを Codex CLI の信頼済みにする。書き足したら true。
  * Codex は worktree の信頼を元のリポジトリで引くので、席ごとではなく元のリポジトリを 1 度だけ登録すればよい。
- * 信頼していない場所の Codex は確認の画面で止まり、Orca は席を始めない。
+ * 信頼していない場所では、codex exec は git リポジトリの外とみなして走らない。
  * 持ち主が書いた設定を壊さないよう、表が無いときだけ末尾に足す。
  */
 export const trustCodexProject = async (

@@ -18,7 +18,6 @@ import { DISMISS_ASK } from "./dismiss.ts";
 import { grantPathOf, guardDirOf } from "./guard/env.ts";
 import { createLedger } from "./guard/ledger.ts";
 import {
-	backgroundRunning,
 	createIntake,
 	type IntakeDeps,
 	isCloseRequest,
@@ -38,8 +37,8 @@ import {
 	envelope,
 	FORUM,
 	fakeDiscord,
+	fakeEngine,
 	fakeHishaku,
-	fakeOrca,
 	OWNER,
 	press,
 	say,
@@ -84,7 +83,7 @@ const setup = async (
 	opts: {
 		seatLimit?: number;
 		stateDir?: string;
-		orca?: ReturnType<typeof fakeOrca>;
+		seatEngine?: ReturnType<typeof fakeEngine>;
 		seatsDir?: string;
 		chimera?: ChimeraImages;
 		akarin?: boolean;
@@ -101,7 +100,7 @@ const setup = async (
 	const d = opts.d ?? fakeDiscord();
 	// mizuya の bot が書くもの（ボタン）は、席の bot の書き込みと分けて見る
 	const sys = opts.sys ?? fakeDiscord();
-	const o = opts.orca ?? fakeOrca(opts.seatsDir);
+	const o = opts.seatEngine ?? fakeEngine(opts.seatsDir);
 	let clock = T0.getTime();
 	const remembered: string[] = [];
 	const rememberedBy: PartnerId[] = [];
@@ -131,7 +130,7 @@ const setup = async (
 					preamble: AKARIN_PREAMBLE,
 				}
 			: null,
-		orca: o.orca,
+		engine: o.engine,
 		hishaku: opts.hishaku?.hishaku ?? null,
 		findWorkBranches: opts.findWorkBranches ?? null,
 		seats,
@@ -368,16 +367,16 @@ describe("投稿への返事", () => {
 
 	it("受付を作り直しても、volume の対応表から同じ席に渡す", async () => {
 		const stateDir = tempDir();
-		const orca = fakeOrca();
-		const first = await setup({ stateDir, orca });
+		const seatEngine = fakeEngine();
+		const first = await setup({ stateDir, seatEngine });
 		const seat = await openPost(first);
 
-		const again = await setup({ stateDir, orca });
+		const again = await setup({ stateDir, seatEngine });
 		again.d.addThread("p1", "README の誤字");
 		await again.intake.handle(say("p1", "まだですか"));
-		const sends = orca.opsOf("send") as { dispatchId: string }[];
+		const sends = seatEngine.opsOf("send") as { dispatchId: string }[];
 		expect(sends.at(-1)?.dispatchId).toBe(seat.dispatchId);
-		expect(orca.opsOf("startSeat")).toHaveLength(1);
+		expect(seatEngine.opsOf("startSeat")).toHaveLength(1);
 	});
 });
 
@@ -926,7 +925,7 @@ describe("完了したあと残している席", () => {
 
 		const again = await setup({
 			stateDir: s.stateDir,
-			orca: s.o,
+			seatEngine: s.o,
 			d: s.d,
 			sys: s.sys,
 		});
@@ -1026,32 +1025,32 @@ describe("決めてほしいまま時間がたった席", () => {
 
 describe("起動時の突き合わせ", () => {
 	it("対応表に無い席の端末と worktree は片付け、対応表にある席は残す", async () => {
-		const orca = fakeOrca();
-		const s = await setup({ orca });
+		const seatEngine = fakeEngine();
+		const s = await setup({ seatEngine });
 		const seat = await openPost(s);
-		orca.worktrees.add("/seats/seat-old");
-		orca.strayTerminals.push(
+		seatEngine.worktrees.add("/seats/seat-old");
+		seatEngine.strayTerminals.push(
 			{ handle: "t-old", path: "/seats/seat-old" },
 			{ handle: seat.terminal ?? "", path: "/seats/seat-p1" },
 			{ handle: "t-extra", path: "/seats/seat-p1" },
 		);
 		await s.intake.reconcile();
-		expect(orca.opsOf("closeTerminal")).toEqual(["t-old", "t-extra"]);
-		expect(orca.opsOf("removeWorktree")).toEqual(["/seats/seat-old"]);
+		expect(seatEngine.opsOf("closeTerminal")).toEqual(["t-old", "t-extra"]);
+		expect(seatEngine.opsOf("removeWorktree")).toEqual(["/seats/seat-old"]);
 		expect(s.seats.get("p1")?.status).toBe("working");
 	});
 
 	it("Claude がいなくなった席は止めた扱いにし、作業中だったなら投稿で知らせる", async () => {
-		const orca = fakeOrca();
-		const s = await setup({ orca });
+		const seatEngine = fakeEngine();
+		const s = await setup({ seatEngine });
 		const seat = await openPost(s);
-		orca.live.delete(seat.terminal ?? "");
+		seatEngine.live.delete(seat.terminal ?? "");
 		await s.intake.reconcile();
 		expect(s.seats.get("p1")?.status).toBe("sleeping");
 		expect(s.d.sentTo("p1").at(-1)).toContain("受付を作り直した");
 		expect(s.d.tagsOf("p1")).toEqual(["tag-decide"]);
 		await s.intake.handle(say("p1", "続けて"));
-		expect(orca.opsOf("resumeSeat")).toHaveLength(1);
+		expect(seatEngine.opsOf("resumeSeat")).toHaveLength(1);
 	});
 });
 
@@ -1173,139 +1172,33 @@ describe("朝会の席", () => {
 });
 
 describe("席を始められなかったとき", () => {
-	it("止まった所が分かる短い文を投稿に書き、Orca の理由の文は出さない", async () => {
-		const orca = fakeOrca();
-		vi.mocked(orca.orca.startSeat).mockResolvedValueOnce({
+	it("止まった所が分かる短い文を投稿に書き、席エンジンの理由の文は出さない", async () => {
+		const seatEngine = fakeEngine();
+		vi.mocked(seatEngine.engine.startSeat).mockResolvedValueOnce({
 			ok: false,
 			error: {
-				type: "OrcaFailed",
-				command: "orchestration worker-start",
-				reason:
-					"Error: start_failed: agent_readiness: Agent startup blocked: agent-trust-workspace /home/worker/x",
+				type: "EngineFailed",
+				command: "git worktree add",
+				reason: "fatal: /home/worker/x already exists",
 			},
 		});
-		const s = await setup({ orca });
+		const s = await setup({ seatEngine });
 		s.d.addThread("p1", "x");
 		await s.intake.handle(say("p1", "頼みます", { first: true }));
 		expect(s.d.sentTo("p1")).toEqual([
-			`<@${OWNER}> 席を始められませんでした（Claude の作業場所の確認で止まった）。返事をくれれば、もう一度始めます。`,
+			`<@${OWNER}> 席を始められませんでした（席の作業場所を作れなかった）。返事をくれれば、もう一度始めます。`,
 		]);
 		expect(s.d.tagsOf("p1")).toEqual(["tag-decide"]);
 	});
 
 	it("理由ごとに文を分ける", () => {
-		const of = (type: "OrcaFailed" | "SeatTrustFailed", reason: string) =>
+		const of = (type: "EngineFailed" | "SeatTrustFailed", reason: string) =>
 			seatStartFailedText({ type, command: "c", reason });
 		expect(of("SeatTrustFailed", "lock")).toContain(
 			"Claude の作業場所を信頼済みにできなかった",
 		);
-		expect(
-			of("OrcaFailed", "start_failed: agent_readiness: timeout"),
-		).toContain("Claude が起動しきらなかった");
-		expect(of("OrcaFailed", "selector_not_found")).toContain(
-			"Orca が席を作れなかった",
-		);
-	});
-});
-
-describe("裏の作業を待つ席", () => {
-	const tail = (footer: string) =>
-		`Worker t1 ended its turn without sending worker_done.\nLast output:\n● バックグラウンドで回しました。終わるまで待ちます。\n${footer}`;
-
-	it("裏の shell を残してターンを終えた知らせは、止まったと書かない", async () => {
-		const s = await setup();
-		const seat = await openPost(s);
-		await s.intake.onSeatMessage(
-			seatMessage({
-				type: "escalation",
-				dispatchId: seat.dispatchId,
-				stopReason: "finished",
-				body: tail("✻ Worked for 7s · done 2:06 PM · 1 shell still running"),
-			}),
-		);
-		expect(s.d.sentTo("p1")).toEqual([]);
-		expect(s.seats.get("p1")?.status).toBe("working");
-		expect(s.d.tagsOf("p1")).toEqual(["tag-working"]);
-	});
-
-	it("裏の作業を待つ間の書き込みには、最後の途中経過を添えて作業中と即答し、席にも渡す", async () => {
-		const s = await setup();
-		const seat = await openPost(s);
-		await s.intake.onSeatMessage(
-			seatMessage({
-				type: "status",
-				dispatchId: seat.dispatchId,
-				body: "描画を待っています。\n5 分ほどです。",
-			}),
-		);
-		await s.intake.onSeatMessage(
-			seatMessage({
-				type: "escalation",
-				dispatchId: seat.dispatchId,
-				stopReason: "finished",
-				body: tail("✻ done · 1 shell still running"),
-			}),
-		);
-		await s.intake.handle(say("p1", "止まってない？"));
-		expect(s.d.sentTo("p1").at(-1)).toBe(
-			"作業中です。（描画を待っています。 5 分ほどです。）",
-		);
-		const [sent] = s.o.opsOf("send") as { body: string }[];
-		expect(sent?.body).toContain("手が空いたら status で答え");
-		expect(sent?.body).toContain("止まってない？");
-		// 席が答えるまでの次の書き込みにも即答する
-		await s.intake.handle(say("p1", "まだ？"));
-		expect(s.d.sentTo("p1").at(-1)).toBe(
-			"作業中です。（描画を待っています。 5 分ほどです。）",
-		);
-		expect(s.seats.get("p1")?.status).toBe("working");
-	});
-
-	it("途中経過が無ければ、いまやっていることは省く。席が報告したら即答はやめる", async () => {
-		const s = await setup();
-		const seat = await openPost(s);
-		await s.intake.onSeatMessage(
-			seatMessage({
-				type: "escalation",
-				dispatchId: seat.dispatchId,
-				stopReason: "finished",
-				body: tail("· 2 shells ·"),
-			}),
-		);
-		await s.intake.handle(say("p1", "どう？"));
-		expect(s.d.sentTo("p1")).toEqual([`<@${OWNER}> 作業中です。`]);
-		const current = s.seats.get("p1");
-		await s.intake.onSeatMessage(
-			seatMessage({
-				type: "question",
-				dispatchId: current?.dispatchId ?? null,
-				body: "A と B のどちらにしますか",
-			}),
-		);
-		await s.intake.handle(say("p1", "A で"));
-		expect(s.d.sentTo("p1")).toEqual([
-			`<@${OWNER}> 作業中です。`,
-			"A と B のどちらにしますか",
-		]);
-	});
-
-	it("裏の作業を待っていない席には即答しない", async () => {
-		const s = await setup();
-		await openPost(s);
-		await s.intake.handle(say("p1", "ついでに C も"));
-		expect(s.d.sentTo("p1")).toEqual([]);
-		expect(s.o.opsOf("send")).toHaveLength(1);
-	});
-
-	it("裏の作業が残っているかを端末の末尾から見分ける", () => {
-		expect(backgroundRunning(tail("✻ done · 1 shell still running"))).toBe(
-			true,
-		);
-		expect(
-			backgroundRunning(tail("⏵⏵ auto mode on · 2 shells · ↓ to manage")),
-		).toBe(true);
-		expect(backgroundRunning(tail("✻ Worked for 9s · done 10:41 AM"))).toBe(
-			false,
+		expect(of("EngineFailed", "git worktree add: exit 128")).toContain(
+			"席の作業場所を作れなかった",
 		);
 	});
 });
@@ -2902,7 +2795,7 @@ describe("Mac への貸し出しと取り戻し", () => {
 			stateDir: s.stateDir,
 			d: s.d,
 			sys: s.sys,
-			orca: s.o,
+			seatEngine: s.o,
 		});
 		macReturned(h, 2);
 		await r.intake.watchLends();

@@ -1,7 +1,7 @@
 import * as v from "valibot";
 import type { Exec } from "./exec.ts";
 import { err, ok, type Result } from "./lib/core.ts";
-import type { SeatAgent } from "./orca.ts";
+import type { SeatAgent } from "./seat-engine.ts";
 
 /**
  * 席の agent のセッションを hishaku の Manager に預ける口。

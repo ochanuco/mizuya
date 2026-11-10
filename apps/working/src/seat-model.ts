@@ -1,5 +1,5 @@
 import type { PartnerId } from "./lib/core.ts";
-import type { SeatAgent } from "./orca.ts";
+import type { SeatAgent } from "./seat-engine.ts";
 
 /** `/ai` で選べるモデル。mizuya の Worker の `commands.ts` と揃える。 */
 export const SEAT_MODELS: Record<SeatAgent, readonly string[]> = {

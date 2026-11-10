@@ -7,30 +7,19 @@ services:
     image: ghcr.io/ochanuco/mizuya-working:sha-0000000
     restart: unless-stopped
     env_file: .env.working
-    command:
-      [
-        "orca-ide",
-        "serve",
-        "--port",
-        "6768",
-        "--pairing-address",
-        "<Mac から届くアドレス>:6768",
-      ]
     ports:
       # Mac から席の状態を受ける口（MAC_STATE_TOKEN を設定したときだけ待ち受ける）。Mac から届く LAN の口に公開する
       - <LAN のアドレス>:8190:8090
-      # orca serve は pairing 済みの端末しか受け付けない。Mac から届く口に公開する
-      - 6768:6768
     volumes:
       - claude:/home/worker/.claude
       - codex:/home/worker/.codex
-      - orca:/home/worker/.config
+      - config:/home/worker/.config
       - state:/home/worker/state
       - work:/home/worker/work
 
 volumes:
   claude:
   codex:
-  orca:
+  config:
   state:
   work:

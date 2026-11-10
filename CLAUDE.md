@@ -1,6 +1,6 @@
 # mizuya リポジトリ規約
 
-mizuya は仕事と運用の窓口。pnpm workspace で、`apps/worker` が GitHub Actions のデプロイ承認を Discord のボタンで行う Cloudflare Worker、`apps/working` が仕事フォーラムの依頼を Orca の席で作業させる docker01 のコンテナ、`apps/budget` が Cloudflare の従量課金の額を毎日 Discord に知らせてダッシュボードに出す Worker。役割、動き、secret は README と `apps/working/README.md` にある。webhook・Environment・DNS・docker01 の stack は `ochanuco/chabatake` が持つ。記憶と人格の正本は `ochanuco/yunomi` にあり、Working はそれを記憶の口と image の build で使う。
+mizuya は仕事と運用の窓口。pnpm workspace で、`apps/worker` が GitHub Actions のデプロイ承認を Discord のボタンで行う Cloudflare Worker、`apps/working` が仕事フォーラムの依頼を席で `hs turn` を使って作業させる docker01 のコンテナ、`apps/budget` が Cloudflare の従量課金の額を毎日 Discord に知らせてダッシュボードに出す Worker。役割、動き、secret は README と `apps/working/README.md` にある。webhook・Environment・DNS・docker01 の stack は `ochanuco/chabatake` が持つ。記憶と人格の正本は `ochanuco/yunomi` にあり、Working はそれを記憶の口と image の build で使う。
 
 ## コマンド
 
