@@ -107,6 +107,20 @@ Orca の Linux 版は GitHub Releases（`stablyai/orca`）の `orca-ide_<版>_<a
 - 席を閉じるとき・寝かせるとき・起動し直すとき・Claude がいなくなっていたときは、agent が止まってから会話を hishaku に預けて貸し出しを返す（「hishaku の番号」の節）。
 - 起動時に `seats.json` と Orca の席を突き合わせる。対応表に無い席の端末と worktree（前回の残り）は片付け、対応表にある席は残す。Claude がいなくなっていた席は止めた扱いにし、作業中だったなら投稿で知らせて `決めてほしい` にする。
 
+### hs turn で回す席
+
+`SEAT_ENGINE=hishaku` のとき、受付は Orca を使わず、指示が届くたびに `hs turn` で席の agent を非対話で 1 ターン走らせる。start.sh は `orca-ide serve` を起こさない。上の節の Orca の端末と orchestration の代わりに、次のように動く。
+
+- 席の worktree は `SEATS_REPO` から `git worktree add -B seat-<投稿の ID> <SEATS_DIR>/seat-<投稿の ID>` で作り、閉じるときに `git worktree remove --force` とブランチの削除で消す。
+- 番号を借りた席は `hs turn <番号> --generation <世代>` で走らせ、ターンごとに記録を預ける。会話は meta の session_id で決まる。番号の無い席（朝会・見回り・見張り・GitHub の出来事、Manager に届かないとき）は `hs turn --agent <agent>` で走らせ、最初のターンで分かった session_id で続ける。止めた席を起こすときは `--continue` で作業場所の最新の会話を続ける。
+- agent の引数は、Claude は `--permission-mode auto`（と `--model`）、Codex は `-s danger-full-access` と記憶の道具に渡す `YUNOMI_PARTNER`（と `-m gpt-5.6-<モデル>`）。`codex exec` には `-a` が無く、承認を求めない。
+- 席の agent の環境は、`seat-env.sh` と同じく要るものだけにする。番号の会話を走らせる `hs` には `HISHAKU_*` と `XDG_CACHE_HOME`（`hs prepare` と同じ）を足し、`hs` は agent に渡す前に service token を外す。
+- ターンの最後のメッセージが返事になる。受付はターンの終わりを、Orca の `worker_done` と同じく投稿に書く。返事が空なら「作業が途中で止まりました」、失敗したターンは `決めてほしい` にする。
+- 席の agent は `hs ask` と `hs status` で質問と途中経過を送る。送り先は受付がループバックの空いた port で待ち受ける `/seats/<席>` で、席ごとの token を Bearer で確かめる。質問したターンの終わりは返事にせず、持ち主の答えを次のターンの指示として渡す。
+- 作業中の席に届いた返事は、ターンが終わってから次のターンにまとめて渡す。そのときは終わったターンの返事を途中経過として書く（状態の行は外す）。
+- `/ai` のモデルの切り替えは次のターンから効く。席を止めるときは `hs turn` に SIGTERM を送り、`hs` が agent を止めて記録を預けるのを待つ（60 秒で SIGKILL）。
+- 席の状態は受付のプロセスの中だけにある。受付を作り直すと動いている席は無くなり、起動時の突き合わせで止めた席になる。
+
 ### hishaku の番号
 
 `HISHAKU_URL` と service token がそろっていれば、受付は席の agent のセッションを hishaku の Manager に預け、投稿ごとの 4 桁の番号で続ける。Mac の `hs open <番号>` で同じ会話を Mac の Orca に開ける。
@@ -444,6 +458,7 @@ CI の失敗、PR のレビュー、issue と PR のコメントがあると、�
 | `HS_BIN`                                                          | いいえ | `hs` のパス。既定は `hs`                                                                                                    |
 | `CLAUDE_BIN`                                                      | いいえ | 受付が件名の要約とログインの期限に使う Claude CLI のパス。既定は `claude`                                                   |
 | `ORCA_BIN`                                                        | いいえ | Orca の CLI。既定は `orca-ide`                                                                                              |
+| `SEAT_ENGINE`                                                     | いいえ | 席を回すもの。`orca`（既定）か `hishaku`（「hs turn で回す席」の節）                                                        |
 | `SEATS_REPO`                                                      | いいえ | 席の元にする空の git リポジトリ。既定は `~/work/seats`                                                                      |
 | `SEATS_DIR`                                                       | いいえ | Orca が席の worktree を作る場所。既定は `~/work/orca/workspaces/seats`。受付と `seat-env.sh` の両方が読む                   |
 | `SEAT_LIMIT`                                                      | いいえ | 同時に Claude を動かしておく席の上限。既定は `6`                                                                            |

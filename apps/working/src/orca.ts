@@ -45,10 +45,18 @@ export type SeatHow =
 /**
  * worktree ができてから agent を起こす前に呼ぶ。cwd は agent が動く作業場所（realpath）。
  * 起こし方と、変えるなら spec を返す。席を起こしてはいけないとき（他の機械が借りている）は持ち主を返す。
+ * lease は借りた hishaku の番号と世代。hs turn で走らせる席は、これで番号の会話を続けて預ける。
  */
-export type SeatPrepare = (
-	cwd: string,
-) => Promise<Result<{ how: SeatHow; spec?: string }, { holder: string }>>;
+export type SeatPrepare = (cwd: string) => Promise<
+	Result<
+		{
+			how: SeatHow;
+			spec?: string;
+			lease?: { number: number; generation: number };
+		},
+		{ holder: string }
+	>
+>;
 
 /** 席の Claude の居場所。Orca は席を 1 つの Dispatch とその端末で表す。 */
 export type SeatHandle = { dispatchId: string; terminal: string; path: string };

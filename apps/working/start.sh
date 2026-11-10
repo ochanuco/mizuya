@@ -19,7 +19,8 @@ if ! { codex plugin marketplace add /opt/tokeneconomizer && codex plugin add tok
 	echo "start.sh: Codex CLI に TokenEconomizer を入れられなかった" >&2
 fi
 node_modules/.bin/tsx src/main.ts &
-if [ "$#" -gt 0 ]; then
+# hs turn で席を回すときは orca serve を起こさない。席の agent は受付が要るものだけの環境で起こす
+if [ "$#" -gt 0 ] && [ "${SEAT_ENGINE:-orca}" != "hishaku" ]; then
 	# 席の Claude は orca serve の環境変数を受け継ぐ。受付の秘密（Discord のトークンなど）を渡さないよう、要るものだけにする。
 	/home/worker/bin/seat-env.sh "$@" &
 fi

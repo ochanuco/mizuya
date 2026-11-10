@@ -188,7 +188,9 @@ describe("hook.ts（Claude CLI から呼ばれる形で動かす）", () => {
 		const r = runHook(seatBash("printenv"), envFor(state));
 		expect(r.status).toBe(0);
 		expect(r.out.permissionDecision).toBe("deny");
-		expect(r.out.permissionDecisionReason).toContain("orca orchestration ask");
+		expect(r.out.permissionDecisionReason).toContain(
+			"仕事のしかたにある聞き方",
+		);
 		expect(createLedger(join(state, "guard")).takePending("t1")).toEqual([
 			{
 				operation: { tool: "Bash", target: "printenv" },

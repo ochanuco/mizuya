@@ -338,6 +338,7 @@ export const fakeOrca = (seatsDir = "/seats") => {
 				...input,
 				how: prepared?.value.how ?? how,
 				spec: prepared?.value.spec ?? input.spec,
+				lease: prepared?.value.lease ?? null,
 			},
 		});
 		return ok(undefined);

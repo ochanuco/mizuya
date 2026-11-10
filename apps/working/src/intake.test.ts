@@ -2361,8 +2361,11 @@ describe("hishaku の番号", () => {
 			how: unknown;
 			spec: string;
 			title: string;
+			lease: unknown;
 		}[];
 		expect(start?.how).toEqual({ sessionId: ID, resume: false });
+		// hs turn で走らせる席は、借りた番号と世代で会話を続けて預ける
+		expect(start?.lease).toEqual({ number: 1234, generation: 1 });
 		expect(start?.spec).toContain("この投稿の hishaku の番号: 1234");
 		// 席の端末の題には番号を付けない
 		expect(start?.title).toBe("README の誤字");
