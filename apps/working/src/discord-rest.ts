@@ -73,16 +73,26 @@ const channelSchema = v.object({
 	parent_id: v.nullish(v.string()),
 	applied_tags: v.optional(v.array(v.string())),
 	available_tags: v.optional(
-		v.array(v.object({ id: v.string(), name: v.string() })),
+		v.array(
+			v.object({
+				id: v.string(),
+				name: v.string(),
+				emoji_id: v.nullish(v.string()),
+				emoji_name: v.nullish(v.string()),
+			}),
+		),
 	),
 });
+
+/** フォーラムのタグ。emoji は Unicode の絵文字だけを持ち、無いかカスタム絵文字なら null。 */
+export type ForumTag = { id: string; name: string; emoji?: string | null };
 
 export type ChannelInfo = {
 	id: string;
 	name: string | null;
 	parentId: string | null;
 	appliedTagIds: string[];
-	availableTags: { id: string; name: string }[];
+	availableTags: ForumTag[];
 };
 
 export type PostedMessage = {
@@ -132,6 +142,11 @@ export type DiscordApi = {
 	setTags: (
 		threadId: string,
 		tagIds: string[],
+	) => Promise<Result<void, DomainError>>;
+	/** 投稿（スレッド）の件名を変える。 */
+	renameThread: (
+		threadId: string,
+		name: string,
 	) => Promise<Result<void, DomainError>>;
 	/** 分けずに 1 件だけ送る。書き換える前提のメッセージに使う。 */
 	createMessage: (
@@ -195,7 +210,11 @@ const toChannel = (c: v.InferOutput<typeof channelSchema>): ChannelInfo => ({
 	name: c.name ?? null,
 	parentId: c.parent_id ?? null,
 	appliedTagIds: c.applied_tags ?? [],
-	availableTags: c.available_tags ?? [],
+	availableTags: (c.available_tags ?? []).map((t) => ({
+		id: t.id,
+		name: t.name,
+		emoji: t.emoji_id ? null : t.emoji_name || null,
+	})),
 });
 
 /** 改行を優先して上限以下に切り分ける。 */
@@ -409,6 +428,12 @@ export const createDiscordRest = (opts: DiscordRestOptions): DiscordApi => {
 		setTags: async (threadId, tagIds) => {
 			const r = await call("PATCH", `/channels/${threadId}`, null, {
 				applied_tags: tagIds,
+			});
+			return r.ok ? ok(undefined) : r;
+		},
+		renameThread: async (threadId, name) => {
+			const r = await call("PATCH", `/channels/${threadId}`, null, {
+				name: name.slice(0, THREAD_NAME_LIMIT),
 			});
 			return r.ok ? ok(undefined) : r;
 		},

@@ -36,11 +36,13 @@ describe("loadConfig", () => {
 				seatsDir: "/home/w/work/orca/workspaces/seats",
 				seatLimit: 6,
 				seatSleepAfterMs: 7_200_000,
+				seatDoneLingerMs: 3_600_000,
 				logLevel: "info",
 				memory: null,
 				memoryBin: "yunomi-memory",
 				chimera: null,
 				playwright: null,
+				hishaku: null,
 				macState: null,
 				seatStatus: null,
 				scheduler: null,
@@ -117,11 +119,16 @@ describe("loadConfig", () => {
 			PORT: "9000",
 			SEAT_LIMIT: "3",
 			SEAT_SLEEP_AFTER_MINUTES: "30",
+			SEAT_DONE_LINGER_MINUTES: "15",
 			SEATS_DIR: "",
 		});
 		expect(r.ok && r.value.port).toBe(9000);
 		expect(r.ok && r.value.seatLimit).toBe(3);
 		expect(r.ok && r.value.seatSleepAfterMs).toBe(1_800_000);
+		expect(r.ok && r.value.seatDoneLingerMs).toBe(900_000);
+		expect(loadConfig({ ...base, SEAT_DONE_LINGER_MINUTES: "0" }).ok).toBe(
+			false,
+		);
 		expect(r.ok && r.value.seatsDir).toBe("/home/w/work/orca/workspaces/seats");
 		expect(loadConfig({ ...base, SEAT_LIMIT: "0" }).ok).toBe(false);
 		expect(loadConfig({ ...base, PORT: "x" }).ok).toBe(false);
@@ -169,6 +176,28 @@ describe("loadConfig", () => {
 			YUNOMI_URL: "https://worker.example",
 		});
 		expect(partial.ok && partial.value.memory).toBeNull();
+	});
+
+	it("hishaku は URL と service token がそろったときだけ使い、holder は既定で docker01", () => {
+		const r = loadConfig({
+			...base,
+			HISHAKU_URL: "https://hishaku.example.com",
+			HISHAKU_ACCESS_CLIENT_ID: "hid",
+			HISHAKU_ACCESS_CLIENT_SECRET: "hsecret",
+		});
+		expect(r.ok && r.value.hishaku).toEqual({
+			url: "https://hishaku.example.com",
+			clientId: "hid",
+			clientSecret: "hsecret",
+			holder: "docker01",
+			bin: "hs",
+		});
+		const partial = loadConfig({
+			...base,
+			HISHAKU_URL: "https://hishaku.example.com",
+			HISHAKU_ACCESS_CLIENT_ID: "hid",
+		});
+		expect(partial.ok && partial.value.hishaku).toBeNull();
 	});
 
 	it("chimera の口は URL と service token がそろったときだけ使う", () => {

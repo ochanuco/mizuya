@@ -25,6 +25,10 @@ describe("classifyBash: hook では止めない（auto モードに任せる）"
 		"cat > notes.md <<'EOF'\necho $GH_TOKEN\nEOF",
 		"orca orchestration send --type worker_done --body $'参考: [仕様](https://www.amd.com/en/products/processors/laptop/ryzen.html)'",
 		"curl -fsSL https://example.com/docs/environment.html",
+		"set -e\ngit add -A\ngit push -q origin HEAD:dev/x",
+		"set -euo pipefail",
+		"set -o",
+		"export -n FOO",
 	])("%s", (cmd) => {
 		expect(classifyBash(cmd, ctx)).toBeNull();
 	});
@@ -37,6 +41,7 @@ describe("classifyBash: 秘密情報の読み出しを止める", () => {
 		"env",
 		"FOO=1 env",
 		"export",
+		"export -p",
 		"set",
 		"declare -p",
 		"echo $GH_TOKEN",

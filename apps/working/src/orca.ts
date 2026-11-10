@@ -10,7 +10,9 @@ export type OrcaError =
 	/** 席の作業場所を Claude CLI の信頼済みにできなかった。 */
 	| { type: "SeatTrustFailed"; command: string; reason: string }
 	/** 止めた席の worktree が無くなっていて、前の会話のまま起こせない。 */
-	| { type: "SeatWorktreeMissing"; command: string; reason: string };
+	| { type: "SeatWorktreeMissing"; command: string; reason: string }
+	/** 席のセッションを他の機械が借りていて起こせない。reason は持ち主。 */
+	| { type: "SeatLeaseHeld"; command: string; reason: string };
 
 /** 席から受付に届くメッセージ。 */
 export type SeatMessage = {
@@ -28,6 +30,25 @@ export type SeatMessage = {
 
 /** 席で動かす CLI agent。Yukarin は Claude CLI、Akarin は Codex CLI。 */
 export type SeatAgent = "claude" | "codex";
+
+/**
+ * 席の agent の起こし方。
+ * - start: 新規（Codex は ID を外から渡せないので、セッションを預けるときもこれ）
+ * - resume: 作業ディレクトリの最新の会話を続ける
+ * - session: session_id を決めて起こす。resume なら前の会話を続け、そうでなければその ID で新規に始める
+ */
+export type SeatHow =
+	| "start"
+	| "resume"
+	| { sessionId: string; resume: boolean };
+
+/**
+ * worktree ができてから agent を起こす前に呼ぶ。cwd は agent が動く作業場所（realpath）。
+ * 起こし方と、変えるなら spec を返す。席を起こしてはいけないとき（他の機械が借りている）は持ち主を返す。
+ */
+export type SeatPrepare = (
+	cwd: string,
+) => Promise<Result<{ how: SeatHow; spec?: string }, { holder: string }>>;
 
 /** 席の Claude の居場所。Orca は席を 1 つの Dispatch とその端末で表す。 */
 export type SeatHandle = { dispatchId: string; terminal: string; path: string };
@@ -57,6 +78,7 @@ export type Orca = {
 		agent: SeatAgent;
 		/** 席で動かすモデル。null なら CLI の既定のモデル。 */
 		model?: string | null;
+		prepare?: SeatPrepare;
 	}) => Promise<Result<SeatHandle, OrcaError>>;
 	/** 止めた席の Claude を前の会話のまま起こし、spec を渡す。 */
 	resumeSeat: (input: {
@@ -65,6 +87,7 @@ export type Orca = {
 		spec: string;
 		agent: SeatAgent;
 		model?: string | null;
+		prepare?: SeatPrepare;
 	}) => Promise<Result<SeatHandle, OrcaError>>;
 	/** 手を止めている Claude の席のモデルを、会話を保ったまま切り替える。 */
 	switchModel: (input: {
@@ -219,17 +242,28 @@ const SEAT_CODEX_FLAGS =
 /**
  * 起動と、止めた席を前の会話のまま起こすコマンド。Codex の resume --last は作業ディレクトリ（席の worktree）の最新の会話を選ぶ。
  * 再開にも同じモデルを渡さないと、CLI の既定のモデルに戻る。
+ * hishaku に預けたセッションも先頭は agent のままにする。hs resume を先頭にすると、Orca は終わった席に続きを渡せなくなる。
  */
 export const seatCommand = (
 	agent: SeatAgent,
-	kind: "start" | "resume",
+	how: SeatHow,
 	model: string | null,
 ): string => {
+	const session = typeof how === "object" && how.sessionId !== "" ? how : null;
 	if (agent === "claude") {
 		const withModel = model ? `${SEAT_CLAUDE} --model ${model}` : SEAT_CLAUDE;
-		return kind === "start" ? withModel : `${withModel} --continue`;
+		if (session) {
+			return session.resume
+				? `${withModel} -r ${session.sessionId}`
+				: `${withModel} --session-id ${session.sessionId}`;
+		}
+		return how === "resume" ? `${withModel} --continue` : withModel;
 	}
-	const head = kind === "start" ? "codex" : "codex resume --last";
+	const head = session?.resume
+		? `codex resume ${session.sessionId}`
+		: how === "resume"
+			? "codex resume --last"
+			: "codex";
 	// Codex は Claude の opus のような短い名前を解決せず、ChatGPT のアカウントでは model_not_found で起動前に落ちる
 	return model
 		? `${head} -m gpt-5.6-${model} ${SEAT_CODEX_FLAGS}`
@@ -336,13 +370,30 @@ export const createOrcaCli = (opts: OrcaCliOptions): Orca => {
 		title: string,
 		spec: string,
 		agent: SeatAgent,
-		command: string,
+		input: { how: SeatHow; model: string | null; prepare?: SeatPrepare },
 	): Promise<Result<SeatHandle, OrcaError>> => {
+		let cwd = path;
 		// Codex は worktree の元のリポジトリ（席の元）で信頼を引くので、受付が起動時に 1 度だけ登録する
 		if (agent === "claude") {
 			const trusted = await trustSeat(path);
 			if (!trusted.ok) return trusted;
+			cwd = trusted.value;
 		}
+		let how = input.how;
+		let text = spec;
+		if (input.prepare) {
+			const prepared = await input.prepare(cwd);
+			if (!prepared.ok) {
+				return err({
+					type: "SeatLeaseHeld",
+					command: "hs prepare",
+					reason: prepared.error.holder,
+				});
+			}
+			how = prepared.value.how;
+			text = prepared.value.spec ?? text;
+		}
+		const command = seatCommand(agent, how, input.model);
 		const created = await call(
 			[
 				"terminal",
@@ -366,7 +417,7 @@ export const createOrcaCli = (opts: OrcaCliOptions): Orca => {
 				"--worktree",
 				`path:${path}`,
 			],
-			spec,
+			text,
 			title,
 		);
 	};
@@ -493,7 +544,7 @@ export const createOrcaCli = (opts: OrcaCliOptions): Orca => {
 			runId = run.value.runId;
 			return ok({ runId, reception });
 		},
-		startSeat: async ({ name, title, spec, agent, model = null }) => {
+		startSeat: async ({ name, title, spec, agent, model = null, prepare }) => {
 			// 前に閉じそこねた同じ名前の worktree があると作れない
 			const stale = join(opts.seatsDir, name);
 			if (
@@ -531,15 +582,28 @@ export const createOrcaCli = (opts: OrcaCliOptions): Orca => {
 			);
 			if (!created.ok) return created;
 			const path = created.value.worktree.path;
-			return launchAgent(
-				path,
-				title,
-				spec,
-				agent,
-				seatCommand(agent, "start", model),
-			);
+			const launched = await launchAgent(path, title, spec, agent, {
+				how: "start",
+				model,
+				prepare,
+			});
+			// 起こせなかった新しい席の worktree は、次に同じ名前で作るときの邪魔になる
+			if (!launched.ok && launched.error.type === "SeatLeaseHeld") {
+				await call(
+					[
+						"worktree",
+						"rm",
+						"--worktree",
+						`path:${path}`,
+						"--force",
+						"--delete-branch",
+					],
+					ignore,
+				);
+			}
+			return launched;
 		},
-		resumeSeat: async ({ path, title, spec, agent, model = null }) => {
+		resumeSeat: async ({ path, title, spec, agent, model = null, prepare }) => {
 			const exists = await stat(path).then(
 				() => true,
 				() => false,
@@ -552,13 +616,11 @@ export const createOrcaCli = (opts: OrcaCliOptions): Orca => {
 				});
 			}
 			// 前の会話のまま起こす
-			return launchAgent(
-				path,
-				title,
-				spec,
-				agent,
-				seatCommand(agent, "resume", model),
-			);
+			return launchAgent(path, title, spec, agent, {
+				how: "resume",
+				model,
+				prepare,
+			});
 		},
 		switchModel: async ({ terminal, model }) => {
 			const r = await call(

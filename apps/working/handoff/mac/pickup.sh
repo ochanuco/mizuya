@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Working が残した申し送り issue を集め、Mac の Orca に worktree と agent を立てる。
+# issue に hishaku の番号があれば、hs open で席の会話の続きを開く。
 # macOS 標準の bash 3.2 で動かすため、連想配列や mapfile は使わない。
 set -euo pipefail
 
@@ -8,6 +9,8 @@ LABEL="${HANDOFF_LABEL:-working-handoff}"
 PICKED_LABEL="${HANDOFF_PICKED_LABEL:-working-handoff-picked}"
 AGENT="${HANDOFF_AGENT:-claude}"
 DRY_RUN="${HANDOFF_DRY_RUN:-0}"
+# hs open が meta のブランチを fetch して worktree を作るようになった hs の版。これより古ければ worktree を先に作る
+HS_OPENS_BRANCH_VERSION="0.2.4"
 
 usage() {
 	cat <<'EOF'
@@ -15,6 +18,9 @@ Usage: pickup.sh [--dry-run]
 
 open な working-handoff issue ごとに、Orca に worktree を作って agent を起動し、
 issue に working-handoff-picked の label とコメントを付ける。
+issue に hishaku の番号があれば、hs open で Working の席の会話の続きを開く。
+hishaku の meta に作業ブランチがあれば hs open に worktree hs-<番号> を作らせ、
+無ければ作業ブランチの worktree hs-<番号> を先に作る。
 
   --dry-run  読み取りだけ行い、作成・書き込みの操作は実行せずに表示する
 EOF
@@ -55,6 +61,37 @@ orca_ready() {
 	printf '%s' "$status" | jq -e '.result.runtime.reachable == true' >/dev/null 2>&1
 }
 
+# 版を数字で比べる。dev などの読めない版は古いとみなす。
+version_at_least() {
+	local have="${1#v}" want="${2#v}"
+	printf '%s' "$have" | grep -Eq '^[0-9]+(\.[0-9]+)*$' || return 1
+	awk -v a="$have" -v b="$want" 'BEGIN {
+		n = split(a, x, "."); m = split(b, y, ".")
+		for (i = 1; i <= (n > m ? n : m); i++) {
+			if ((x[i] + 0) > (y[i] + 0)) exit 0
+			if ((x[i] + 0) < (y[i] + 0)) exit 1
+		}
+		exit 0
+	}'
+}
+
+hs_opens_branch() {
+	version_at_least "$(hs --version 2>/dev/null | head -n 1)" "$HS_OPENS_BRANCH_VERSION"
+}
+
+# hishaku の meta の作業ブランチ。読めないか無ければ空を返す。
+meta_branch() {
+	local session="$1" meta branch
+	[ -n "${HISHAKU_ACCESS_CLIENT_ID:-}" ] && [ -n "${HISHAKU_ACCESS_CLIENT_SECRET:-}" ] || return 0
+	# secret をコマンドの引数に載せると ps で見えるので、ヘッダーは標準入力から渡す
+	meta=$(printf 'CF-Access-Client-Id: %s\nCF-Access-Client-Secret: %s\n' \
+		"$HISHAKU_ACCESS_CLIENT_ID" "$HISHAKU_ACCESS_CLIENT_SECRET" |
+		curl -fsS --max-time 20 -H @- "${HISHAKU_URL%/}/v1/sessions/$session" 2>/dev/null) || return 0
+	branch=$(printf '%s' "$meta" | jq -r '.branch // empty' 2>/dev/null) || return 0
+	printf '%s' "$branch" | grep -Eq '^[A-Za-z0-9._][A-Za-z0-9._/-]*$' || return 0
+	printf '%s' "$branch"
+}
+
 mark_picked() {
 	local repo="$1" number="$2" worktree="$3"
 	# label の作成は既にあれば失敗するだけなので、結果を見ない。
@@ -66,7 +103,7 @@ mark_picked() {
 }
 
 handle() {
-	local item="$1" repo number url body branch repo_line repo_id repo_path name existing
+	local item="$1" repo number url body branch session repo_line repo_id repo_path name existing
 	repo=$(printf '%s' "$item" | jq -r '.repository.nameWithOwner')
 	number=$(printf '%s' "$item" | jq -r '.number')
 	url=$(printf '%s' "$item" | jq -r '.url')
@@ -77,6 +114,14 @@ handle() {
 	if ! printf '%s' "$branch" | grep -Eq '^[A-Za-z0-9._][A-Za-z0-9._/-]*$'; then
 		log "skip $repo#$number: 作業ブランチの行が読めない"
 		return 0
+	fi
+
+	# 番号も issue 本文から来るので、4 桁の数字だけを通す。形が違えば番号なしとして今の動きにする。
+	session=$(printf '%s\n' "$body" | sed -n 's/^- hishaku の番号: `\([0-9]\{4\}\)`.*$/\1/p' | head -n 1)
+	# hs か Manager の接続情報が無い Mac では、番号があっても今の動き（agent に issue を読ませる）にする。
+	if [ -n "$session" ] && { ! command -v hs >/dev/null 2>&1 || [ -z "${HISHAKU_URL:-}" ]; }; then
+		log "$repo#$number: hs か HISHAKU_URL が無いので、番号 $session を使わずに引き継ぐ"
+		session=""
 	fi
 
 	repo_line=$(printf '%s' "$REPOS" | jq -r --arg key "github.com/$repo" '
@@ -91,6 +136,8 @@ handle() {
 	repo_id="${repo_line%%$'\t'*}"
 	repo_path="${repo_line#*$'\t'}"
 	name="handoff-$number"
+	# hs open は worktree hs-<番号> があればそれを使う。
+	[ -z "$session" ] || name="hs-$session"
 
 	# 前回 worktree を作った後に印を付け損ねた場合も、二重に作らない。
 	existing=$(orca worktree list --repo "id:$repo_id" --json | jq -r \
@@ -103,7 +150,16 @@ handle() {
 		return 1
 	}
 	if [ -n "$existing" ]; then
-		log "already $repo#$number: worktree がある。印だけ付ける"
+		if [ -n "$session" ]; then
+			# 前回 hs open で開けなかった場合に備えて開き直す。hs open は worktree hs-<番号> をそのまま使う。
+			log "already $repo#$number: worktree がある。hs open $session で開いてから印を付ける"
+			run hs open -y "$repo" "$session" >/dev/null || {
+				log "fail $repo#$number: hs open $session で開けない"
+				return 1
+			}
+		else
+			log "already $repo#$number: worktree がある。印だけ付ける"
+		fi
 		mark_picked "$repo" "$number" "$name" || {
 			log "fail $repo#$number: 印を付けられない"
 			return 1
@@ -111,17 +167,44 @@ handle() {
 		return 0
 	fi
 
+	if [ -n "$session" ] && hs_opens_branch && [ -n "$(meta_branch "$session")" ]; then
+		run hs open -y "$session" >/dev/null || {
+			log "fail $repo#$number: hs open $session で開けない。次回は開き直す"
+			return 1
+		}
+		mark_picked "$repo" "$number" "$name" || {
+			log "fail $repo#$number: 開いたが印を付けられない。次回は印だけ付ける"
+			return 1
+		}
+		log "picked $repo#$number: $name (meta のブランチ)"
+		return 0
+	fi
+
+	# meta にブランチが無いか hs が古ければ、作業ブランチの worktree を先に作っておく。
 	run git -C "$repo_path" fetch --quiet origin "$branch" || {
 		log "fail $repo#$number: origin/$branch を fetch できない"
 		return 1
 	}
-	run orca worktree create --repo "id:$repo_id" --name "$name" \
-		--base-branch "origin/$branch" --branch "$branch" --issue "$number" \
-		--agent "$AGENT" --prompt "申し送り issue $url を読んで続きをやって" \
-		--no-parent --json >/dev/null || {
-		log "fail $repo#$number: worktree を作れない"
-		return 1
-	}
+	if [ -n "$session" ]; then
+		run orca worktree create --repo "id:$repo_id" --name "$name" \
+			--base-branch "origin/$branch" --branch "$branch" --issue "$number" \
+			--no-parent --json >/dev/null || {
+			log "fail $repo#$number: worktree を作れない"
+			return 1
+		}
+		run hs open -y "$repo" "$session" >/dev/null || {
+			log "fail $repo#$number: worktree は作ったが hs open $session で開けない。次回は開き直す"
+			return 1
+		}
+	else
+		run orca worktree create --repo "id:$repo_id" --name "$name" \
+			--base-branch "origin/$branch" --branch "$branch" --issue "$number" \
+			--agent "$AGENT" --prompt "申し送り issue $url を読んで続きをやって" \
+			--no-parent --json >/dev/null || {
+			log "fail $repo#$number: worktree を作れない"
+			return 1
+		}
+	fi
 	mark_picked "$repo" "$number" "$name" || {
 		log "fail $repo#$number: worktree は作ったが印を付けられない。次回は印だけ付ける"
 		return 1

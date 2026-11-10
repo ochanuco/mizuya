@@ -6,34 +6,37 @@ Working（仕事）を受け持つコンテナ。`orca serve`、Claude CLI、Cod
 
 ## 中身
 
-| ファイル                        | 役割                                                                                                                                                                                                                         |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Dockerfile`                    | Debian に Orca の Linux 版（`orca-ide`）、Claude CLI、Codex CLI（`CODEX_VERSION` で固定）、`gh`、mise と依存のビルドに要る OS のパッケージを入れる。人格の元ファイル、引き継ぎの指示、取り消せない操作を止める hook も入れる |
-| `mise/config.toml`              | 席の既定の道具（node、pnpm、uv、jq）。`/etc/mise/config.toml` に置く                                                                                                                                                         |
-| `persona.sh`                    | image に入れた人格の元ファイル `~/persona/<パートナー>`（引数、既定は `yukarin`）の `identity/*.md`・`profile.yaml`・`examples.yaml` を連結し、席の agent に渡す人格として標準出力に出す                                     |
-| `compose.example.yaml`          | 常駐させるときの compose の雛形                                                                                                                                                                                              |
-| `src/`                          | Working 受付（`@mizuya/working`）。mizuya の bot で Gateway から仕事チャンネルを読み、Worker の受け箱からボタンを受け、Discord REST と Orca の席で作業する                                                                   |
-| `src/memory-cli/`               | 記憶の道具 `yunomi-memory`。Worker の Working の記憶の口を読み書きする。node の組み込みだけで書き、`/opt/yunomi-memory/` に置いて node で直接動かす                                                                          |
-| `mac-state/`                    | Mac から Orca の席の状態を送るスクリプトと launchd の plist の雛形（[mac-state/README.md](mac-state/README.md)）                                                                                                             |
-| `src/guard/`                    | Claude CLI の PreToolUse hook。道具を使う前に、聞かずに実行してよいかを決める。node の組み込みだけで書き、`/opt/mizuya-guard/` に置いて node で直接動かす                                                                    |
-| `src/repo-map/`                 | 受付が chabatake の `repo-map.yaml` を取って `STATE_DIR` に写しを置く処理と、席の Claude の SessionStart hook。hook は node の組み込みだけで書き、`/opt/mizuya-repo-map/` に置いて node で直接動かす                         |
-| `guard/managed-settings.json`   | hook を登録する Claude CLI の managed settings。`/etc/claude-code/` に置く                                                                                                                                                   |
-| `guard/codex-requirements.toml` | 同じ hook を登録する Codex CLI の managed な要件。`/etc/codex/requirements.toml` に置く                                                                                                                                      |
-| `start.sh`                      | コンテナの entrypoint。受付と、引数で渡したコマンド（`orca-ide serve …`）を並べて動かし、どちらかが終わればコンテナを終わらせる                                                                                              |
-| `seat-env.sh`                   | start.sh が `orca-ide serve` をこれ越しに起動する。席の Claude は orca serve の環境変数を受け継ぐので、渡してよい変数だけに絞る                                                                                              |
-| `release-orcad-lock.sh`         | `orca-ide serve` の前に start.sh が呼ぶ。前のコンテナの orcad が volume に残した `orcad.lock` を消す                                                                                                                         |
+| ファイル                        | 役割                                                                                                                                                                                                                                                                     |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `Dockerfile`                    | Debian に Orca の Linux 版（`orca-ide`）、Claude CLI、Codex CLI（`CODEX_VERSION` で固定）、hishaku の CLI `hs`（`HS_VERSION` で固定）、`gh`、mise と依存のビルドに要る OS のパッケージを入れる。人格の元ファイル、引き継ぎの指示、取り消せない操作を止める hook も入れる |
+| `mise/config.toml`              | 席の既定の道具（node、pnpm、uv、jq）。`/etc/mise/config.toml` に置く                                                                                                                                                                                                     |
+| `persona.sh`                    | image に入れた人格の元ファイル `~/persona/<パートナー>`（引数、既定は `yukarin`）の `identity/*.md`・`profile.yaml`・`examples.yaml` を連結し、席の agent に渡す人格として標準出力に出す                                                                                 |
+| `compose.example.yaml`          | 常駐させるときの compose の雛形                                                                                                                                                                                                                                          |
+| `src/`                          | Working 受付（`@mizuya/working`）。mizuya の bot で Gateway から仕事チャンネルを読み、Worker の受け箱からボタンを受け、Discord REST と Orca の席で作業する                                                                                                               |
+| `src/memory-cli/`               | 記憶の道具 `yunomi-memory`。Worker の Working の記憶の口を読み書きする。node の組み込みだけで書き、`/opt/yunomi-memory/` に置いて node で直接動かす                                                                                                                      |
+| `mac-state/`                    | Mac から Orca の席の状態を送るスクリプトと launchd の plist の雛形（[mac-state/README.md](mac-state/README.md)）                                                                                                                                                         |
+| `src/guard/`                    | Claude CLI の PreToolUse hook。道具を使う前に、聞かずに実行してよいかを決める。node の組み込みだけで書き、`/opt/mizuya-guard/` に置いて node で直接動かす                                                                                                                |
+| `src/repo-map/`                 | 受付が chabatake の `repo-map.yaml` を取って `STATE_DIR` に写しを置く処理と、席の Claude の SessionStart hook。hook は node の組み込みだけで書き、`/opt/mizuya-repo-map/` に置いて node で直接動かす                                                                     |
+| `guard/managed-settings.json`   | hook を登録する Claude CLI の managed settings。`/etc/claude-code/` に置く                                                                                                                                                                                               |
+| `guard/codex-requirements.toml` | 同じ hook を登録する Codex CLI の managed な要件。`/etc/codex/requirements.toml` に置く                                                                                                                                                                                  |
+| `guard/CLAUDE.md`               | rtk が縮めた出力の読み方を席の Claude に伝える managed の CLAUDE.md。`/etc/claude-code/` に置く                                                                                                                                                                          |
+| `start.sh`                      | コンテナの entrypoint。受付と、引数で渡したコマンド（`orca-ide serve …`）を並べて動かし、どちらかが終わればコンテナを終わらせる                                                                                                                                          |
+| `seat-env.sh`                   | start.sh が `orca-ide serve` をこれ越しに起動する。席の Claude は orca serve の環境変数を受け継ぐので、渡してよい変数だけに絞る                                                                                                                                          |
+| `release-orcad-lock.sh`         | `orca-ide serve` の前に start.sh が呼ぶ。前のコンテナの orcad が volume に残した `orcad.lock` を消す                                                                                                                                                                     |
 
 Orca の Linux 版は GitHub Releases（`stablyai/orca`）の `orca-ide_<版>_<arch>.deb` を使う。CLI の名前は `orca-ide` で、席の Claude が読む手順書が `orca` と書くので `/usr/local/bin/orca` を同じものに向けてある。版は `ORCA_VERSION` で Mac の Orca と揃える。
 
+`hs` は GitHub Releases（`ochanuco/hishaku`）の `hs_linux_<arch>.tar.gz` を使い、同じ版の `checksums.txt` で確かめてから `/usr/local/bin/hs` に置く。版は Dockerfile の `HS_VERSION` の 1 か所にあり、Renovate が Releases に追従して上げる。
+
 ## volume
 
-| volume                  | マウント先             | 残るもの                                                                                                                                                                                                                                                                                                              |
-| ----------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mizuya-working-claude` | `/home/worker/.claude` | Claude CLI のログイン情報（`.credentials.json`）、設定（`.claude.json`）、セッション（`projects/`）                                                                                                                                                                                                                   |
-| `mizuya-working-codex`  | `/home/worker/.codex`  | Codex CLI のログイン情報（`auth.json`）、設定（`config.toml`）、会話（`sessions/`）                                                                                                                                                                                                                                   |
-| `mizuya-working-orca`   | `/home/worker/.config` | orcad の本体と状態、pairing 済みの端末                                                                                                                                                                                                                                                                                |
-| `mizuya-working-state`  | `/home/worker/state`   | フォーラム投稿と席の対応、Orca の Run と受付の端末（`seats.json`）、許可を待っている操作（`approvals.json`）、止めた操作と許可の記録（`guard/`）、最後に届いた Mac の席の状態（`mac-state.json`）、活動ログの記録（`activity-log.jsonl`・`activity-log-state.json`）、記憶の口の接続情報（`memory-credentials.json`） |
-| `mizuya-working-work`   | `/home/worker/work`    | 席の元にする空の git リポジトリ（`seats/`）と、席の worktree（`orca/workspaces/seats/seat-<投稿の ID>/`）。席の Claude はその中に clone する。mise が入れた道具（`.mise/`）、pnpm の store（`.pnpm-store/`）、uv のキャッシュと Python（`.cache/uv/`・`.uv/`）                                                        |
+| volume                  | マウント先             | 残るもの                                                                                                                                                                                                                                                                                                                                                                                |
+| ----------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mizuya-working-claude` | `/home/worker/.claude` | Claude CLI のログイン情報（`.credentials.json`）、設定（`.claude.json`）、セッション（`projects/`）                                                                                                                                                                                                                                                                                     |
+| `mizuya-working-codex`  | `/home/worker/.codex`  | Codex CLI のログイン情報（`auth.json`）、設定（`config.toml`）、会話（`sessions/`）                                                                                                                                                                                                                                                                                                     |
+| `mizuya-working-orca`   | `/home/worker/.config` | orcad の本体と状態、pairing 済みの端末                                                                                                                                                                                                                                                                                                                                                  |
+| `mizuya-working-state`  | `/home/worker/state`   | フォーラム投稿と席の対応、Orca の Run と受付の端末（`seats.json`）、許可を待っている操作（`approvals.json`）、止めた操作と許可の記録（`guard/`）、最後に届いた Mac の席の状態（`mac-state.json`）、活動ログの記録（`activity-log.jsonl`・`activity-log-state.json`）、記憶の口の接続情報（`memory-credentials.json`）、`hs` が prepare から push までの間に残す状態（`cache/hishaku/`） |
+| `mizuya-working-work`   | `/home/worker/work`    | 席の元にする空の git リポジトリ（`seats/`）と、席の worktree（`orca/workspaces/seats/seat-<投稿の ID>/`）。席の Claude はその中に clone する。mise が入れた道具（`.mise/`）、pnpm の store（`.pnpm-store/`）、uv のキャッシュと Python（`.cache/uv/`・`.uv/`）                                                                                                                          |
 
 `CLAUDE_CONFIG_DIR` を `~/.claude` に向けているので、通常は `~/.claude.json` に置かれる設定も volume に入る。Orca は worktree を `~/orca/workspaces` に作るので、`~/orca` は `~/work/orca` への symlink にしてある。
 
@@ -49,21 +52,27 @@ Orca の Linux 版は GitHub Releases（`stablyai/orca`）の `orca-ide_<版>_<a
 
 ### 流れ
 
-| 投稿で起きること                                                              | 受付がやること                                                                                       |
-| ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| 新しい投稿（仕事チャンネルの依頼から立てたものも）                            | 席を作り（`worker-start`）、依頼を渡す。タグは `作業中`                                              |
-| 投稿への返事                                                                  | その席に渡す（`send`）。作業中なら席のターンの終わりに届く                                           |
-| 席の質問（`ask`）、取り消せない操作で止まったとき                             | 投稿に書いてタグを `決めてほしい` にし、返事を答えとして返す（`reply`）                              |
-| 席の途中経過（`send --type status`）                                          | そのまま投稿に書く。状態とタグは変えない                                                             |
-| 席が裏の作業を待っている間に投稿に書く                                        | すぐ「作業中です。（最後の途中経過）」と返し、書き込みは席に渡す                                     |
-| 席の返事（`ask`・`worker_done`・`status`）に `添付:` や `chimera:` の行がある | 行を本文から外し、席のファイルや chimera の元の画像を投稿に付ける                                    |
-| 投稿に「起動し直して」と書く                                                  | 席の Claude を止め、同じ worktree で `--continue` で起こす（コネクタの認証を足したあとなどに使う）   |
-| 席の完了報告（`worker_done`）                                                 | 投稿に書いてタグを `完了` にし、記憶に 1 行残し、席を閉じる                                          |
-| 完了のあとにまた書く                                                          | 同じ投稿に新しい席を作り、これまでのやりとり（最大 100 件）を渡す                                    |
-| Mac でやる必要がある                                                          | 席が申し送り issue を書いて報告する。タグを `引き継ぎ` にし、席を閉じる                              |
-| 見張りを頼まれた                                                              | 席が見張りを登録して報告する。タグを `見張り中` にし、席を閉じる。新着は朝会と見回りがこの投稿に書く |
+| 投稿で起きること                                                              | 受付がやること                                                                                                                                                                                                      |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 新しい投稿（仕事チャンネルの依頼から立てたものも）                            | 席を作り（`worker-start`）、依頼を渡す。タグは `作業中`                                                                                                                                                             |
+| 投稿への返事                                                                  | その席に渡す（`send`）。作業中なら席のターンの終わりに届く                                                                                                                                                          |
+| 席の質問（`ask`）、取り消せない操作で止まったとき                             | 投稿に書いてタグを `決めてほしい` にし、返事を答えとして返す（`reply`）                                                                                                                                             |
+| 席の途中経過（`send --type status`）                                          | そのまま投稿に書く。状態とタグは変えない                                                                                                                                                                            |
+| 席が裏の作業を待っている間に投稿に書く                                        | すぐ「作業中です。（最後の途中経過）」と返し、書き込みは席に渡す                                                                                                                                                    |
+| 席の返事（`ask`・`worker_done`・`status`）に `添付:` や `chimera:` の行がある | 行を本文から外し、席のファイルや chimera の元の画像を投稿に付ける                                                                                                                                                   |
+| 投稿に「起動し直して」と書く                                                  | 席の Claude を止め、会話を hishaku に預けてから、同じ番号のセッションを同じ worktree で起こす（コネクタの認証を足したあとなどに使う）                                                                               |
+| 席の完了報告（`worker_done`）                                                 | 投稿に書いてタグを `完了` にし、記憶に 1 行残す。席は `SEAT_DONE_LINGER_MINUTES` の間は閉じずに残し、件名の 🎉 は席を閉じるときに付ける                                                                             |
+| 完了のあとにまた書く                                                          | 席を残している間なら、動いたままの席に返事を渡す。閉じたあとなら同じ投稿に新しい席を作り、同じ番号のセッションを前の会話のまま続けて返事だけを渡す。Manager に届かなければ、これまでのやりとり（最大 100 件）を渡す |
+| 席を残している間に「終了」などの一言だけを書く                                | 席の Claude に渡さずに閉じる（会話を hishaku に預けて返し、worktree を消す）。件名に 🎉 を付け、書き込みに ✅ を付ける。ほかには何も書かない                                                                        |
+| Mac でやる必要がある                                                          | 席が申し送り issue を書いて報告する。会話を hishaku に預けて貸し出しを返し、返事に `hs open <番号>` を付ける。タグを `引き継ぎ` にし、席を閉じる                                                                    |
+| Mac の `hs open` が返してほしいと頼んだ                                       | 席の手が止まったら会話を預けて返し、席を閉じて投稿を貸し出し中にする（「Mac への貸し出し」の節）                                                                                                                    |
+| 見張りを頼まれた                                                              | 席が見張りを登録して報告する。タグを `見張り中` にし、席は完了と同じく残してから閉じる。件名の 👀 は席を閉じるときに付ける。新着は朝会と見回りがこの投稿に書く                                                      |
 
 - 仕事テキストチャンネルで Yukarin か Akarin 宛て（「Akarin の席」の節）の依頼が来たら、仕事フォーラムに投稿を立てる。件名は依頼の要約（Claude CLI の haiku で作る。前置きやメタ発言、複数行、40 字超の出力は使わず、依頼の 1 行目にする）、本文は元の依頼と元メッセージへのリンク。テキストチャンネルには投稿へのリンクを返信で返す。
+- タグが `完了`・`決めてほしい`・`見張り中`・`引き継ぎ` に変わったら、投稿の件名の頭をそのタグの絵文字にする（`🎉[1234] 件名`、番号が無ければ `🎉 件名`）。件名を変えるたびに投稿にシステムメッセージが残るので、`完了`・`見張り中` で席を残すときはタグだけをすぐ変え、🎉・👀 は席を閉じるとき（残す時間が過ぎた、席が足りなくて閉じた、閉じる一言が書かれた、受付を作り直して Claude がいなくなっていた）に付ける。残している間に続きを書かれたら、件名は変えない。`作業中` に変わったときは、`決めてほしい` と行き来して名前の変更の枠を使わないよう 🤔 はそのままにし、`完了`・`見張り中` の絵文字だけを外す。絵文字は仕事フォーラムのタグ（`available_tags`）からタグ名で引き、起動時と、タグが欠けていたときに読み直す。タグに絵文字が無いかカスタム絵文字なら、絵文字を付けない。
+- 件名から元の件名を取り出すときは、頭のタグの絵文字（重なっていればすべて）と `[4 桁の番号]` だけを外す。件名は Discord の上限（100 字）を超える分を元の件名の側で切る。
+- Discord はスレッドの名前の変更を 1 スレッドあたり 10 分に 2 回までに抑える。付けたい件名は `seats.json` の `titles` に投稿ごとに覚え、今の件名と同じなら変えない。制限に当たったら解けるまで待ち、その時に覚えている最後の件名だけを付ける。受付を作り直したときは起動時に付ける。ほかの失敗は warn を残して諦め、タグとリアクションの更新は止めない。
+- 朝会・見回り・GitHub の出来事の席は投稿を持たないので件名を変えない。それらが立てる決めてほしいことの投稿は、`決めてほしい` のタグの絵文字を件名の頭に付けて立てる（`🤔 件名`）。返事で開いた席からは、ほかの投稿と同じく状態に合わせて付け替える。
 - 同じ投稿への発言と席からのメッセージは、1 件ずつ順に処理する。`/ai` のモデルの切り替えも同じ順に並ぶ。
 - Discord REST が 2xx 以外を返したときは、経路・ステータス・Discord のエラーコードとメッセージを warn で残す。bot の権限不足（403 の Missing Access / Missing Permissions）は `PermissionDenied` として扱う。
 - `WORKING_OWNER_DISCORD_USER_IDS` に入っている人の発言だけを扱う。mizuya の bot と人格の bot、ほかの人、ほかの bot の発言は、依頼・フォーラムの投稿・投稿内の返事のどれでも無視する。
@@ -93,8 +102,36 @@ Orca の Linux 版は GitHub Releases（`stablyai/orca`）の `orca-ide_<版>_<a
 - 「起動し直して」「再起動して」（全角・末尾の句点は許す）だけの返事は、席の Claude への返事にせず起動し直す。席が無ければふつうの返事として扱う。
 - 同時に Claude を動かしておく席は `SEAT_LIMIT`（既定は 6）まで。上限を超えた投稿には「順番待ち」と書き、空いたら古い順に始める。止めた席と順番待ちの席は数えない。
 - `決めてほしい` のまま `SEAT_SLEEP_AFTER_MINUTES`（既定は 120 分）たった席は、Claude だけ止める（worktree と会話は残す）。返事が来たら、その worktree で `claude --permission-mode auto --continue`（モデルを選んだ投稿は同じ `--model` を付ける）の端末を作って `worker-start --terminal` で渡し、前の会話のまま起こす。worktree が無くなっていたら、その席は忘れ、投稿のやりとりを読ませた新しい席で始める。
+- `完了` か `見張り中` で手を止めた投稿の席は、すぐには閉じず `SEAT_DONE_LINGER_MINUTES`（既定は 60 分）残す。起こし直した Claude は system prompt（git の状態や日付）が変わり、最初のターンで会話をプロンプトキャッシュなしで読み直すので、すぐ続きを書かれたら動いたままの席に渡してキャッシュ（約 1 時間）を使う。残している間もタグは `完了`・`見張り中` のまま、続きを渡すと `作業中` にする。時間がたったら止めた席にはせず、完了したときと同じく閉じる。残している席は上限に数えるが、上限で新しい投稿や起こす席が順番待ちになるときは、前に終えた残している席から閉じて空ける。順番待ちの投稿があるときは残さずに閉じる。朝会・見回り・見張り・GitHub の出来事の席は残さない。Mac に頼まれたら、決めてほしいの席と同じくすぐ渡す。終えた時刻は `seats.json` に残し、受付を作り直しても続きから数える。作り直したときに Claude がいなくなっていたら閉じる。残している間に持ち主が閉じる一言（`終了`・`クローズ`・`close`・`閉じて`・`おわり`・`終わり`。前後の空白、大文字小文字、末尾の `。`・`!`・`！` は問わない）だけを書いたら、席の Claude に渡さずにすぐ閉じ、その書き込みに ✅ を付ける。席が作業中・質問中・止めた席・無いときは、ふつうの返事として扱う。終えた状態（`完了` か `見張り中`）も `seats.json` に残し、閉じるときの件名の絵文字に使う。
 - 席を閉じるときは、席の Claude を止め、worktree を消す。席の Claude には、完了にする前に commit と push を済ませるよう指示してある。
+- 席を閉じるとき・寝かせるとき・起動し直すとき・Claude がいなくなっていたときは、agent が止まってから会話を hishaku に預けて貸し出しを返す（「hishaku の番号」の節）。
 - 起動時に `seats.json` と Orca の席を突き合わせる。対応表に無い席の端末と worktree（前回の残り）は片付け、対応表にある席は残す。Claude がいなくなっていた席は止めた扱いにし、作業中だったなら投稿で知らせて `決めてほしい` にする。
+
+### hishaku の番号
+
+`HISHAKU_URL` と service token がそろっていれば、受付は席の agent のセッションを hishaku の Manager に預け、投稿ごとの 4 桁の番号で続ける。Mac の `hs open <番号>` で同じ会話を Mac の Orca に開ける。
+
+- 席を作るとき、受付が Manager に `POST /v1/sessions`（`post_id` は投稿の ID、`agent`、件名、GitHub の issue から立てた投稿は `repo`）で番号を取り、`seats.json` の `numbers` に投稿ごとに残す。席を閉じたあとも残し、同じ投稿でまた席を開くときも同じ番号を使う。
+- 番号を取ったら、投稿の件名の頭に `[<番号>] ` を付ける（状態の絵文字があればその後ろ）。番号は要約の 40 字の枠の外に置き、Discord の件名の上限（100 字）で切る。記憶・活動ログ・席の端末の題には絵文字と番号を外した件名を使う。
+- 席の agent を起こす前に、`hs prepare <番号> --holder <HISHAKU_HOLDER> --cwd <席の worktree の realpath> --json` で貸し出しを受け、正本の記録を agent の置き場所に置く。先頭は agent のままにし、正本があれば `claude -r <session_id>`（Codex は `codex resume <session_id>`）、無ければ `claude --session-id <session_id>`（Codex は `codex`）に今のフラグを足して起こす。先頭を `hs resume` にすると、Orca が端末の agent を見分けられず、終わった席に続きを渡せなくなる。
+- 席の間は 30 秒おきに `hs renew --json` で貸し出しを延ばす。席を閉じる・寝かせる・起動し直す・Claude がいなくなっていたときは、`hs push --release` で記録を預けて返す。
+- `hs push --release` の前に、席の worktree の直下の clone（`.git` を持つもの）ごとに origin の `owner/repo` と今のブランチを調べる。既定のブランチ（`origin/HEAD`、取れなければ `main`・`master`）のままの clone と detached HEAD は除く。残りがちょうど 1 つなら、`PATCH /v1/sessions/<番号>` で meta の `repo` と `branch` に書き、Mac の `hs open` がそのブランチで worktree を作れるようにする。0 か 2 つ以上なら書かず、申し送り issue の作業ブランチに任せる。meta に同じ値があれば書かない。書けなければ warn を残して、そのまま預けて返す。
+- 他の機械が借りていれば（`hs prepare` の終了コード 2）、席を起こさず投稿を貸し出し中にする（「Mac への貸し出し」の節）。持ち主がこの受付なら、前の受付が返さずに落ちたとみなして取り直す。
+- 途中で他の機械に取られていたら（終了コード 3）、warn を残して投稿に一言書き、その席の会話は以後預けない（`hs` が枝として残す）。
+- 引き継ぎ（`状態: 引き継ぎ`）では、記録を預けて貸し出しを返せたことを確かめてから返事を書き、最後に `hs open <番号>` の 1 行を足し、投稿を貸し出し待ちにする。預けられなければ、その行の代わりに申し送り issue から始めることを書き添える。席は申し送り issue の「hishaku の番号」の行に番号を書く。
+- 番号を取れない・`hs` が失敗したときは、warn を残して `hs` を使わない今の起動（新規、止めた席は `--continue` / `resume --last`）に戻す。
+- 朝会・見回り・GitHub の出来事・見張りの席は番号を取らない。
+- `hs` は prepare から push までの状態を `XDG_CACHE_HOME` に残す。受付は `STATE_DIR/cache` を渡し、コンテナを作り直しても続きを預けられるようにする。
+
+### Mac への貸し出し
+
+Mac で `hs open <番号>`（`hs resume`）を打つと、席が借りていれば Manager に返してほしいと頼み、返るのを待つ。受付は頼まれた投稿を席のターンの終わりに Mac へ渡し、貸し出しの間を投稿に見せる。状態とボタンは mizuya の bot、人格の発言は担当の bot が書く。
+
+- `hs renew` の応答の `release_requested_by` がこの受付（`HISHAKU_HOLDER`）以外になったら、席の手が止まる（`worker_done`・`ask`・止まった知らせで返事を待つ）のを待ち、`hs push --release` で記録を預けて返して席を閉じる。手が止まっていればすぐ渡す。投稿に「Mac に貸し出しました（<番号>）。席は止めています。」と「取り戻す」のボタンを出し、タグを `引き継ぎ` にする。
+- 貸し出し中・貸し出し待ちの投稿は `seats.json` に `lent` の席として残す。受付は 1 分おきに Manager の `GET /v1/sessions/<番号>` を読み、持ち主がこの受付以外で期限が切れていなければ Mac が借りているとみなす。Mac が借りたら「Mac で再開しました（HH:MM）。」を 1 度書く。持ち主がいなくなったら（見回りの合間に借りて返していても、世代が進んでいれば）「Mac から戻りました。この投稿に書けば、席が前の会話のまま続けます。」を 1 度書き、タグを `決めてほしい` に戻して席を忘れる。次の書き込みで前の会話のまま続ける。
+- 貸し出し中に投稿へ書かれたら、席に渡さずに溜め、「いまは Mac で作業中です（<番号>）。…」と「取り戻す」のボタンを出す。Mac が返したら溜めた分を渡して席を起こす。
+- 「取り戻す」を押すと、「Mac はまだ <番号> を持っています（最後に預けたのは HH:MM）。…」と「取り戻す」「やめる」のボタンで確かめる。時刻は meta の `pushed_at`（Mac が最後に記録を置いた時刻）、無ければ受付が最後に預けた時刻。確定すると `hs prepare --takeover` で貸し出しを奪って席を前の会話のまま起こし、mizuya の bot で「取り戻しました（世代 <N>）。…」、担当の bot で「戻りました。Mac で HH:MM までに進めたところから続けますね。」と書く。Mac で最後に預けたあとの分は `hs` が枝として残す。押したときに Mac がもう返していれば、奪わずに戻す。
+- ボタンの `custom_id` は `working:lend:takeback`・`working:lend:confirm`・`working:lend:cancel`。持ち主（`WORKING_OWNER_DISCORD_USER_IDS`）以外の押下は無視する。
 
 ### Akarin の席
 
@@ -103,7 +140,7 @@ Orca の Linux 版は GitHub Releases（`stablyai/orca`）の `orca-ide_<版>_<a
 - 依頼（仕事テキストチャンネルの発言、フォーラムの新しい投稿）で role `あかり`（`AKARIN_ROLE_ID`）か、あかりんの bot がメンションされていれば Akarin の席を作る。フォーラムの新しい投稿は、それ以外なら Yukarin の席。
 - 仕事テキストチャンネルでは、role `ゆかり`（`YUKARIN_ROLE_ID`）、ゆかりんの bot、mizuya の bot のどれかへのメンションで Yukarin 宛てになる。`あかり` と両方なら Akarin。メンションが無ければ、返信した先が人格の bot の発言ならその席宛て。それ以外は依頼とみなさない。
 - 投稿の担当は席を作るときに決めて `seats.json` の `partners` に残す。投稿への返事、止めた席を起こすとき、完了のあとにまた書いたときも、同じ担当が受ける。
-- 人格の作業は担当の席の人格の bot（ゆかりん・あかりん）、システムの介入は mizuya の bot で書く。人格の bot が書くのは、席の返事、投稿（朝会・見回り・GitHub の出来事・活動ログを含む）、タグ、リアクション、入力中の表示。mizuya の bot が書くのは、状態の欄と、許可・却下・不要のボタンが付いたメッセージ。ボタンは、それを求める人格の発言のすぐ後に、押し方を添えて出す。ボタンの custom_id には `working:` を頭に付け、mizuya の Worker がこれで受け箱に回す。
+- 人格の作業は担当の席の人格の bot（ゆかりん・あかりん）、システムの介入は mizuya の bot で書く。人格の bot が書くのは、席の返事、投稿（朝会・見回り・GitHub の出来事・活動ログを含む）、タグ、リアクション、入力中の表示。mizuya の bot が書くのは、許可・却下・不要・取り戻すのボタンが付いたメッセージと、Mac への貸し出しの知らせ。ボタンは、それを求める人格の発言のすぐ後に、押し方を添えて出す。ボタンの custom_id には `working:` を頭に付け、mizuya の Worker がこれで受け箱に回す。
 - 投稿の最初の人格の発言では、依頼者にメンションして通知する。仕事テキストチャンネルの依頼から立てた投稿は「<依頼者> さんからの依頼」の発言、フォーラムに直接立てた投稿は席の最初の返事、朝会・見回り・GitHub の出来事の投稿は最初の発言で持ち主（`WORKING_OWNER_DISCORD_USER_IDS` の先頭）にメンションする。通知するのはその人だけ。
 - タグ・リアクション・入力中の表示・読み取りは mizuya の bot で行う。
 - Akarin の席は Codex CLI で動き、前置きの人格は `persona.sh akarin`、記憶の読み書きは Akarin の記憶（`/v1/partners/akarin/working/memory`）にする。
@@ -120,8 +157,8 @@ Orca の Linux 版は GitHub Releases（`stablyai/orca`）の `orca-ide_<版>_<a
 ### 作業中かの見せ方
 
 - 席の Claude が動いている間（席の状態が `working`）、投稿に入力中の表示を約 8 秒おきに送る。止まったら送らない。
-- 持ち主の依頼メッセージ（仕事チャンネルの依頼、投稿の最初のメッセージ、投稿への返事）に bot のリアクションを付ける。受付 👀、作業中 ⏳、完了 ✅、決めてほしい・引き継ぎ ❓。状態が変わると前の絵文字を外して付け替え、持ち主が新しく書くとそのメッセージに移す。
-- 席を作るとき投稿に bot のメッセージを 1 件置き、状態の欄にする。状態、作業中なら経過時間（いまの状態になってから）といまやっていること（席の最後の途中経過）を書く。内容が変わったときだけ書き換え、経過時間だけの変化は最短 5 分おき。
+- 投稿の状態は、持ち主の依頼メッセージのリアクション、状態のタグ、件名の頭の絵文字で見せる。状態だけを書いたメッセージは投稿に置かない。
+- 持ち主の依頼メッセージ（仕事チャンネルの依頼、投稿の最初のメッセージ、投稿への返事）に bot のリアクションを付ける。受付 👀、作業中 ⏳、完了 ✅、見張り中 🔭、決めてほしい・引き継ぎ ❓。状態が変わると前の絵文字を外して付け替え、持ち主が新しく書くとそのメッセージに移す。
 - 席ごとの作業中の数と CLI の使用率は、mizuya の bot には出さない。そのパートナーの bot を動かす yunomi の gateway が、席の状態を渡す口から読んで自分のステータスと自己紹介欄に出す。朝会の席は数えない。
 - 使用率はパートナーの席で動く CLI のサブスクリプションの使用率で、Yukarin は Claude、Akarin は Codex。
   - 5 分おきに読む。Claude は `~/.claude/.credentials.json`（`CLAUDE_CONFIG_DIR` があればその中）のトークンで `https://api.anthropic.com/api/oauth/usage` を読む。Claude Code の `/usage` と同じ非公開の API。トークンの期限が切れていれば読まず、自分では更新しない（席の Claude が動けば CLI が更新する）。
@@ -130,7 +167,7 @@ Orca の Linux 版は GitHub Releases（`stablyai/orca`）の `orca-ide_<版>_<a
 
 ### 席の Claude に渡すもの
 
-新しい席の spec は、`persona.sh` の出力、仕事のしかた（`src/prompts.ts` の `WORKING_INSTRUCTIONS`）、Mac への引き継ぎの手順（`handoff/prompt.md`）、申し送りの雛形（`handoff/issue-template.md`）を連結した前置きに、投稿で頼まれたこと（完了のあとなら投稿のこれまでのやりとり）を続けたもの。Orca は orchestration の手順書を spec の前に足す。
+新しい席の spec は、`persona.sh` の出力、仕事のしかた（`src/prompts.ts` の `WORKING_INSTRUCTIONS`）、Mac への引き継ぎの手順（`handoff/prompt.md`）、申し送りの雛形（`handoff/issue-template.md`）を連結した前置きに、hishaku の番号（あれば）と、投稿で頼まれたこと（完了のあとなら投稿のこれまでのやりとり）を続けたもの。完了のあとに hishaku から前の会話のまま続けられたときは、前置きとやりとりを付けず、番号と新しい返事だけを渡す。Orca は orchestration の手順書を spec の前に足す。
 
 仕事のしかたには、投稿への返事は `worker_done` の本文に書くこと、途中で聞きたいことは `ask` で聞くこと、本文の最後の行に状態を書くことを入れてある。
 
@@ -160,12 +197,16 @@ Orca の Linux 版は GitHub Releases（`stablyai/orca`）の `orca-ide_<版>_<a
 
 席の Claude は、持ち主が手元で使うセッションと同じく Claude Code の auto モード（`--permission-mode auto`）で動く。取り消せない操作や外に出る操作を止めるかは、Claude Code の自動の判定が決める。席に話しかけられるのは持ち主だけ（`WORKING_OWNER_DISCORD_USER_IDS`）なので、投稿で明示的に頼んだ操作は持ち主の意思として扱われ、main への push やマージも聞かずに実行される。`main` への push やマージを止めたいときは、GitHub のブランチ保護とトークンの権限で止める。
 
+`GH_TOKEN` は fine-grained PAT で、席が GitHub でできることはこの権限で決まる。Contents・Pull requests・Issues・Actions を Read and write、Metadata を Read-only にする。Actions の書き込みが無いと、席は `gh workflow run`（workflow_dispatch）が 403 になり、workflow の起動を持ち主に頼むことになる。`.github/workflows/` を変える PR を push するなら Workflows の Read and write も要る。Environment の承認は PAT の権限では通らず、mizuya の承認ボタンで持ち主が出す。
+
 managed settings（`/etc/claude-code/managed-settings.json`、root の持ち物）で次を決める。作業場所の `.claude/settings.json` や Claude CLI 自身の書き換えでは外せない。
 
 - PreToolUse hook（`src/guard/hook.ts`）: 秘密情報の読み出し（`printenv`、トークンの変数、`gh auth token`、`~/.claude`・`~/.config`・`STATE_DIR`・`.credentials.json` など）と、秘密情報や許可の記録の場所への書き込みを止める。Claude CLI が大きな道具の応答を書き出す `~/.claude/projects/<場所>/<セッション>/tool-results/` は、読むだけなら止めない。持ち主が投稿で許可した操作は、auto モードの判定によらず 1 回だけ通す。それ以外は何も返さず auto モードに任せる。
 - PermissionDenied hook（同じ `hook.ts`）: auto モードが止めた操作を、その投稿に紐づけて記録する。受付が質問に書き添える。
 - SessionStart hook（`src/repo-map/hook.ts`）: 手元のリポジトリを含む関連リポジトリセットを出す（「関連リポジトリセット」の節）。
 - `autoMode.allow`: `ochanuco/*` の PR のマージを、auto モードの既定の「Merge Without Review」の対象から外す。持ち主ひとりで回していて approve する人がいないため。持ち主が頼んだマージか、席が頼まれた作業のために開いた PR に限る。`--admin` での必須チェックの回避は外さない。
+- PreToolUse hook（`rtk hook claude`、Bash だけ）: rtk が出力を縮めるよう Bash のコマンドを書き換える。guard と並んで動き、guard が止めればそちらが勝つ。
+- `extraKnownMarketplaces` と `enabledPlugins`: TokenEconomizer（image の `/opt/tokeneconomizer`）を強制的に有効にする。`allowManagedHooksOnly` の下で plugin の hook が動くのは、managed settings が有効にした plugin だけ。start.sh が起動のたびに `claude plugin install` で入れる。学んだことは `~/.tokeneconomizer`（work の volume）に残る。
 - `ENABLE_TOOL_SEARCH=false`: MCP の道具を遅延読み込みせず、最初から読み込む。席の Claude は `ToolSearch` を使わずに chimera などの道具を呼べる。
 
 hook は席の場所（`CLAUDE_PROJECT_DIR`）で、止めた操作の紐づけ先をその投稿にする。
@@ -179,6 +220,7 @@ hook は席の場所（`CLAUDE_PROJECT_DIR`）で、止めた操作の紐づけ�
 - `/etc/codex/requirements.toml`（root の持ち物）で、Claude CLI と同じ PreToolUse hook（`src/guard/hook.ts`）と SessionStart hook（`src/repo-map/hook.ts`）を managed hook として登録し、`allow_managed_hooks_only = true` で作業場所や `CODEX_HOME` の hook を読ませない。managed hook は信頼の確認なしで動く。
 - PreToolUse hook は、Claude の席と同じく秘密情報の読み出し（`~/.codex` の `auth.json` を含む）と、秘密情報や許可の記録の場所への書き込み（`apply_patch` でのファイルの書き換えを含む）を止める。止めた操作の許可の流れは Claude の席と同じ。Codex には auto モードの判定が無いので、取り消せない操作の前に聞くのは `WORKING_INSTRUCTIONS` の指示による。
 - Codex は CLAUDE_PROJECT_DIR を持たないので、hook は入力の `cwd` から席の投稿を引く。
+- 同じ requirements.toml で、Claude の席と同じ rtk の PreToolUse hook（`rtk hook codex`、Bash だけ）と TokenEconomizer の hook（`/opt/tokeneconomizer/plugin/scripts/te-hook --host codex`）も登録する。plugin の hook は `allow_managed_hooks_only` で読まれないので、plugin の `codex-hooks.json` と同じものをここに持つ。plugin は start.sh が起動のたびに `codex plugin add` で入れ直し、skill（`$tokeneconomizer:status` など）だけがそちらから来る。
 - 受付は起動のたびに、`CODEX_HOME/config.toml` の MCP サーバー `playwright`（代理操作するブラウザ）を書き直す。席の環境変数には秘密を渡さないので、Access のヘッダーは値のまま書く。`~/.codex` は hook が読み出しを止める。`PLAYWRIGHT_*` が欠けていれば表を消す。
 - 環境変数は Claude の席と同じく `seat-env.sh` が絞ったものだけを受け継ぐ（`CODEX_HOME` を足してある）。Codex は既定でコマンドに環境変数をそのまま渡すので、`GH_TOKEN` は `gh` と `git push` に届く。
 
@@ -352,7 +394,7 @@ CI の失敗、PR のレビュー、issue と PR のコメントがあると、�
 
 | 変数                                                              | 必須   | 内容                                                                                                                        |
 | ----------------------------------------------------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------- |
-| `DISCORD_TOKEN`                                                   | はい   | mizuya の bot トークン。Gateway での受信、状態の欄、ボタンに使う                                                            |
+| `DISCORD_TOKEN`                                                   | はい   | mizuya の bot トークン。Gateway での受信とボタンに使う                                                                      |
 | `YUKARIN_DISCORD_TOKEN`                                           | はい   | ゆかりんの bot トークン。Yukarin の席の発言・投稿・リアクション・入力中の表示に REST で使う                                 |
 | `AKARIN_DISCORD_TOKEN`                                            | いいえ | あかりんの bot トークン。無ければ Akarin の席を作らず、Akarin 宛ての依頼も Yukarin が受ける                                 |
 | `YUKARIN_ROLE_ID` / `AKARIN_ROLE_ID`                              | いいえ | 依頼の宛先の席を決める role（chabatake の `discord/chanuco` の output `working_role_ids`）                                  |
@@ -369,7 +411,7 @@ CI の失敗、PR のレビュー、issue と PR のコメントがあると、�
 | `PERSONA_SCRIPT`                                                  | いいえ | 人格を出力するスクリプト。既定は `~/bin/persona.sh`                                                                         |
 | `PERSONA_DIR`                                                     | いいえ | 人格の元ファイルの置き場。既定は `~/persona`                                                                                |
 | `HANDOFF_DIR`                                                     | いいえ | `prompt.md` と `issue-template.md` の置き場所。既定は `~/handoff`                                                           |
-| `GH_TOKEN`                                                        | いいえ | 席の Claude の `gh` と `git push` が使う書き込みトークン                                                                    |
+| `GH_TOKEN`                                                        | いいえ | 席の Claude の `gh` と `git push` が使う fine-grained PAT。要る権限は「席の Claude の権限」                                 |
 | `GIT_AUTHOR_NAME` など                                            | いいえ | 席の Claude の commit の作者。`GIT_AUTHOR_*` と `GIT_COMMITTER_*` を渡す                                                    |
 | `YUNOMI_URL`                                                      | いいえ | Worker の URL。`yunomi-memory` が Working の記憶の口（`/v1/partners/:partnerId/working/memory`）を呼ぶ                      |
 | `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET`                 | いいえ | Working 用の Access service token。yunomi の Worker の `accessCallers` で `working` に引かれる。席の Claude には渡さない    |
@@ -396,12 +438,17 @@ CI の失敗、PR のレビュー、issue と PR のコメントがあると、�
 | `PATROL_SCHEDULE`                                                 | いいえ | Dkron の見回りのジョブの schedule（先頭が秒の 6 フィールドの cron、Asia/Tokyo）。既定は `0 0 */2 * * *`                     |
 | `ACTIVITY_LOG_THREAD_ID`                                          | いいえ | 活動ログを投稿するスレッドの ID。設定したときだけ活動ログをまとめる                                                         |
 | `ACTIVITY_LOG_TIME`                                               | いいえ | 活動ログをまとめる時刻（`HH:MM`、Asia/Tokyo）。既定は `23:30`                                                               |
+| `HISHAKU_URL`                                                     | いいえ | hishaku の Manager の URL。下の 2 つとそろったときだけ席のセッションを預ける                                                |
+| `HISHAKU_ACCESS_CLIENT_ID` / `HISHAKU_ACCESS_CLIENT_SECRET`       | いいえ | Manager の前の Cloudflare Access の service token。受付だけが使い、席には渡さない                                           |
+| `HISHAKU_HOLDER`                                                  | いいえ | 貸し出しの持ち主として名乗る Commander の ID。既定は `docker01`                                                             |
+| `HS_BIN`                                                          | いいえ | `hs` のパス。既定は `hs`                                                                                                    |
 | `CLAUDE_BIN`                                                      | いいえ | 受付が件名の要約とログインの期限に使う Claude CLI のパス。既定は `claude`                                                   |
 | `ORCA_BIN`                                                        | いいえ | Orca の CLI。既定は `orca-ide`                                                                                              |
 | `SEATS_REPO`                                                      | いいえ | 席の元にする空の git リポジトリ。既定は `~/work/seats`                                                                      |
 | `SEATS_DIR`                                                       | いいえ | Orca が席の worktree を作る場所。既定は `~/work/orca/workspaces/seats`。受付と `seat-env.sh` の両方が読む                   |
 | `SEAT_LIMIT`                                                      | いいえ | 同時に Claude を動かしておく席の上限。既定は `6`                                                                            |
 | `SEAT_SLEEP_AFTER_MINUTES`                                        | いいえ | `決めてほしい` のままこれだけたった席の Claude を止める。既定は `120`                                                       |
+| `SEAT_DONE_LINGER_MINUTES`                                        | いいえ | `完了` か `見張り中` で手を止めた席を、これだけ閉じずに残す。既定は `60`                                                    |
 | `LOG_LEVEL`                                                       | いいえ | `debug` / `info` / `warn` / `error`。既定は `info`                                                                          |
 
 mizuya の bot には、仕事チャンネルと仕事フォーラムで、読む・送る・スレッドでの送信・履歴の読み取りの権限が要る。人格の bot には、読む・送る・スレッドでの送信・公開スレッドの作成・スレッドの管理（タグの付け替え）・埋め込み・ファイル・履歴の読み取り・リアクションの権限が要る（どちらも chabatake の `discord/chanuco` の上書き）。mizuya の application では Message Content intent を有効にする。

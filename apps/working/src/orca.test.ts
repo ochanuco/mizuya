@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Exec } from "./exec.ts";
 import { err, ok, type Result } from "./lib/core.ts";
 import { silentLogger } from "./logger.ts";
-import { createOrcaCli } from "./orca.ts";
+import { createOrcaCli, seatCommand } from "./orca.ts";
 import { tempDir } from "./test-support.ts";
 
 type Reply = { code?: number; stdout?: unknown; stderr?: string };
@@ -568,5 +568,101 @@ describe("createOrcaCli", () => {
 		expect(r.ok).toBe(false);
 		expect(t.argsOf("orchestration worker-stop")).toHaveLength(1);
 		expect(t.argsOf("terminal close")[0]).toContain("t1");
+	});
+});
+
+describe("hishaku に預けた席の起動", () => {
+	const commandOf = (t: ReturnType<typeof setup>) => {
+		const created = t.argsOf("terminal create").at(-1) ?? [];
+		return created[created.indexOf("--command") + 1] ?? "";
+	};
+	const started = {
+		"orchestration worker-start": {
+			stdout: {
+				ok: true,
+				result: {
+					dispatchId: "d1",
+					terminal: "rx",
+					workspace: "r1::/ws/seat-p1",
+				},
+			},
+		},
+	};
+
+	it("先頭は agent のまま、session_id で新規・再開のコマンドを組む", () => {
+		const id = "0b0b0b0b-1111-4222-8333-444444444444";
+		expect(seatCommand("claude", { sessionId: id, resume: false }, null)).toBe(
+			`claude --permission-mode auto --session-id ${id}`,
+		);
+		expect(seatCommand("claude", { sessionId: id, resume: true }, "opus")).toBe(
+			`claude --permission-mode auto --model opus -r ${id}`,
+		);
+		expect(seatCommand("codex", { sessionId: id, resume: true }, null)).toMatch(
+			new RegExp(`^codex resume ${id} -a never `),
+		);
+		// Codex は新規の ID を外から渡せない。空の session_id は今の起動と同じ
+		expect(seatCommand("codex", { sessionId: "", resume: false }, null)).toBe(
+			seatCommand("codex", "start", null),
+		);
+	});
+
+	it("worktree を信頼済みにしてから prepare を呼び、返った起こし方と spec で起こす", async () => {
+		let spec = "";
+		const t = setup({
+			"orchestration worker-start": (args) => {
+				spec = readFileSync(
+					args[args.indexOf("--spec-file") + 1] ?? "",
+					"utf8",
+				);
+				return started["orchestration worker-start"];
+			},
+		});
+		await t.orca.prepare({ runId: null, reception: null });
+		t.order.length = 0;
+		const prepare = vi.fn(async (cwd: string) => {
+			t.order.push(`prepare ${cwd}`);
+			return ok({
+				how: { sessionId: "abc-1", resume: true },
+				spec: "続きだけ",
+			});
+		});
+		const r = await t.orca.startSeat({
+			name: "seat-p1",
+			title: "件名",
+			spec: "前置きとやりとり",
+			agent: "claude",
+			prepare,
+		});
+		expect(r.ok).toBe(true);
+		expect(t.order.slice(1, 3)).toEqual([
+			"trust /ws/seat-p1",
+			"prepare /ws/seat-p1",
+		]);
+		expect(commandOf(t)).toBe("claude --permission-mode auto -r abc-1");
+		expect(spec).toBe("続きだけ");
+	});
+
+	it("他の機械が借りていれば起こさず、作った worktree を消す", async () => {
+		const t = setup(started);
+		await t.orca.prepare({ runId: null, reception: null });
+		const r = await t.orca.startSeat({
+			name: "seat-p1",
+			title: "件名",
+			spec: "x",
+			agent: "codex",
+			prepare: async () => err({ holder: "mac-example" }),
+		});
+		expect(r).toEqual({
+			ok: false,
+			error: {
+				type: "SeatLeaseHeld",
+				command: "hs prepare",
+				reason: "mac-example",
+			},
+		});
+		expect(t.argsOf("orchestration worker-start")).toEqual([]);
+		expect(t.argsOf("worktree rm").at(-1)).toEqual(
+			expect.arrayContaining(["--worktree", "path:/ws/seat-p1"]),
+		);
 	});
 });

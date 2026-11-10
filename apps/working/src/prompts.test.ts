@@ -4,6 +4,10 @@ import { describe, expect, it } from "vitest";
 import {
 	acceptTitle,
 	buildSeatPreamble,
+	composeTitle,
+	numberedTitle,
+	parseTitle,
+	unnumberedTitle,
 	WORKING_INSTRUCTIONS,
 } from "./prompts.ts";
 
@@ -73,5 +77,61 @@ describe("acceptTitle", () => {
 		expect(acceptTitle("請求書を整理しました。")).toBeNull();
 		expect(acceptTitle("あ".repeat(41))).toBeNull();
 		expect(acceptTitle("  ")).toBeNull();
+	});
+});
+
+describe("numberedTitle", () => {
+	it("番号は要約の 40 字の枠の外で頭に付け、付け直しても重ねず、件名の上限で切る", () => {
+		const title = "あ".repeat(40);
+		expect(numberedTitle(1234, title)).toBe(`[1234] ${title}`);
+		expect(numberedTitle(1234, `[1234] ${title}`)).toBe(`[1234] ${title}`);
+		expect(numberedTitle(5678, "[1234] 件名")).toBe("[5678] 件名");
+		const long = numberedTitle(1234, "い".repeat(120));
+		expect(long).toHaveLength(100);
+		expect(long.endsWith("…")).toBe(true);
+		expect(unnumberedTitle("[1234] 件名")).toBe("件名");
+		expect(unnumberedTitle("[12] 件名")).toBe("[12] 件名");
+	});
+});
+
+describe("件名の絵文字と番号", () => {
+	const EMOJIS = ["🎉", "🤔", "👀", "👨‍💼", "👷"];
+
+	it("頭の既知の絵文字と番号を外して元の件名に戻す", () => {
+		for (const e of EMOJIS) {
+			expect(unnumberedTitle(`${e}[1234] 柄杓テスト`, EMOJIS)).toBe(
+				"柄杓テスト",
+			);
+			expect(unnumberedTitle(`${e} 柄杓テスト`, EMOJIS)).toBe("柄杓テスト");
+		}
+		expect(parseTitle("🎉[1234] 柄杓テスト", EMOJIS)).toEqual({
+			emoji: "🎉",
+			number: 1234,
+			base: "柄杓テスト",
+		});
+		// 人の手で重ねた絵文字や異体字セレクタ付きも外す
+		expect(unnumberedTitle("🤔🎉 [1234] 件名", EMOJIS)).toBe("件名");
+		expect(unnumberedTitle("👀\uFE0F[1234] 件名", EMOJIS)).toBe("件名");
+	});
+
+	it("知らない絵文字や件名の途中の絵文字・番号には触らない", () => {
+		expect(unnumberedTitle("🍵[1234] 件名", EMOJIS)).toBe("🍵[1234] 件名");
+		expect(unnumberedTitle("件名 🎉 [1234]", EMOJIS)).toBe("件名 🎉 [1234]");
+		expect(unnumberedTitle("[12] 件名", EMOJIS)).toBe("[12] 件名");
+		expect(unnumberedTitle("🎉[1234] 件名")).toBe("🎉[1234] 件名");
+	});
+
+	it("絵文字・番号・件名を組み、上限を超える分は件名の側で切る", () => {
+		expect(composeTitle("🎉", 1234, "柄杓テスト")).toBe("🎉[1234] 柄杓テスト");
+		expect(composeTitle("🤔", null, "柄杓テスト")).toBe("🤔 柄杓テスト");
+		expect(composeTitle(null, null, "柄杓テスト")).toBe("柄杓テスト");
+		const long = composeTitle("👨‍💼", 1234, "🍵".repeat(60));
+		expect(long.length).toBeLessThanOrEqual(100);
+		expect(long.startsWith("👨‍💼[1234] 🍵")).toBe(true);
+		expect(long.endsWith("🍵…")).toBe(true);
+	});
+
+	it("番号を付け直しても頭の絵文字は残す", () => {
+		expect(numberedTitle(1234, "🤔 件名", EMOJIS)).toBe("🤔[1234] 件名");
 	});
 });

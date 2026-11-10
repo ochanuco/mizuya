@@ -199,6 +199,97 @@ export const seatSpec = (preamble: string, task: string) =>
 
 ${task}`;
 
+const NUMBER_PREFIX = /^\[(\d{4})\]\s*/;
+
+export type ThreadTitle = {
+	emoji: string | null;
+	number: number | null;
+	/** 絵文字と番号を外した元の件名。 */
+	base: string;
+};
+
+/**
+ * 件名の頭から状態の絵文字と hishaku の番号を外す。人が件名を書き換えても壊さないよう、
+ * emojis に挙げた絵文字（重なっていればすべて）と `[4 桁]` だけを外し、ほかの文字には触らない。
+ */
+export const parseTitle = (
+	name: string,
+	emojis: readonly string[] = [],
+): ThreadTitle => {
+	// 👨‍💼 のような合成の絵文字が、その一部の絵文字より先に当たるよう長い順に試す
+	const known = emojis
+		.filter((e) => e !== "")
+		.sort((a, b) => b.length - a.length);
+	let rest = name;
+	let emoji: string | null = null;
+	for (;;) {
+		const hit = known.find((e) => rest.startsWith(e));
+		if (hit === undefined) break;
+		emoji ??= hit;
+		// 人の手で打つと異体字セレクタが付くことがある
+		rest = rest
+			.slice(hit.length)
+			.replace(/^\uFE0F/, "")
+			.trimStart();
+	}
+	const m = NUMBER_PREFIX.exec(rest);
+	return {
+		emoji,
+		number: m ? Number(m[1]) : null,
+		base: m ? rest.slice(m[0].length) : rest,
+	};
+};
+
+/**
+ * 件名を `<絵文字>[<番号>] <件名>` に組む。番号が無ければ `<絵文字> <件名>`。
+ * 絵文字と番号は要約の 40 字の枠の外に置き、Discord の件名の上限を超える分は件名の側で切る。
+ */
+export const composeTitle = (
+	emoji: string | null,
+	number: number | null,
+	base: string,
+) => {
+	const head = `${emoji ?? ""}${number !== null ? `[${number}] ` : emoji !== null ? " " : ""}`;
+	const whole = `${head}${base}`.trimEnd();
+	if (whole.length <= THREAD_NAME_LIMIT) return whole;
+	// サロゲートペアを割らないよう、文字ごとに詰める
+	let cut = "";
+	for (const ch of base) {
+		if (head.length + cut.length + ch.length + 1 > THREAD_NAME_LIMIT) break;
+		cut += ch;
+	}
+	return `${head}${cut}…`;
+};
+
+/** 投稿の件名の頭に hishaku の番号を付ける。頭の状態の絵文字は残し、前に付けた番号は付け直す。 */
+export const numberedTitle = (
+	number: number,
+	name: string,
+	emojis: readonly string[] = [],
+) => {
+	const t = parseTitle(name, emojis);
+	return composeTitle(t.emoji, number, t.base);
+};
+
+/** 件名から状態の絵文字と番号を外す。記憶と活動ログには元の件名を残す。 */
+export const unnumberedTitle = (name: string, emojis: readonly string[] = []) =>
+	parseTitle(name, emojis).base;
+
+/** 席の最初の spec に足す。席は Mac に引き継ぐとき、この番号を申し送りに書く。 */
+export const numberNote = (number: number) =>
+	`この投稿の hishaku の番号: ${number}（Mac に引き継ぐときは、申し送りの雛形の「hishaku の番号」の行に書く）`;
+
+/** 引き継ぎの返事の最後に付ける。Mac でこの 1 行を打てば、席の会話の続きが開く。 */
+export const handoffOpenLine = (number: number) => `\`hs open ${number}\``;
+
+/** 席がセッションを借りている間に、他の機械に取られた。 */
+export const LEASE_STOLEN_TEXT =
+	"この投稿の会話は別の機械で開かれました。ここで進めた分は枝として残してあります。";
+
+/** 引き継ぎで記録を預けられなかった。 */
+export const HANDOFF_UNSAVED_NOTE =
+	"（会話の記録を預けられなかったので、Mac では申し送り issue から始めます）";
+
 /** 裏の作業を待っている席に届けた持ち主の書き込みの前に置く。受付は「作業中です」とだけ返してある。 */
 export const backgroundReplyNote =
 	"裏の作業を待っている間に持ち主が書いた。受付が「作業中です」とだけ先に返してある。手が空いたら status で答え、待ちを続ける。";

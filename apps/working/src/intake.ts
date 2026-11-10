@@ -22,7 +22,12 @@ import type {
 	CommandEvent,
 	WorkMessageEvent,
 } from "./discord-events.ts";
-import type { Attachment, DiscordApi, PostedMessage } from "./discord-rest.ts";
+import type {
+	Attachment,
+	Button,
+	DiscordApi,
+	PostedMessage,
+} from "./discord-rest.ts";
 import { dismissedText, isDismissButton } from "./dismiss.ts";
 import { seatNameOf } from "./guard/env.ts";
 import type { Ledger, Pending } from "./guard/ledger.ts";
@@ -35,26 +40,59 @@ import {
 	issueDoneText,
 	issueRefText,
 } from "./issue-close.ts";
+import type { Hishaku, SessionMeta } from "./hishaku.ts";
 import { createKeyedQueue } from "./keyed-queue.ts";
+import {
+	backFromMacText,
+	CONFIRM_BUTTONS,
+	heldText,
+	type LendPress,
+	lendPressOf,
+	lentText,
+	MAC_RETURNED_TEXT,
+	MAC_RETURNED_WITH_HELD_TEXT,
+	macResumedText,
+	RETURNED_NOTE,
+	TAKEBACK_BUTTON,
+	TAKEBACK_CANCELLED_TEXT,
+	takebackConfirmText,
+	takebackNote,
+	takenBackText,
+} from "./lend.ts";
 import { PARTNER_IDS, type PartnerId } from "./lib/core.ts";
 import { err, ok, type Result } from "./lib/result.ts";
 import type { Logger } from "./logger.ts";
-import type { Orca, OrcaError, SeatAgent, SeatMessage } from "./orca.ts";
+import type {
+	Orca,
+	OrcaError,
+	SeatAgent,
+	SeatHow,
+	SeatMessage,
+	SeatPrepare,
+} from "./orca.ts";
 import {
 	backgroundReplyNote,
+	composeTitle,
 	fallbackTitle,
 	forumPostBody,
 	forumStarterPrompt,
+	HANDOFF_UNSAVED_NOTE,
+	handoffOpenLine,
 	historyPrompt,
 	issuePostBody,
 	issuePrompt,
 	issueThreadName,
+	LEASE_STOLEN_TEXT,
 	messageLink,
+	numberedTitle,
+	numberNote,
 	type PickedIssue,
+	parseTitle,
 	replyPrompt,
 	requestPrompt,
 	restartNote,
 	seatSpec,
+	unnumberedTitle,
 	wakeNote,
 } from "./prompts.ts";
 import {
@@ -66,22 +104,39 @@ import {
 	partnerName,
 	replaceModelTag,
 } from "./seat-model.ts";
-import { PANEL_REFRESH_MS, panelText, REACTION_OF } from "./seat-panel.ts";
 import {
 	type MessageRef,
 	newSeat,
 	type Seat,
-	type SeatLabel,
 	type SeatStore,
 } from "./seat-store.ts";
 import type { RunKind } from "./standup-timer.ts";
 import { buttonMessage } from "./system.ts";
+import {
+	type FindWorkBranches,
+	recordWorkBranchQuietly,
+} from "./work-branch.ts";
 import {
 	replaceStatusTag,
 	takeStatus,
 	WORK_STATUSES,
 	type WorkStatus,
 } from "./work-status.ts";
+
+type StatusTag = { id: string; emoji: string | null };
+
+/** 依頼メッセージに出す状態。受付は席ができて Claude が動き出すまで。 */
+type SeatLabel = "受付" | WorkStatus;
+
+/** 依頼メッセージに付けるリアクション。 */
+const REACTION_OF: Readonly<Record<SeatLabel, string>> = {
+	受付: "👀",
+	作業中: "⏳",
+	完了: "✅",
+	決めてほしい: "❓",
+	引き継ぎ: "❓",
+	見張り中: "🔭",
+};
 
 /** 席を受け持つパートナーの bot と、その席に渡す前置き。 */
 export type SeatPartner = {
@@ -100,11 +155,18 @@ export type IntakeDeps = {
 	seatReplied?: () => void;
 	/** Yukarin の bot。読むのもこの bot で行う。 */
 	discord: DiscordApi;
-	/** mizuya の bot。許可と不要のボタン、状態の欄を書く。 */
+	/** mizuya の bot。許可と不要のボタンを書く。 */
 	system: DiscordApi;
 	/** mizuya の bot のユーザー。メンションされたら Yukarin 宛てとみなす。 */
 	systemUserId: string;
 	orca: Orca;
+	/**
+	 * 席の agent のセッションを預ける hishaku。あれば投稿ごとに番号を取り、席の会話を Manager に預けて同じ番号で続ける。
+	 * 無いか Manager に届かなければ、席は手元の会話だけで動く。
+	 */
+	hishaku?: Hishaku | null;
+	/** 席の worktree の clone から作業ブランチを探す。あれば会話を預けて返す前に hishaku の meta に書く。 */
+	findWorkBranches?: FindWorkBranches | null;
 	seats: SeatStore;
 	/** 投稿で許可を待っている操作。 */
 	approvals: ApprovalStore;
@@ -144,15 +206,29 @@ export type IntakeDeps = {
 	seatLimit: number;
 	/** 決めてほしいままこれだけたった席は Claude を止める。 */
 	sleepAfterMs: number;
+	/**
+	 * 完了か見張り中で手を止めた投稿の席を、これだけ閉じずに残す。
+	 * 起こし直すと system prompt が変わってキャッシュが効かないので、すぐ続きを書かれたら同じ Claude に渡す。
+	 */
+	doneLingerMs: number;
 	newGrantId?: () => string;
 	now?: () => Date;
 	/** ms ごとに fn を呼び、止める関数を返す。入力中の表示を送り続けるのに使う。 */
 	every?: (ms: number, fn: () => void) => () => void;
+	/** ms たったら fn を 1 回呼ぶ。件名の変更の制限が解けるのを待つのに使う。 */
+	after?: (ms: number, fn: () => void) => void;
 	logger: Logger;
 };
 
 /** Discord の入力中の表示は約 10 秒で消えるので、それより短い間隔で送り直す。 */
 export const TYPING_EVERY_MS = 8_000;
+
+/** Discord はスレッドの名前の変更を 1 スレッドあたり 10 分に 2 回までに抑える。待つ長さが分からないときはこれだけ待つ。 */
+const RENAME_WINDOW_MS = 10 * 60_000;
+
+const defaultAfter = (ms: number, fn: () => void) => {
+	setTimeout(fn, ms).unref();
+};
 
 const defaultEvery = (ms: number, fn: () => void) => {
 	const timer = setInterval(fn, ms);
@@ -215,6 +291,16 @@ export const isRestartRequest = (content: string) =>
 			.replace(/[。.!！]+$/, ""),
 	);
 
+/** 残している席を閉じる一言。席の Claude に渡さずに受付が閉じるので、決まった言い方だけにする。 */
+export const isCloseRequest = (content: string) =>
+	/^(終了|クローズ|close|閉じて|おわり|終わり)$/i.test(
+		content
+			.replace(MENTION, "")
+			.normalize("NFKC")
+			.trim()
+			.replace(/[。!！]+$/, ""),
+	);
+
 /**
  * escalation の本文（席の端末の末尾）に、裏で動いている shell やタスクが出ているか。
  * Claude CLI は裏の作業が残っていると「1 shell still running」「· 2 shells ·」のように書く。
@@ -259,14 +345,16 @@ export type Intake = {
 		issue: PickedIssue,
 		partner: PartnerId,
 	) => Promise<Result<{ threadId: string }, { type: string }>>;
-	/** 決めてほしいまま時間がたった席の Claude を止める。 */
+	/** 決めてほしいまま時間がたった席の Claude を止め、完了したあと残していた席を時間がたったら閉じる。 */
 	sleepIdle: () => Promise<void>;
 	/** 起動時に、対応表と Orca の席を突き合わせる。 */
 	reconcile: () => Promise<void>;
-	/** 作業中の席の状態の欄の経過時間を書き換える。前に書いてから間がなければ書かない。 */
-	refreshPanels: () => Promise<void>;
 	/** 作業中の席の数。gateway が自分のパートナーの数を bot のステータスに出す。 */
 	summary: () => SeatSummary;
+	/** 席が借りている hishaku のセッションの貸し出しを延ばす。Mac が返してほしいと頼んでいれば、ターンの終わりに渡す。 */
+	renewLeases: () => Promise<void>;
+	/** Mac に貸している投稿の meta を読み、Mac が借りた・返したことを投稿に書く。返していれば席を起こす。 */
+	watchLends: () => Promise<void>;
 };
 
 export type SeatSummary = {
@@ -285,9 +373,10 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	const newGrantId = deps.newGrantId ?? randomUUID;
 	const queue = createKeyedQueue();
 	const parentOf = new Map<string, string | null>();
-	let tagIds: Map<WorkStatus, string> | null = null;
+	let statusTagInfo: Map<WorkStatus, StatusTag> | null = null;
 	let modelTagIds: Map<string, string> | null = null;
 	const every = deps.every ?? defaultEvery;
+	const after = deps.after ?? defaultAfter;
 
 	const yukarin: SeatPartner = {
 		discord: deps.discord,
@@ -381,23 +470,33 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		},
 	};
 
-	const statusTags = async (): Promise<Map<WorkStatus, string>> => {
-		if (tagIds) return tagIds;
+	/** 状態のタグ名 → ID と絵文字。絵文字は mizuya に書き写さず、フォーラムのタグから引く。 */
+	const statusTagsOf = async (): Promise<Map<WorkStatus, StatusTag>> => {
+		if (statusTagInfo) return statusTagInfo;
 		const forum = await deps.discord.getChannel(deps.workForumChannelId);
 		if (!forum.ok) {
 			log.warn("forum tags unavailable", { error: forum.error.type });
 			return new Map();
 		}
-		const found = new Map<WorkStatus, string>();
+		const found = new Map<WorkStatus, StatusTag>();
 		for (const name of WORK_STATUSES) {
 			const tag = forum.value.availableTags.find((t) => t.name === name);
-			if (tag) found.set(name, tag.id);
+			if (tag) found.set(name, { id: tag.id, emoji: tag.emoji ?? null });
 			else log.warn("forum tag missing", { tag: name });
 		}
 		// タグは後からフォーラムに足せるので、欠けている間は覚えずに次も引き直す
-		if (found.size === WORK_STATUSES.length) tagIds = found;
+		if (found.size === WORK_STATUSES.length) statusTagInfo = found;
 		return found;
 	};
+
+	const statusTags = async (): Promise<Map<WorkStatus, string>> =>
+		new Map([...(await statusTagsOf())].map(([k, t]) => [k, t.id]));
+
+	/** 件名の頭に付けうる状態の絵文字。件名から外すときに使う。 */
+	const statusEmojis = async (): Promise<string[]> =>
+		[...(await statusTagsOf()).values()].flatMap((t) =>
+			t.emoji ? [t.emoji] : [],
+		);
 
 	/** モデルのタグ名 → ID。状態のタグと同じく、欠けている間は覚えずに次も引き直す。 */
 	const modelTags = async (): Promise<Map<string, string>> => {
@@ -450,90 +549,23 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		return to;
 	};
 
-	/** 状態の欄を書き換える。内容が同じなら書かず、force でなければ前に書いてから間をおく。 */
-	const writePanel = async (seat: Seat, force: boolean): Promise<Seat> => {
-		if (seat.panelId === null || seat.label === null) return seat;
-		const at = now();
-		const text = panelText({
-			label: seat.label,
-			elapsedMs: seat.labelSince
-				? at.getTime() - seat.labelSince.getTime()
-				: null,
-			doing: seat.lastStatus,
-		});
-		if (text === seat.panelText) return seat;
-		if (
-			!force &&
-			seat.panelAt !== null &&
-			at.getTime() - seat.panelAt.getTime() < PANEL_REFRESH_MS
-		) {
-			return seat;
-		}
-		const r = await deps.system.editMessage(seat.threadId, seat.panelId, text);
-		if (!r.ok) {
-			log.warn("panel update failed", {
-				thread_id: seat.threadId,
-				error: r.error.type,
-			});
-			return seat;
-		}
-		return { ...seat, panelText: text, panelAt: at };
-	};
-
-	const refreshPanel = async (threadId: string, force: boolean) => {
-		const seat = seats.get(threadId);
-		if (seat === null) return;
-		const next = await writePanel(seat, force);
-		if (next !== seat) await seats.set(next);
-	};
-
 	/**
-	 * 依頼メッセージのリアクションと状態の欄を label に合わせる。
+	 * 依頼メッセージのリアクションを label に合わせる。投稿の状態は、このリアクションとタグと件名の絵文字で見せる。
 	 * 席を閉じたあとに呼ぶときは、閉じる前の席を gone に渡す。
 	 */
 	const show = async (threadId: string, label: SeatLabel, gone?: Seat) => {
 		const seat = seats.get(threadId) ?? gone ?? null;
-		if (seat === null || seat.standup) return;
-		const reaction = seat.request
-			? await react(
-					botOf(threadId),
-					seat.request,
-					seat.reaction,
-					REACTION_OF[label],
-				)
-			: seat.reaction;
-		const next = await writePanel(
-			{
-				...seat,
-				reaction,
-				label,
-				labelSince: seat.label === label ? seat.labelSince : now(),
-			},
-			true,
+		if (seat === null || seat.standup || seat.request === null) return;
+		const reaction = await react(
+			botOf(threadId),
+			seat.request,
+			seat.reaction,
+			REACTION_OF[label],
 		);
-		if (seats.get(threadId) !== null) await seats.set(next);
-	};
-
-	/** 投稿の先頭近くに状態の欄を置く。 */
-	const placePanel = async (seat: Seat): Promise<Seat> => {
-		if (seat.standup || seat.panelId !== null) return seat;
-		const text = panelText({ label: "受付", elapsedMs: null, doing: null });
-		const r = await deps.system.createMessage(seat.threadId, text);
-		if (!r.ok) {
-			log.warn("panel post failed", {
-				thread_id: seat.threadId,
-				error: r.error.type,
-			});
-			return seat;
+		const current = seats.get(threadId);
+		if (current !== null && current.reaction !== reaction) {
+			await seats.set({ ...current, reaction });
 		}
-		return {
-			...seat,
-			panelId: r.value.id,
-			panelText: text,
-			panelAt: now(),
-			label: "受付",
-			labelSince: now(),
-		};
 	};
 
 	/** 持ち主の新しい依頼メッセージに受付の絵文字を移す。 */
@@ -551,10 +583,15 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		return next;
 	};
 
+	/**
+	 * title が false なら件名は変えない。件名の変更は投稿にシステムメッセージを残すので、
+	 * 続きが来るかもしれない残している席は、閉じるまで完了の絵文字を付けない。
+	 */
 	const setStatus = async (
 		threadId: string,
 		status: WorkStatus,
 		gone?: Seat,
+		{ title = true }: { title?: boolean } = {},
 	) => {
 		await show(threadId, status, gone);
 		const tags = await statusTags();
@@ -567,11 +604,102 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		const same =
 			next.length === thread.value.appliedTagIds.length &&
 			next.every((id) => thread.value.appliedTagIds.includes(id));
-		if (same) return;
-		const r = await botOf(threadId).setTags(threadId, next);
-		if (!r.ok) {
-			log.warn("set tags failed", { thread_id: threadId, error: r.error.type });
+		if (!same) {
+			const r = await botOf(threadId).setTags(threadId, next);
+			if (!r.ok) {
+				log.warn("set tags failed", {
+					thread_id: threadId,
+					error: r.error.type,
+				});
+			}
 		}
+		if (thread.value.name === null || !title) return;
+		const info = await statusTagsOf();
+		if (status !== "作業中") {
+			await retitle(
+				threadId,
+				thread.value.name,
+				info.get(status)?.emoji ?? null,
+			);
+			return;
+		}
+		// 作業中は決めてほしいと返事のたびに行き来するので、🤔 は残して名前の変更の枠を使わない。
+		// 完了と見張り中の絵文字だけは、また動き出したのに終わったように見えるので外す。
+		// 制限で付けられずに待っている件名があれば、それがこれから付く件名なのでそちらで見る
+		const finished = new Set(
+			(["完了", "見張り中"] as const).flatMap((s) => {
+				const e = info.get(s)?.emoji;
+				return e ? [e] : [];
+			}),
+		);
+		const shown = parseTitle(
+			deps.seats.pendingTitleOf(threadId) ?? thread.value.name,
+			await statusEmojis(),
+		);
+		if (shown.emoji !== null && finished.has(shown.emoji)) {
+			await retitle(threadId, thread.value.name, null);
+		}
+	};
+
+	/** 件名の変更の制限が解けるのを待っている投稿。 */
+	const titleWaits = new Set<string>();
+
+	/**
+	 * 覚えた付けたい件名を投稿に付ける。今の件名と同じなら呼ばない。
+	 * 名前の変更の制限に当たったら、解けるのを待ってから、その時に覚えている最後の件名だけを付ける。
+	 */
+	const applyTitle = async (threadId: string, current: string | null) => {
+		if (titleWaits.has(threadId)) return;
+		const want = deps.seats.pendingTitleOf(threadId);
+		if (want === null) return;
+		if (current === want) {
+			await deps.seats.setPendingTitle(threadId, null);
+			return;
+		}
+		const r = await botOf(threadId).renameThread(threadId, want);
+		if (r.ok) {
+			if (deps.seats.pendingTitleOf(threadId) === want) {
+				await deps.seats.setPendingTitle(threadId, null);
+			}
+			return;
+		}
+		if (r.error.type === "RateLimited") {
+			const waitMs = r.error.retryAfterMs ?? RENAME_WINDOW_MS;
+			log.warn("thread rename rate limited; retry later", {
+				thread_id: threadId,
+				retry_after_ms: waitMs,
+			});
+			titleWaits.add(threadId);
+			after(waitMs, () => {
+				titleWaits.delete(threadId);
+				void queue.run(threadId, async () => {
+					const ch = await deps.discord.getChannel(threadId);
+					await applyTitle(threadId, ch.ok ? ch.value.name : null);
+				});
+			});
+			return;
+		}
+		log.warn("thread rename failed", {
+			thread_id: threadId,
+			error: r.error.type,
+		});
+		await deps.seats.setPendingTitle(threadId, null);
+	};
+
+	/** 件名の頭の状態の絵文字を emoji に替える。null なら絵文字を外す。 */
+	const retitle = async (
+		threadId: string,
+		name: string,
+		emoji: string | null,
+	) => {
+		const t = parseTitle(name, await statusEmojis());
+		const want = composeTitle(
+			emoji,
+			t.number ?? deps.seats.numberOf(threadId),
+			t.base,
+		);
+		await deps.seats.setPendingTitle(threadId, want);
+		await applyTitle(threadId, name);
 	};
 
 	const setModelTag = async (threadId: string, model: string) => {
@@ -613,10 +741,245 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		log.info("seat model changed", { thread_id: threadId, from, to });
 	};
 
+	/** 投稿の件名。頭の hishaku の番号は外す。 */
 	const titleOf = async (threadId: string): Promise<string | null> => {
 		const ch = await deps.discord.getChannel(threadId);
-		return ch.ok ? ch.value.name : null;
+		return ch.ok && ch.value.name !== null
+			? unnumberedTitle(ch.value.name, await statusEmojis())
+			: null;
 	};
+
+	/**
+	 * 投稿の hishaku の番号を取り、件名の頭に付ける。番号はスレッドの ID を post_id にして払い出すので、投稿を立てた後に取る。
+	 * Manager に届かなければ番号なしで進め、席は手元の会話だけで動く。
+	 */
+	const ensureNumber = async (
+		threadId: string,
+		repo: string | null,
+	): Promise<number | null> => {
+		const hishaku = deps.hishaku;
+		if (!hishaku) return null;
+		const known = deps.seats.numberOf(threadId);
+		if (known !== null) return known;
+		const ch = await deps.discord.getChannel(threadId);
+		const name = (ch.ok ? ch.value.name : null) ?? "";
+		const created = await hishaku.createSession({
+			postId: threadId,
+			agent: agentOf(partnerOf(threadId)),
+			title: unnumberedTitle(name, await statusEmojis()) || threadId,
+			repo,
+			branch: null,
+		});
+		if (!created.ok) {
+			log.warn("hishaku session unavailable; seat runs without it", {
+				thread_id: threadId,
+				reason: created.error.reason,
+			});
+			return null;
+		}
+		const { number } = created.value;
+		await deps.seats.setNumber(threadId, number);
+		if (ch.ok && name !== "") {
+			// 先に覚えた付けたい件名（状態の絵文字）があれば、それに番号を足す
+			const emojis = await statusEmojis();
+			const named = numberedTitle(
+				number,
+				deps.seats.pendingTitleOf(threadId) ?? name,
+				emojis,
+			);
+			await deps.seats.setPendingTitle(threadId, named);
+			await applyTitle(threadId, name);
+		}
+		log.info("hishaku session numbered", { thread_id: threadId, number });
+		return number;
+	};
+
+	/**
+	 * 席を起こす前に hishaku のセッションを借りる。持ち主が自分（前の受付が返さずに落ちた）なら取り直す。
+	 * takeover なら持ち主が Mac から取り戻すと決めたので、初めから奪う。
+	 */
+	const prepareSession = async (
+		number: number,
+		cwd: string,
+		takeover: boolean,
+	) => {
+		const hishaku = deps.hishaku;
+		if (!hishaku) return null;
+		if (takeover) return hishaku.prepare({ number, cwd, takeover: true });
+		const r = await hishaku.prepare({ number, cwd });
+		if (
+			!r.ok &&
+			r.error.type === "LeaseHeld" &&
+			r.error.holder === hishaku.holder
+		) {
+			return hishaku.prepare({ number, cwd, takeover: true });
+		}
+		return r;
+	};
+
+	/**
+	 * 止めた席の会話を Manager に預け、貸し出しを返す。agent が止まってから呼ぶ。
+	 * 預けて返せたら true。席が借りていなければ false。
+	 */
+	const releaseSession = async (
+		seat: Seat,
+	): Promise<{ seat: Seat; released: boolean }> => {
+		const hishaku = deps.hishaku;
+		const number = deps.seats.numberOf(seat.threadId);
+		if (!hishaku || seat.lease === null || number === null || !seat.path) {
+			return { seat, released: false };
+		}
+		if (deps.findWorkBranches) {
+			await recordWorkBranchQuietly({
+				hishaku,
+				number,
+				dir: seat.path,
+				find: deps.findWorkBranches,
+				log,
+				threadId: seat.threadId,
+			});
+		}
+		const r = await hishaku.push({
+			number,
+			generation: seat.lease,
+			cwd: seat.path,
+			release: true,
+		});
+		const next = { ...seat, lease: null };
+		if (r.ok) {
+			log.info("hishaku session released", {
+				thread_id: seat.threadId,
+				number,
+			});
+			return { seat: next, released: true };
+		}
+		if (r.error.type === "LeaseStolen") {
+			log.warn("hishaku lease was taken", { thread_id: seat.threadId, number });
+			if (!seat.standup) await sendTo(seat.threadId, LEASE_STOLEN_TEXT);
+		} else {
+			log.warn("hishaku push failed", {
+				thread_id: seat.threadId,
+				number,
+				reason: r.error.reason,
+			});
+		}
+		return { seat: next, released: false };
+	};
+
+	/** mizuya の bot で投稿に書く。貸し出しの知らせはシステムの介入なので担当の bot では書かない。 */
+	const postSystem = async (
+		threadId: string,
+		content: string,
+		buttons: readonly Button[] = [],
+	) => {
+		const sent = await deps.system.send(
+			threadId,
+			content,
+			undefined,
+			[],
+			buttons,
+		);
+		if (!sent.ok) {
+			log.warn("lend post failed", {
+				thread_id: threadId,
+				error: sent.error.type,
+			});
+		}
+		return sent;
+	};
+	/** ボタン付きで書いたメッセージを貸し出しに残す。受付が作り直されても、貸し出しが終わったら外せる。 */
+	const rememberButtons = async (
+		threadId: string,
+		key: "buttons" | "confirms",
+		sent: Awaited<ReturnType<typeof postSystem>>,
+	) => {
+		// ボタンは分けて送った最後の 1 件に付く
+		const id = sent.ok ? sent.value.messageIds.at(-1) : undefined;
+		const seat = seats.get(threadId);
+		if (id === undefined || seat?.lend == null) return;
+		await seats.set({
+			...seat,
+			lend: { ...seat.lend, [key]: [...seat.lend[key], id] },
+		});
+	};
+	const postTakeback = async (threadId: string, content: string) =>
+		rememberButtons(
+			threadId,
+			"buttons",
+			await postSystem(threadId, content, [TAKEBACK_BUTTON]),
+		);
+
+	/** 貸し出しで出したメッセージからボタンを外す。本文は残す。外せなくても流れは止めない。 */
+	const clearButtons = async (threadId: string, ids: readonly string[]) => {
+		for (const id of ids) {
+			const current = await deps.system.getMessage(threadId, id);
+			const edited = current.ok
+				? await deps.system.editMessage(threadId, id, current.value.content)
+				: current;
+			if (!edited.ok) {
+				log.warn("lend button removal failed", {
+					thread_id: threadId,
+					message_id: id,
+					error: edited.error.type,
+				});
+			}
+		}
+	};
+	const clearLendButtons = (seat: Seat, except?: string) =>
+		seat.lend
+			? clearButtons(
+					seat.threadId,
+					[...seat.lend.buttons, ...seat.lend.confirms].filter(
+						(id) => id !== except,
+					),
+				)
+			: Promise.resolve();
+
+	/**
+	 * 会話を Manager に預けて Mac に貸している席。agent は止めてあり、worktree は消してある。
+	 * 投稿への書き込みは pending に溜める。
+	 */
+	const lentSeat = (
+		seat: Seat,
+		number: number,
+		generation: number | null,
+		requested = false,
+	): Seat => ({
+		...seat,
+		status: "lent",
+		path: null,
+		terminal: null,
+		dispatchId: null,
+		questionId: null,
+		expectStop: false,
+		waitingSince: null,
+		doneAt: null,
+		doneStatus: null,
+		pending: [],
+		queuedAt: null,
+		background: false,
+		lastStatus: null,
+		lease: null,
+		continuation: null,
+		releaseRequested: null,
+		takeback: null,
+		lend: {
+			number,
+			savedAt: now(),
+			generation,
+			mac: false,
+			requested,
+			buttons: [],
+			confirms: [],
+		},
+	});
+
+	/** 他の機械（Mac）が今の貸し出しを持っている。期限が切れていれば持っていないとみなす。 */
+	const macHolds = (meta: SessionMeta) =>
+		meta.holder !== null &&
+		meta.holder !== deps.hishaku?.holder &&
+		meta.leaseExpiresAt !== null &&
+		meta.leaseExpiresAt.getTime() > now().getTime();
 
 	const parentIdOf = async (channelId: string): Promise<string | null> => {
 		const cached = parentOf.get(channelId);
@@ -826,6 +1189,43 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		const partner = partnerOf(threadId);
 		const agent = agentOf(partner);
 		const model = deps.seats.modelOf(threadId);
+		const number = seat.standup ? null : deps.seats.numberOf(threadId);
+		const noted = number === null ? text : `${numberNote(number)}\n\n${text}`;
+		let lease: number | null = null;
+		const fallback: SeatHow = seat.path ? "resume" : "start";
+		const prepare: SeatPrepare | undefined =
+			number === null || !deps.hishaku
+				? undefined
+				: async (cwd) => {
+						const r = await prepareSession(number, cwd, seat.takeback !== null);
+						if (r === null) return ok({ how: fallback });
+						if (!r.ok) {
+							if (r.error.type === "LeaseHeld") {
+								return err({ holder: r.error.holder });
+							}
+							log.warn("hishaku prepare failed; seat runs without it", {
+								thread_id: threadId,
+								number,
+								reason: r.error.reason,
+							});
+							return ok({ how: fallback });
+						}
+						lease = r.value.generation;
+						// 正本が無いのに worktree の会話が残っている席は、新しい ID で始めずに手元の会話を続ける
+						if (!r.value.resume && seat.path) return ok({ how: fallback });
+						const how: SeatHow = {
+							sessionId: r.value.sessionId,
+							resume: r.value.resume,
+						};
+						// 前の会話が続くなら、やりとりを読ませる依頼文の代わりに新しい言葉だけを渡す
+						if (r.value.resume && seat.continuation && !seat.path) {
+							return ok({
+								how,
+								spec: `${numberNote(number)}\n\n${seat.continuation.join("\n\n---\n\n")}`,
+							});
+						}
+						return ok({ how });
+					};
 		const r = seat.path
 			? await deps.orca.resumeSeat({
 					path: seat.path,
@@ -833,13 +1233,15 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 					spec: text,
 					agent,
 					model,
+					prepare,
 				})
 			: await deps.orca.startSeat({
 					name: seatNameOf(threadId),
 					title,
-					spec: seatSpec(speaker(partner).preamble, text),
+					spec: seatSpec(speaker(partner).preamble, noted),
 					agent,
 					model,
+					prepare,
 				});
 		if (!r.ok && r.error.type === "SeatWorktreeMissing" && !seat.standup) {
 			// 前の会話は worktree ごと失われたので、席を忘れてやりとりを読ませた新しい席で始める。
@@ -851,16 +1253,38 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 					...newSeat(threadId),
 					request: seat.request,
 					reaction: seat.reaction,
-					panelId: seat.panelId,
-					panelText: seat.panelText,
-					panelAt: seat.panelAt,
-					label: seat.label,
-					labelSince: seat.labelSince,
 					model: seat.model,
 					modelChange: seat.modelChange,
+					continuation: seat.pending,
 				},
 				await historyText(threadId),
 			);
+			return;
+		}
+		// 借りるのは番号のある投稿の席だけなので、借りられなかったのは Mac が開いているとき
+		if (!r.ok && r.error.type === "SeatLeaseHeld" && number !== null) {
+			log.warn("hishaku session held elsewhere", {
+				thread_id: threadId,
+				holder: r.error.reason,
+			});
+			// 書かれたことは溜めて、Mac が返したら渡す。worktree の会話は残し、戻ったらそのまま起こす
+			await seats.set({
+				...lentSeat(seat, number, null),
+				path: seat.path,
+				pending: seat.continuation ?? seat.pending,
+				lend: {
+					number,
+					savedAt: null,
+					generation: null,
+					mac: true,
+					requested: false,
+					buttons: [],
+					confirms: [],
+				},
+			});
+			await postTakeback(threadId, heldText(number));
+			await setStatus(threadId, "引き継ぎ");
+			dequeue();
 			return;
 		}
 		if (!r.ok) {
@@ -891,13 +1315,24 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			question: null,
 			expectStop: false,
 			waitingSince: null,
+			doneAt: null,
+			doneStatus: null,
 			pending: [],
 			queuedAt: null,
 			background: false,
 			lastStatus: null,
 			model,
 			modelChange: null,
+			lease,
+			continuation: null,
+			lend: null,
+			releaseRequested: null,
+			takeback: null,
 		});
+		if (seat.takeback && lease !== null && !seat.standup) {
+			await postSystem(threadId, takenBackText(lease));
+			await sendTo(threadId, backFromMacText(seat.takeback.pushedAt));
+		}
 		// 作業中に頼まれた切り替えは、起こし直したこの起動で効いた
 		if (seat.modelChange && model !== null && model !== seat.model) {
 			await announceModel(threadId, seat.modelChange.by, seat.model, model);
@@ -910,8 +1345,13 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		if (!seat.standup) await setStatus(threadId, "作業中");
 	};
 
-	/** 席を作るか、上限なら順番待ちにする。 */
-	const openSeat = async (seat: Seat, text: string) => {
+	/** 席を作るか、上限なら順番待ちにする。repo は分かれば hishaku の番号の meta に残す。 */
+	const openSeat = async (
+		seat: Seat,
+		text: string,
+		repo: string | null = null,
+	) => {
+		if (!seat.standup) await ensureNumber(seat.threadId, repo);
 		const reaction =
 			seat.request && !seat.standup
 				? await react(
@@ -921,11 +1361,8 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 						REACTION_OF.受付,
 					)
 				: seat.reaction;
-		const next = await placePanel({
-			...seat,
-			reaction,
-			pending: [...seat.pending, text],
-		});
+		const next = { ...seat, reaction, pending: [...seat.pending, text] };
+		if (!seat.standup) await makeRoom(seat.threadId);
 		if (!seat.standup && alive().length >= deps.seatLimit) {
 			await seats.set({ ...next, status: "queued", queuedAt: now() });
 			log.info("seat queued", { thread_id: seat.threadId });
@@ -935,8 +1372,12 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		await launch(next);
 	};
 
-	/** 席の Claude を止め、worktree を消して対応を忘れる。 */
-	const closeSeat = async (seat: Seat) => {
+	/**
+	 * 席の Claude を止め、会話を hishaku に預けてから worktree を消して対応を忘れる。
+	 * 預けて貸し出しを返せたら true。
+	 */
+	const closeSeat = async (seat: Seat): Promise<boolean> => {
+		await clearLendButtons(seat);
 		const stopped = await deps.orca.stopSeat(seat);
 		if (!stopped.ok) {
 			log.error("seat stop failed", {
@@ -944,6 +1385,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				reason: stopped.error.reason,
 			});
 		}
+		const { released } = await releaseSession(seat);
 		if (seat.path) {
 			const removed = await deps.orca.removeWorktree(seat.path);
 			if (!removed.ok) {
@@ -956,6 +1398,51 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		await seats.delete(seat.threadId);
 		log.info("seat closed", { thread_id: seat.threadId });
 		dequeue();
+		return released;
+	};
+
+	/** 残していた席を閉じる。閉じて終わりが決まったので、ここで件名を終えたときの状態の絵文字にする。 */
+	const closeDone = async (seat: Seat): Promise<boolean> => {
+		if (seat.doneStatus !== null) {
+			const thread = await deps.discord.getChannel(seat.threadId);
+			if (thread.ok && thread.value.name !== null) {
+				const info = await statusTagsOf();
+				await retitle(
+					seat.threadId,
+					thread.value.name,
+					info.get(seat.doneStatus)?.emoji ?? null,
+				);
+			}
+		}
+		return closeSeat(seat);
+	};
+
+	/** 完了したあと残している、Claude が動いたままの席。 */
+	const lingering = () =>
+		seats.all().filter((s) => s.doneAt !== null && s.status === "waiting");
+
+	/**
+	 * 席が上限まで埋まっていれば、完了したあと残している席を古い順に閉じて空ける。
+	 * 残している席は続きが来るかもしれないだけなので、新しい仕事を順番待ちにしてまで残さない。
+	 */
+	const makeRoom = async (self: string) => {
+		while (alive().length >= deps.seatLimit) {
+			const [oldest] = lingering()
+				.filter((s) => s.threadId !== self)
+				.sort(
+					(a, b) => (a.doneAt?.getTime() ?? 0) - (b.doneAt?.getTime() ?? 0),
+				);
+			if (oldest === undefined) return;
+			await queue.run(oldest.threadId, async () => {
+				const seat = seats.get(oldest.threadId);
+				if (seat?.doneAt == null || seat.status !== "waiting") return;
+				log.info("lingering seat closed for room", {
+					thread_id: seat.threadId,
+					for: self,
+				});
+				await closeDone(seat);
+			});
+		}
 	};
 
 	/** 席の返事から添付の行を外し、ファイルを集める。 */
@@ -975,6 +1462,8 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		question: ask?.text ?? seat.question,
 		expectStop: ask !== null,
 		waitingSince: now(),
+		doneAt: null,
+		doneStatus: null,
 		background: false,
 		lastStatus: null,
 	});
@@ -989,23 +1478,34 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		const stored = seats.get(threadId);
 		if (stored === null) {
 			// 席が無い（完了したあと、朝会の投稿、作れなかった）ときは、やりとりを読ませて新しい席を作る
+			// 前の会話を hishaku から続けられれば、やりとりの代わりにこの言葉だけを渡す
 			const prompt = await historyText(threadId);
+			const note = granted ? `\n\n${approvedNote(granted)}` : "";
 			await openSeat(
-				{ ...newSeat(threadId), request: from },
-				granted ? `${prompt}\n\n${approvedNote(granted)}` : prompt,
+				{
+					...newSeat(threadId),
+					request: from,
+					continuation: [`${text}${note}`],
+				},
+				`${prompt}${note}`,
 			);
 			return;
 		}
 		const seat = await receive(stored, from);
 		switch (seat.status) {
 			case "queued":
-				await seats.set({ ...seat, pending: [...seat.pending, text] });
+				await seats.set({
+					...seat,
+					pending: [...seat.pending, text],
+					continuation: seat.continuation && [...seat.continuation, text],
+				});
 				return;
 			case "sleeping": {
 				const woke = {
 					...seat,
 					pending: [`${wakeNote(seat.question)}\n\n${text}`],
 				};
+				await makeRoom(threadId);
 				if (alive().length >= deps.seatLimit) {
 					await seats.set({ ...woke, status: "queued", queuedAt: now() });
 					await show(threadId, "受付");
@@ -1037,6 +1537,15 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 					});
 				}
 				break;
+			case "lent": {
+				// Mac が返すまで席に渡さない
+				await seats.set({ ...seat, pending: [...seat.pending, text] });
+				await postTakeback(
+					threadId,
+					heldText(seat.lend?.number ?? deps.seats.numberOf(threadId) ?? 0),
+				);
+				return;
+			}
 			case "working":
 			case "waiting":
 				break;
@@ -1078,6 +1587,8 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				: [...seat.dispatchIds, sent.value.dispatchId],
 			questionId: null,
 			waitingSince: null,
+			doneAt: null,
+			doneStatus: null,
 		});
 		await setStatus(threadId, "作業中");
 	};
@@ -1118,9 +1629,10 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				});
 				return;
 			}
+			const released = await releaseSession(seat);
 			// 前の会話は残っているので、次の返事で選ばれたモデルのまま起こす
 			next = {
-				...seat,
+				...released.seat,
 				status: "sleeping",
 				terminal: null,
 				questionId: null,
@@ -1149,6 +1661,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		await setStatus(threadId, "決めてほしい");
 		await applyModelChange(threadId);
 		log.info("seat asked", { thread_id: threadId, blocked: blocked.length });
+		await lendIfRequested(threadId);
 	};
 
 	/**
@@ -1254,33 +1767,317 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				thread_id: threadId,
 				blocked: blocked.length,
 			});
+			await lendIfRequested(threadId);
+			return;
+		}
+		if (taken.status === "引き継ぎ") {
+			await handOff(seat, reply);
 			return;
 		}
 		await postWithApproval(threadId, reply.body, [], reply.files);
-		await setStatus(threadId, taken.status);
+		// 順番待ちの投稿があれば、残さずに閉じて席を譲る
+		const linger = !seats.all().some((s) => s.status === "queued");
+		if (linger) {
+			await seats.set({
+				...toWaiting(seat, null),
+				expectStop: false,
+				doneAt: now(),
+				doneStatus:
+					taken.status === "完了" || taken.status === "見張り中"
+						? taken.status
+						: null,
+			});
+		}
+		await setStatus(threadId, taken.status, undefined, { title: !linger });
 		const title = (await titleOf(threadId)) ?? "仕事フォーラムの投稿";
 		await deps.remember(
 			taken.status === "完了"
 				? `仕事フォーラムの「${title}」を終えた`
-				: taken.status === "見張り中"
-					? `仕事フォーラムの「${title}」で見張りを始めた`
-					: `仕事フォーラムの「${title}」を Mac に引き継いだ`,
+				: `仕事フォーラムの「${title}」で見張りを始めた`,
 			partnerOf(threadId),
 		);
-		await record(
-			threadId,
-			taken.status === "引き継ぎ" ? "handoff" : "done",
-			[],
-			title,
-		);
-		await closeSeat(seat);
+		await record(threadId, "done", [], title);
+		// 席を残すかどうかによらず、完了したところで知らせる
 		if (taken.status === "完了") await announceIssueDone(threadId);
+		if (linger) {
+			await applyModelChange(threadId);
+			log.info("seat done; lingering", {
+				thread_id: threadId,
+				status: taken.status,
+			});
+			await lendIfRequested(threadId);
+			return;
+		}
+		await closeSeat(seat);
 		// 席は閉じたが、選ばれたモデルは投稿に残り、次に開く席がそれで動く
 		const chosen = deps.seats.modelOf(threadId);
 		if (seat.modelChange && chosen !== null && chosen !== seat.model) {
 			await announceModel(threadId, seat.modelChange.by, seat.model, chosen);
 		}
 		log.info("seat done", { thread_id: threadId, status: taken.status });
+	};
+
+	/**
+	 * Mac への引き継ぎで席を閉じる。会話を Manager に預けて貸し出しを返してから返事を書き、
+	 * 預けられたときだけ返事に `hs open <番号>` を付ける。
+	 */
+	const handOff = async (
+		seat: Seat,
+		reply: { body: string; files: Attachment[] },
+	) => {
+		const threadId = seat.threadId;
+		const number = deps.seats.numberOf(threadId);
+		const title = (await titleOf(threadId)) ?? "仕事フォーラムの投稿";
+		const leased = seat.lease !== null;
+		const released = await closeSeat(seat);
+		const lent = released && number !== null;
+		// Mac が開いて返すまでを見張れるよう、投稿の席を貸し出し中として残す
+		if (lent) await seats.set(lentSeat(seat, number, seat.lease));
+		const lead = lent
+			? `${reply.body}\n\n${handoffOpenLine(number)}`
+			: leased
+				? `${reply.body}\n\n${HANDOFF_UNSAVED_NOTE}`
+				: reply.body;
+		await postWithApproval(threadId, lead, [], reply.files);
+		await setStatus(threadId, "引き継ぎ", seat);
+		await deps.remember(
+			`仕事フォーラムの「${title}」を Mac に引き継いだ`,
+			partnerOf(threadId),
+		);
+		await record(threadId, "handoff", [], title);
+		const chosen = deps.seats.modelOf(threadId);
+		if (seat.modelChange && chosen !== null && chosen !== seat.model) {
+			await announceModel(threadId, seat.modelChange.by, seat.model, chosen);
+		}
+		log.info("seat done", {
+			thread_id: threadId,
+			status: "引き継ぎ",
+			lent: lent ? number : null,
+		});
+	};
+
+	/**
+	 * Mac に返してほしいと頼まれた席を、手が止まったところで渡す。会話を預けて貸し出しを返し、席を閉じる。
+	 * 預けられなければ止めた席として残し、次の返事で起こす。
+	 */
+	const lendToMac = async (seat: Seat) => {
+		const threadId = seat.threadId;
+		const number = deps.seats.numberOf(threadId);
+		if (number === null || seat.standup) return;
+		const generation = seat.lease;
+		if (seat.status !== "sleeping") {
+			const stopped = await deps.orca.stopSeat(seat);
+			if (!stopped.ok) {
+				log.error("seat lend stop failed", {
+					thread_id: threadId,
+					reason: stopped.error.reason,
+				});
+				return;
+			}
+		}
+		const released = await releaseSession(seat);
+		if (generation !== null && !released.released) {
+			await seats.set({
+				...released.seat,
+				status: "sleeping",
+				terminal: null,
+				questionId: null,
+				expectStop: false,
+				background: false,
+				releaseRequested: null,
+			});
+			dequeue();
+			return;
+		}
+		if (seat.path) {
+			const removed = await deps.orca.removeWorktree(seat.path);
+			if (!removed.ok) {
+				log.error("seat worktree remove failed", {
+					thread_id: threadId,
+					reason: removed.error.reason,
+				});
+			}
+		}
+		await seats.set(lentSeat(released.seat, number, generation, true));
+		dequeue();
+		await postTakeback(threadId, lentText(number));
+		await setStatus(threadId, "引き継ぎ");
+		log.info("seat lent to mac", {
+			thread_id: threadId,
+			number,
+			requested_by: seat.releaseRequested,
+		});
+	};
+
+	/** ターンの終わりに、Mac に頼まれていれば渡す。 */
+	const lendIfRequested = async (threadId: string) => {
+		const seat = seats.get(threadId);
+		if (seat?.releaseRequested == null) return;
+		if (seat.status === "working" || seat.status === "queued") return;
+		await lendToMac(seat);
+	};
+
+	/**
+	 * Mac から投稿の会話が戻った（takeback なら持ち主が取り戻した）。溜めた書き込みがあれば席に渡して起こす。
+	 * 何も溜まっていなければ席を忘れ、次の書き込みで前の会話のまま続ける。
+	 */
+	const returnFromMac = async (
+		seat: Seat,
+		takeback: { pushedAt: Date | null } | null,
+	) => {
+		const threadId = seat.threadId;
+		const held = seat.pending;
+		await clearLendButtons(seat);
+		if (takeback === null && held.length === 0) {
+			await seats.delete(threadId);
+			await postSystem(threadId, MAC_RETURNED_TEXT);
+			await setStatus(threadId, "決めてほしい", { ...seat, lend: null });
+			log.info("mac returned", { thread_id: threadId });
+			return;
+		}
+		if (takeback === null)
+			await postSystem(threadId, MAC_RETURNED_WITH_HELD_TEXT);
+		const words = [
+			takeback ? takebackNote(takeback.pushedAt) : RETURNED_NOTE,
+			...held,
+		];
+		const back: Seat = {
+			...seat,
+			lend: null,
+			releaseRequested: null,
+			takeback,
+			pending: [],
+			continuation: null,
+		};
+		log.info(takeback ? "seat taken back" : "mac returned", {
+			thread_id: threadId,
+			held: held.length,
+		});
+		if (back.path) {
+			// Mac が借りていると分かって起こせなかった席は worktree が残っているので、そのまま起こす
+			const woke: Seat = {
+				...back,
+				status: "sleeping",
+				pending: [words.join("\n\n---\n\n")],
+			};
+			await makeRoom(threadId);
+			if (alive().length >= deps.seatLimit) {
+				await seats.set({ ...woke, status: "queued", queuedAt: now() });
+				await show(threadId, "受付");
+				await sendTo(threadId, QUEUED_TEXT);
+				return;
+			}
+			await launch(woke);
+			return;
+		}
+		await openSeat(
+			{ ...back, status: "queued", continuation: words },
+			await historyText(threadId),
+		);
+	};
+
+	/** 貸し出し中の投稿の meta を読み、Mac が借りた・返したかを見る。 */
+	const watchLend = async (threadId: string) => {
+		const hishaku = deps.hishaku;
+		const seat = seats.get(threadId);
+		if (!hishaku || seat?.status !== "lent" || seat.lend === null) return;
+		const meta = await hishaku.meta(seat.lend.number);
+		if (!meta.ok) {
+			log.warn("hishaku meta failed", {
+				thread_id: threadId,
+				number: seat.lend.number,
+				reason: meta.error.reason,
+			});
+			return;
+		}
+		if (macHolds(meta.value)) {
+			if (seat.lend.mac) return;
+			await seats.set({ ...seat, lend: { ...seat.lend, mac: true } });
+			await postSystem(threadId, macResumedText(now()));
+			return;
+		}
+		// 見回りの合間に借りて返していても、世代が進んでいれば戻ったと分かる
+		const returned =
+			seat.lend.mac ||
+			(seat.lend.generation !== null &&
+				meta.value.generation > seat.lend.generation);
+		if (returned) await returnFromMac(seat, null);
+	};
+
+	/** 取り戻すのボタン。確かめてから、Mac の貸し出しを奪って席を前の会話のまま起こす。 */
+	const lendPressed = async (
+		threadId: string,
+		p: ButtonPressEvent["payload"],
+		press: LendPress,
+	) => {
+		const seat = seats.get(threadId);
+		const settleConfirm = async (note: string | null) => {
+			const current = await deps.system.getMessage(threadId, p.message_id);
+			const edited = current.ok
+				? await deps.system.editMessage(
+						threadId,
+						p.message_id,
+						note === null
+							? current.value.content
+							: `${current.value.content}\n\n${note}`,
+					)
+				: current;
+			if (!edited.ok) {
+				log.warn("takeback confirm settle failed", {
+					thread_id: threadId,
+					error: edited.error.type,
+				});
+			}
+		};
+		if (!deps.hishaku || seat?.status !== "lent" || seat.lend === null) {
+			log.info("stale lend button ignored", {
+				thread_id: threadId,
+				message_id: p.message_id,
+			});
+			if (press !== "takeback") await settleConfirm(null);
+			return;
+		}
+		// 押された確認は settleConfirm が外すので、残りのボタンから除く
+		const rest: Seat = {
+			...seat,
+			lend: {
+				...seat.lend,
+				confirms: seat.lend.confirms.filter((id) => id !== p.message_id),
+			},
+		};
+		if (press === "cancel") {
+			await settleConfirm(TAKEBACK_CANCELLED_TEXT);
+			// 貸し出しは続くので「取り戻す」は残し、確認だけをすべて外す
+			await clearButtons(
+				threadId,
+				seat.lend.confirms.filter((id) => id !== p.message_id),
+			);
+			await seats.set({ ...seat, lend: { ...seat.lend, confirms: [] } });
+			return;
+		}
+		const meta = await deps.hishaku.meta(seat.lend.number);
+		if (meta.ok && !macHolds(meta.value)) {
+			// Mac はもう返している。奪わずに戻す
+			if (press === "confirm") await settleConfirm(null);
+			await returnFromMac(rest, null);
+			return;
+		}
+		const pushedAt =
+			(meta.ok ? meta.value.pushedAt : null) ?? seat.lend.savedAt;
+		if (press === "takeback") {
+			await rememberButtons(
+				threadId,
+				"confirms",
+				await postSystem(
+					threadId,
+					takebackConfirmText(seat.lend.number, pushedAt),
+					CONFIRM_BUTTONS,
+				),
+			);
+			return;
+		}
+		await settleConfirm(null);
+		await returnFromMac(rest, { pushedAt });
 	};
 
 	/** Dispatch を付けずに送られたメッセージは、送り手の端末か Dispatch から席を引く。 */
@@ -1299,7 +2096,6 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		if (reply.body === "" && reply.files.length === 0) return;
 		if (reply.text !== "") {
 			await seats.set({ ...seat, lastStatus: reply.text });
-			await refreshPanel(seat.threadId, true);
 		}
 		const sent = await sendTo(seat.threadId, reply.body, reply.files);
 		if (!sent.ok) {
@@ -1313,7 +2109,12 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	/** 持ち主の頼みで席の Claude を止め、同じ会話のまま起こし直す。コネクタの認証を足したあとなどに使う。 */
 	const restart = async (threadId: string): Promise<boolean> => {
 		const seat = seats.get(threadId);
-		if (seat === null || seat.path === null || seat.status === "queued")
+		if (
+			seat === null ||
+			seat.path === null ||
+			seat.status === "queued" ||
+			seat.status === "lent"
+		)
 			return false;
 		if (seat.status !== "sleeping") {
 			const stopped = await deps.orca.stopSeat(seat);
@@ -1327,9 +2128,11 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			}
 		}
 		const asked = seat.status === "asking" ? seat.question : null;
+		// 起こし直す前に会話を預けて返す。借りたままだと、同じ番号を借り直せない
+		const released = await releaseSession(seat);
 		await sendTo(threadId, RESTARTING_TEXT);
 		await launch({
-			...seat,
+			...released.seat,
 			status: "sleeping",
 			terminal: null,
 			questionId: null,
@@ -1377,6 +2180,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			stop_reason: msg.stopReason,
 			blocked: blocked.length,
 		});
+		await lendIfRequested(threadId);
 	};
 
 	const startFromRequest = async (p: Payload, partner: PartnerId) => {
@@ -1542,7 +2346,11 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		});
 		await queue.run(threadId, async () => {
 			if (seats.get(threadId) !== null) return;
-			await openSeat(newSeat(threadId), issuePrompt({ now: now(), issue }));
+			await openSeat(
+				newSeat(threadId),
+				issuePrompt({ now: now(), issue }),
+				issue.repo,
+			);
 		});
 		return ok({ threadId });
 	};
@@ -1797,8 +2605,10 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			content: p.content,
 		});
 		if (isRestartRequest(p.content) && (await restart(threadId))) return;
-		const request = deps.approvals.get(threadId);
 		const from = { channelId: threadId, messageId: p.message_id };
+		if (isCloseRequest(p.content) && (await closeByWord(threadId, from)))
+			return;
+		const request = deps.approvals.get(threadId);
 		if (request === null) {
 			await deliver(threadId, reply, null, from);
 			return;
@@ -1842,8 +2652,9 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			});
 			return;
 		}
+		const released = await releaseSession(seat);
 		await seats.set({
-			...seat,
+			...released.seat,
 			status: "sleeping",
 			terminal: null,
 			questionId: null,
@@ -1852,6 +2663,35 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		});
 		log.info("seat sleeping", { thread_id: threadId });
 		dequeue();
+	};
+
+	/**
+	 * 完了したあと残していた席を閉じる。止めた席にはせず、完了したときに閉じるのと同じく worktree ごと消す。
+	 * モデルの切り替えなどで Claude だけ止まった席も、同じく閉じる。
+	 */
+	const closeLingering = async (threadId: string) => {
+		const seat = seats.get(threadId);
+		if (
+			seat?.doneAt == null ||
+			(seat.status !== "waiting" && seat.status !== "sleeping")
+		)
+			return;
+		log.info("lingering seat expired", { thread_id: threadId });
+		await closeDone(seat);
+	};
+
+	/** 残している席に閉じる一言が書かれたら、席の Claude に渡さずに閉じ、その書き込みに完了の絵文字を付ける。 */
+	const closeByWord = async (threadId: string, from: MessageRef) => {
+		const seat = seats.get(threadId);
+		if (seat?.doneAt == null || seat.status !== "waiting") return false;
+		const bot = botOf(threadId);
+		if (seat.request && seat.reaction) {
+			await react(bot, seat.request, seat.reaction, null);
+		}
+		await react(bot, from, null, REACTION_OF.完了);
+		log.info("lingering seat closed by owner", { thread_id: threadId });
+		await closeDone(seat);
+		return true;
 	};
 
 	return {
@@ -1902,7 +2742,9 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			const answer = approvalAnswerOf(p.custom_id);
 			const dismissing = isDismissButton(p.custom_id);
 			const closingIssue = isCloseIssueButton(p.custom_id);
-			if (answer === null && !dismissing && !closingIssue) return;
+			const lendPress = lendPressOf(p.custom_id);
+			if (answer === null && !dismissing && !closingIssue && lendPress === null)
+				return;
 			// 持ち主以外が押しても何も起きない
 			if (p.user.is_bot || !deps.ownerUserIds.has(p.user.id)) {
 				log.debug("button from non-owner ignored", {
@@ -1914,6 +2756,10 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			const threadId = p.channel_id;
 			if (closingIssue) {
 				await queue.run(threadId, () => closeIssuePressed(threadId, p));
+				return;
+			}
+			if (lendPress !== null) {
+				await queue.run(threadId, () => lendPressed(threadId, p, lendPress));
 				return;
 			}
 			if (answer === null) {
@@ -1970,7 +2816,8 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			}
 			await queue.run(seat.threadId, async () => {
 				const current = seats.get(seat.threadId);
-				if (current === null) return;
+				// Mac に貸している間に、止めた席の古い Dispatch から届いたもの
+				if (current === null || current.status === "lent") return;
 				if (msg.type === "question") await onQuestion(current, msg);
 				else if (msg.type === "worker_done") await onDone(current, msg);
 				else if (msg.type === "escalation") await onEscalation(current, msg);
@@ -1994,14 +2841,30 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 					(s) =>
 						(s.status === "asking" || s.status === "waiting") &&
 						!s.standup &&
+						s.doneAt === null &&
 						s.waitingSince !== null &&
 						s.waitingSince.getTime() <= limit,
 				);
-			await Promise.all(
-				idle.map((s) => queue.run(s.threadId, () => sleep(s.threadId))),
-			);
+			const doneLimit = now().getTime() - deps.doneLingerMs;
+			const expired = seats
+				.all()
+				.filter((s) => s.doneAt !== null && s.doneAt.getTime() <= doneLimit);
+			await Promise.all([
+				...idle.map((s) => queue.run(s.threadId, () => sleep(s.threadId))),
+				...expired.map((s) =>
+					queue.run(s.threadId, () => closeLingering(s.threadId)),
+				),
+			]);
 		},
 		reconcile: async () => {
+			await statusTagsOf();
+			// 前の受付が制限で待っていた件名を付ける
+			for (const threadId of deps.seats.pendingTitles()) {
+				void queue.run(threadId, async () => {
+					const ch = await deps.discord.getChannel(threadId);
+					await applyTitle(threadId, ch.ok ? ch.value.name : null);
+				});
+			}
 			const [live, residue] = await Promise.all([
 				deps.orca.liveTerminals(),
 				deps.orca.residue(),
@@ -2014,6 +2877,8 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				return;
 			}
 			const before = seats.all();
+			// 閉じた席の worktree は residue にまだ載っているので、残りとして消し直さない
+			const closed = new Set<string>();
 			for (const seat of before) {
 				if (!ALIVE.has(seat.status)) continue;
 				if (seat.terminal && live.value.has(seat.terminal)) continue;
@@ -2026,8 +2891,16 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 					await seats.delete(seat.threadId);
 					continue;
 				}
+				// 完了して残していた席は、Claude がいなければ残す意味がないので閉じる
+				if (seat.doneAt !== null) {
+					await closeDone({ ...seat, terminal: null });
+					closed.add(seat.path);
+					continue;
+				}
+				// agent は止まっているので、手元に残った会話を預けて貸し出しを返す
+				const released = await releaseSession(seat);
 				await seats.set({
-					...seat,
+					...released.seat,
 					status: "sleeping",
 					terminal: null,
 					questionId: null,
@@ -2050,21 +2923,18 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				log.info("stray seat terminal closed", { terminal: t.handle });
 			}
 			for (const path of residue.value.worktrees) {
-				if (known.has(path)) continue;
+				if (known.has(path) || closed.has(path)) continue;
 				const r = await deps.orca.removeWorktree(path);
 				log.info("stray seat worktree removed", { path, ok: r.ok });
 			}
 			for (const seat of seats.all()) syncTyping(seat.threadId, seat);
 			dequeue();
 		},
-		refreshPanels: async () => {
-			const working = seats
-				.all()
-				.filter((s) => s.status === "working" && !s.standup);
+		watchLends: async () => {
+			if (!deps.hishaku) return;
+			const lent = seats.all().filter((s) => s.status === "lent");
 			await Promise.all(
-				working.map((s) =>
-					queue.run(s.threadId, () => refreshPanel(s.threadId, false)),
-				),
+				lent.map((s) => queue.run(s.threadId, () => watchLend(s.threadId))),
 			);
 		},
 		summary: () => {
@@ -2076,6 +2946,53 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			) as Record<PartnerId, number>;
 			for (const s of working) partners[partnerOf(s.threadId)] += 1;
 			return { working: working.length, partners };
+		},
+		renewLeases: async () => {
+			const hishaku = deps.hishaku;
+			if (!hishaku) return;
+			const leased = seats
+				.all()
+				.filter((s) => s.lease !== null && ALIVE.has(s.status));
+			await Promise.all(
+				leased.map((s) =>
+					queue.run(s.threadId, async () => {
+						const seat = seats.get(s.threadId);
+						const number = deps.seats.numberOf(s.threadId);
+						if (seat?.lease == null || number === null) return;
+						const r = await hishaku.renew({ number, generation: seat.lease });
+						if (r.ok) {
+							const by = r.value.releaseRequestedBy;
+							if (by === null || by === hishaku.holder || seat.standup) return;
+							if (seat.releaseRequested !== by) {
+								log.info("mac asked for the session", {
+									thread_id: seat.threadId,
+									number,
+									holder: by,
+								});
+								await seats.set({ ...seat, releaseRequested: by });
+							}
+							// 作業中ならターンの終わりに渡す
+							await lendIfRequested(seat.threadId);
+							return;
+						}
+						if (r.error.type === "HishakuFailed") {
+							// 次の回で延ばせれば貸し出しは切れない
+							log.warn("hishaku renew failed", {
+								thread_id: seat.threadId,
+								number,
+								reason: r.error.reason,
+							});
+							return;
+						}
+						log.warn("hishaku lease was taken", {
+							thread_id: seat.threadId,
+							number,
+						});
+						await seats.set({ ...seat, lease: null });
+						if (!seat.standup) await sendTo(seat.threadId, LEASE_STOLEN_TEXT);
+					}),
+				),
+			);
 		},
 	};
 };

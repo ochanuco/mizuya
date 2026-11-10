@@ -18,3 +18,49 @@ timeout = 30
 type = "command"
 command = "/usr/local/bin/node /opt/mizuya-repo-map/hook.ts"
 timeout = 30
+
+# Bash の出力を縮めるよう、rtk にコマンドを書き換えさせる
+[[hooks.PreToolUse]]
+matcher = "Bash"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "/usr/local/bin/rtk hook codex"
+timeout = 30
+
+# TokenEconomizer の hook。allow_managed_hooks_only の下では plugin の hook が動かないので、plugin の codex-hooks.json と同じものをここで登録する。
+# plugin は start.sh が入れ、skill（$tokeneconomizer:status など）だけがそちらから来る。
+[[hooks.SessionStart]]
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "/opt/tokeneconomizer/plugin/scripts/te-hook --host codex"
+timeout = 15
+
+[[hooks.UserPromptSubmit]]
+
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "/opt/tokeneconomizer/plugin/scripts/te-hook --host codex"
+timeout = 10
+
+[[hooks.PostToolUse]]
+
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = "/opt/tokeneconomizer/plugin/scripts/te-hook --host codex"
+timeout = 60
+
+[[hooks.Stop]]
+
+[[hooks.Stop.hooks]]
+type = "command"
+command = "/opt/tokeneconomizer/plugin/scripts/te-hook --host codex"
+timeout = 10
+
+[[hooks.SessionEnd]]
+
+[[hooks.SessionEnd.hooks]]
+type = "command"
+command = "/opt/tokeneconomizer/plugin/scripts/te-hook --host codex"
+timeout = 3

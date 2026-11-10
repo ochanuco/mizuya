@@ -38,6 +38,7 @@ const envSchema = v.object({
 	SEATS_DIR: v.optional(nonEmpty),
 	SEAT_LIMIT: v.optional(positiveInt),
 	SEAT_SLEEP_AFTER_MINUTES: v.optional(positiveInt),
+	SEAT_DONE_LINGER_MINUTES: v.optional(positiveInt),
 	LOG_LEVEL: v.optional(v.picklist(["debug", "info", "warn", "error"])),
 	YUNOMI_URL: v.optional(v.pipe(v.string(), v.url())),
 	CF_ACCESS_CLIENT_ID: v.optional(nonEmpty),
@@ -68,6 +69,11 @@ const envSchema = v.object({
 	SCHEDULER_PORT: v.optional(positiveInt),
 	SCHEDULER_SYNC_INTERVAL_MINUTES: v.optional(positiveInt),
 	PATROL_SCHEDULE: v.optional(nonEmpty),
+	HISHAKU_URL: v.optional(v.pipe(v.string(), v.url())),
+	HISHAKU_ACCESS_CLIENT_ID: v.optional(nonEmpty),
+	HISHAKU_ACCESS_CLIENT_SECRET: v.optional(nonEmpty),
+	HISHAKU_HOLDER: v.optional(nonEmpty),
+	HS_BIN: v.optional(nonEmpty),
 });
 
 const SCHEDULER_KEYS = [
@@ -120,6 +126,8 @@ export type WorkingConfig = {
 	seatLimit: number;
 	/** 決めてほしいままこれだけたった席は Claude を止める。 */
 	seatSleepAfterMs: number;
+	/** 完了か見張り中で手を止めた投稿の席を、これだけ閉じずに残す。続きをすぐ書かれたら同じ Claude に渡す。 */
+	seatDoneLingerMs: number;
 	logLevel: LogLevel;
 	/** Working の記憶の口。3 つそろったときだけ yunomi-memory が使える。 */
 	memory: { url: string; clientId: string; clientSecret: string } | null;
@@ -128,6 +136,17 @@ export type WorkingConfig = {
 	chimera: { url: string; clientId: string; clientSecret: string } | null;
 	/** Akarin の席の Codex に渡す Playwright MCP。3 つそろったときだけ席から使える。 */
 	playwright: { url: string; clientId: string; clientSecret: string } | null;
+	/**
+	 * 席の agent のセッションを預ける hishaku の Manager。3 つそろったときだけ使う。
+	 * holder はこの受付の Commander の ID で、Mac の hs が貸し出しの持ち主として見る。
+	 */
+	hishaku: {
+		url: string;
+		clientId: string;
+		clientSecret: string;
+		holder: string;
+		bin: string;
+	} | null;
 	/** Mac から席の状態を受ける口。トークンがなければ待ち受けない。 */
 	macState: { token: string; port: number } | null;
 	/** yunomi の gateway に席の状態を渡す口。トークンがなければ待ち受けない。 */
@@ -261,6 +280,8 @@ export const loadConfig = (
 		seatsDir: e.SEATS_DIR ?? `${home}/work/orca/workspaces/seats`,
 		seatLimit: e.SEAT_LIMIT ?? 6,
 		seatSleepAfterMs: (e.SEAT_SLEEP_AFTER_MINUTES ?? 120) * 60_000,
+		// Anthropic のプロンプトキャッシュが残る長さ（約 1 時間）に合わせる
+		seatDoneLingerMs: (e.SEAT_DONE_LINGER_MINUTES ?? 60) * 60_000,
 		logLevel: e.LOG_LEVEL ?? "info",
 		memory:
 			e.YUNOMI_URL && e.CF_ACCESS_CLIENT_ID && e.CF_ACCESS_CLIENT_SECRET
@@ -289,6 +310,19 @@ export const loadConfig = (
 						url: e.PLAYWRIGHT_MCP_URL,
 						clientId: e.PLAYWRIGHT_ACCESS_CLIENT_ID,
 						clientSecret: e.PLAYWRIGHT_ACCESS_CLIENT_SECRET,
+					}
+				: null,
+		hishaku:
+			e.HISHAKU_URL &&
+			e.HISHAKU_ACCESS_CLIENT_ID &&
+			e.HISHAKU_ACCESS_CLIENT_SECRET
+				? {
+						url: e.HISHAKU_URL,
+						clientId: e.HISHAKU_ACCESS_CLIENT_ID,
+						clientSecret: e.HISHAKU_ACCESS_CLIENT_SECRET,
+						// コンテナのホスト名は作り直すたびに変わるので、hs の既定（ホスト名）に任せない
+						holder: e.HISHAKU_HOLDER ?? "docker01",
+						bin: e.HS_BIN ?? "hs",
 					}
 				: null,
 		macState: e.MAC_STATE_TOKEN

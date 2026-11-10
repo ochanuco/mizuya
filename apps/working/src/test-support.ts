@@ -10,13 +10,30 @@ import type {
 } from "./discord-events.ts";
 import type { ChannelInfo, DiscordApi, PostedMessage } from "./discord-rest.ts";
 import { createLedger } from "./guard/ledger.ts";
+import type {
+	Hishaku,
+	HishakuError,
+	LeaseError,
+	Prepared,
+	PrepareError,
+	Renewed,
+	SessionMeta,
+} from "./hishaku.ts";
 import {
 	err,
 	externalServiceUnavailable,
 	ok,
 	permissionDenied,
+	type Result,
 } from "./lib/core.ts";
-import type { Orca, SeatHandle, SeatMessage } from "./orca.ts";
+import type {
+	Orca,
+	OrcaError,
+	SeatHandle,
+	SeatHow,
+	SeatMessage,
+	SeatPrepare,
+} from "./orca.ts";
 
 export const memoryApprovals = (): ApprovalStore & {
 	all: Map<string, ApprovalRequest>;
@@ -57,6 +74,19 @@ export const TAGS = [
 	{ id: "tag-sol", name: "Sol" },
 	{ id: "tag-luna", name: "Luna" },
 ];
+
+/** 状態のタグに絵文字を付けたフォーラムのタグ。件名の頭の絵文字を見るテストで使う。 */
+export const EMOJI_OF: Record<string, string> = {
+	完了: "🎉",
+	決めてほしい: "🤔",
+	見張り中: "👀",
+	引き継ぎ: "👨‍💼",
+	作業中: "👷",
+};
+export const EMOJI_TAGS = TAGS.map((t) => ({
+	...t,
+	emoji: EMOJI_OF[t.name] ?? null,
+}));
 
 /** Discord REST のモック。投稿・送信・タグを手元に残す。 */
 export const fakeDiscord = () => {
@@ -200,6 +230,11 @@ export const fakeDiscord = () => {
 			if (ch) channels.set(threadId, { ...ch, appliedTagIds: tagIds });
 			return ok(undefined);
 		},
+		renameThread: vi.fn(async (threadId: string, name: string) => {
+			const ch = channels.get(threadId);
+			if (ch) channels.set(threadId, { ...ch, name });
+			return ok(undefined);
+		}),
 		createMessage: async (channelId, content) => {
 			const id = `panel${nextMessage++}`;
 			edited.set(id, { channelId, content });
@@ -236,9 +271,6 @@ export const fakeDiscord = () => {
 	};
 	const reactionsOn = (channelId: string, messageId: string) =>
 		reactions.get(`${channelId}/${messageId}`) ?? [];
-	const panelIn = (channelId: string) =>
-		[...edited.values()].filter((m) => m.channelId === channelId).at(-1)
-			?.content ?? null;
 	const addThread = (id: string, name: string) =>
 		channels.set(id, {
 			id,
@@ -260,7 +292,6 @@ export const fakeDiscord = () => {
 		refuseSendTo,
 		typing,
 		reactionsOn,
-		panelIn,
 		edited,
 		addThread,
 		tagsOf,
@@ -285,24 +316,53 @@ export const fakeOrca = (seatsDir = "/seats") => {
 		live.add(h.terminal);
 		return h;
 	};
+	/** 本物と同じく agent を起こす前に prepare を呼び、決まった起こし方（how）と spec を残す。 */
+	const launch = async (
+		op: string,
+		input: { spec: string; prepare?: SeatPrepare },
+		path: string,
+		how: SeatHow,
+	): Promise<Result<void, OrcaError>> => {
+		const prepared = input.prepare ? await input.prepare(path) : null;
+		if (prepared && !prepared.ok) {
+			calls.push({ op, args: { ...input, how: null } });
+			return err({
+				type: "SeatLeaseHeld",
+				command: "hs prepare",
+				reason: prepared.error.holder,
+			});
+		}
+		calls.push({
+			op,
+			args: {
+				...input,
+				how: prepared?.value.how ?? how,
+				spec: prepared?.value.spec ?? input.spec,
+			},
+		});
+		return ok(undefined);
+	};
 	const orca: Orca = {
 		waitReady: vi.fn(async () => ok(undefined)),
 		prepare: vi.fn(async () => ok({ runId: "run1", reception: "rx" })),
 		startSeat: vi.fn(async (input) => {
-			calls.push({ op: "startSeat", args: input });
 			const path = `${seatsDir}/${input.name}`;
+			const launched = await launch("startSeat", input, path, "start");
+			if (!launched.ok) return launched;
 			worktrees.add(path);
 			return ok(handle(path));
 		}),
 		resumeSeat: vi.fn(async (input) => {
-			calls.push({ op: "resumeSeat", args: input });
 			if (!worktrees.has(input.path)) {
+				calls.push({ op: "resumeSeat", args: input });
 				return err({
 					type: "SeatWorktreeMissing" as const,
 					command: "resume",
 					reason: input.path,
 				});
 			}
+			const launched = await launch("resumeSeat", input, input.path, "resume");
+			if (!launched.ok) return launched;
 			return ok(handle(input.path));
 		}),
 		switchModel: vi.fn(async (input) => {
@@ -430,3 +490,65 @@ export const press = (
 			user: { id: userId, display_name: "ちゃぬ", is_bot: false },
 		},
 	}) as ButtonPressEvent;
+
+/**
+ * hishaku のモック。番号の払い出しと hs の呼び出しを呼ばれた順に残す。
+ * 返す結果はテストが書き換える。既定は番号 1234、正本の記録なし（Claude は新しい ID で始める）。
+ */
+export const fakeHishaku = () => {
+	const calls: { op: string; args: unknown }[] = [];
+	let generation = 0;
+	const behavior = {
+		create: (): Result<{ number: number }, HishakuError> =>
+			ok({ number: 1234 }),
+		prepare: (): Result<Prepared, PrepareError> =>
+			ok({
+				agent: "claude",
+				sessionId: "11111111-2222-4333-8444-555555555555",
+				resume: false,
+				generation: ++generation,
+			}),
+		push: (): Result<void, LeaseError> => ok(undefined),
+		renew: (): Result<Renewed, LeaseError> => ok({ releaseRequestedBy: null }),
+		meta: (): Result<SessionMeta, HishakuError> =>
+			ok({
+				holder: null,
+				generation: generation,
+				leaseExpiresAt: null,
+				pushedAt: null,
+				repo: null,
+				branch: null,
+			}),
+		update: (): Result<void, HishakuError> => ok(undefined),
+	};
+	const hishaku: Hishaku = {
+		holder: "box01",
+		createSession: vi.fn(async (input) => {
+			calls.push({ op: "createSession", args: input });
+			return behavior.create();
+		}),
+		prepare: vi.fn(async (input) => {
+			calls.push({ op: "prepare", args: input });
+			return behavior.prepare();
+		}),
+		push: vi.fn(async (input) => {
+			calls.push({ op: "push", args: input });
+			return behavior.push();
+		}),
+		renew: vi.fn(async (input) => {
+			calls.push({ op: "renew", args: input });
+			return behavior.renew();
+		}),
+		meta: vi.fn(async (number: number) => {
+			calls.push({ op: "meta", args: number });
+			return behavior.meta();
+		}),
+		update: vi.fn(async (number: number, input) => {
+			calls.push({ op: "update", args: { number, ...input } });
+			return behavior.update();
+		}),
+	};
+	const opsOf = (op: string) =>
+		calls.filter((c) => c.op === op).map((c) => c.args);
+	return { hishaku, calls, behavior, opsOf };
+};

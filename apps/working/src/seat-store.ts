@@ -2,22 +2,40 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import * as v from "valibot";
 import { PARTNER_IDS, type PartnerId } from "./lib/core.ts";
-import { WORK_STATUSES, type WorkStatus } from "./work-status.ts";
 
 /**
  * 席の状態。
  * - queued: 席の数が上限で、空くのを待っている
  * - working: 席の Claude が作業している
  * - asking: 席の Claude が ask で聞いて、答えを待っている
- * - waiting: 席の Claude がターンを終え、持ち主の返事を待っている
+ * - waiting: 席の Claude がターンを終え、持ち主の返事を待っている。完了したあとしばらく残している席もここ（doneAt がある）
  * - sleeping: 決めてほしいまま時間がたったので Claude を止めた。worktree と会話は残っている
+ * - lent: 会話を Manager に預けて Mac に貸している。投稿への書き込みは pending に溜め、Mac が返したら席に渡す
  */
 export type SeatStatus =
 	| "queued"
 	| "working"
 	| "asking"
 	| "waiting"
-	| "sleeping";
+	| "sleeping"
+	| "lent";
+
+/** Mac への貸し出し。 */
+export type Lend = {
+	number: number;
+	/** 受付が記録を預けて返した時刻。Manager が Mac の置いた時刻を知らせなければ、これを見せる。 */
+	savedAt: Date | null;
+	/** 返したときの世代。見回りの合間に Mac が借りて返しても、世代が進んでいれば戻ったと分かる。 */
+	generation: number | null;
+	/** Mac が借りているのを見た。 */
+	mac: boolean;
+	/** Mac に頼まれて渡した。引き継ぎで預けたのと違い、Mac はすぐに借りる。 */
+	requested: boolean;
+	/** この貸し出しで出した「取り戻す」のボタン付きのメッセージ。貸し出しが終わったらボタンを外す。 */
+	buttons: string[];
+	/** 取り戻す確認のボタン付きのメッセージ。確定かやめるで外す。 */
+	confirms: string[];
+};
 
 export type Seat = {
 	threadId: string;
@@ -37,6 +55,13 @@ export type Seat = {
 	expectStop: boolean;
 	/** 決めてほしいになった時刻。止めるまでの時間を数える。 */
 	waitingSince: Date | null;
+	/**
+	 * 完了か見張り中で手を止めた時刻。閉じずに残している間だけある。
+	 * 続きを書かれたら同じ Claude に渡してプロンプトキャッシュを使い、時間がたつか席が足りなくなったら閉じる。
+	 */
+	doneAt: Date | null;
+	/** 残している席が終えたときの状態。閉じるときに件名の絵文字をこれにする。 */
+	doneStatus: DoneStatus | null;
 	/** 席ができる前・起こす前に届いた、席に渡す言葉。 */
 	pending: string[];
 	queuedAt: Date | null;
@@ -50,24 +75,29 @@ export type Seat = {
 	request: MessageRef | null;
 	/** request に bot が付けているリアクション。 */
 	reaction: string | null;
-	/** 投稿の先頭近くに置いた状態の欄。 */
-	panelId: string | null;
-	/** 状態の欄に最後に書いた本文。同じ内容なら書き換えない。 */
-	panelText: string | null;
-	panelAt: Date | null;
-	/** 投稿に出している状態と、その状態になった時刻。経過時間を数える。 */
-	label: SeatLabel | null;
-	labelSince: Date | null;
 	/** 席の CLI をいま動かしているモデル。null は CLI の既定のモデル。 */
 	model: string | null;
 	/** 作業中に頼まれたモデルの切り替え。手が止まったら切り替え、投稿に頼んだ人の名前で残す。 */
 	modelChange: { by: string } | null;
+	/** hishaku で借りているセッションの世代。借りていなければ null。席を閉じる・止めるときに記録を預けて返す。 */
+	lease: number | null;
+	/**
+	 * 前の会話のまま起こせたときに pending の代わりに渡す言葉。
+	 * pending はやりとりを読ませる依頼文で、Manager に届かず前の会話が無いときの代わりになる。
+	 */
+	continuation: string[] | null;
+	/** Mac への貸し出し。lent の間だけある。 */
+	lend: Lend | null;
+	/** Mac が返してほしいと頼んできた（その持ち主）。ターンの終わりを待って渡す。 */
+	releaseRequested: string | null;
+	/** 持ち主が Mac から取り戻した。次の起動で貸し出しを奪い、Mac が最後に置いた時刻を添えて知らせる。 */
+	takeback: { pushedAt: Date | null } | null;
 };
 
-export type MessageRef = { channelId: string; messageId: string };
+/** 席を残したまま終えられる状態。 */
+export type DoneStatus = "完了" | "見張り中";
 
-/** 投稿に出す状態。受付は席ができて Claude が動き出すまで。 */
-export type SeatLabel = "受付" | WorkStatus;
+export type MessageRef = { channelId: string; messageId: string };
 
 const dateSchema = v.pipe(
 	v.nullable(v.number()),
@@ -75,7 +105,14 @@ const dateSchema = v.pipe(
 );
 
 const seatSchema = v.object({
-	status: v.picklist(["queued", "working", "asking", "waiting", "sleeping"]),
+	status: v.picklist([
+		"queued",
+		"working",
+		"asking",
+		"waiting",
+		"sleeping",
+		"lent",
+	]),
 	path: v.nullable(v.string()),
 	terminal: v.nullable(v.string()),
 	dispatch_id: v.nullable(v.string()),
@@ -84,6 +121,8 @@ const seatSchema = v.object({
 	question: v.nullable(v.string()),
 	expect_stop: v.boolean(),
 	waiting_since: dateSchema,
+	done_at: v.optional(dateSchema, null),
+	done_status: v.optional(v.nullable(v.picklist(["完了", "見張り中"])), null),
 	pending: v.array(v.string()),
 	queued_at: dateSchema,
 	standup: v.boolean(),
@@ -94,13 +133,26 @@ const seatSchema = v.object({
 		null,
 	),
 	reaction: v.optional(v.nullable(v.string()), null),
-	panel_id: v.optional(v.nullable(v.string()), null),
-	panel_text: v.optional(v.nullable(v.string()), null),
-	panel_at: v.optional(dateSchema, null),
-	label: v.optional(v.nullable(v.picklist(["受付", ...WORK_STATUSES])), null),
-	label_since: v.optional(dateSchema, null),
 	model: v.optional(v.nullable(v.string()), null),
 	model_change: v.optional(v.nullable(v.object({ by: v.string() })), null),
+	lease: v.optional(v.nullable(v.number()), null),
+	continuation: v.optional(v.nullable(v.array(v.string())), null),
+	lend: v.optional(
+		v.nullable(
+			v.object({
+				number: v.number(),
+				saved_at: dateSchema,
+				generation: v.nullable(v.number()),
+				mac: v.boolean(),
+				requested: v.boolean(),
+				buttons: v.optional(v.array(v.string()), []),
+				confirms: v.optional(v.array(v.string()), []),
+			}),
+		),
+		null,
+	),
+	release_requested: v.optional(v.nullable(v.string()), null),
+	takeback: v.optional(v.nullable(v.object({ pushed_at: dateSchema })), null),
 });
 
 const fileSchema = v.object({
@@ -113,6 +165,8 @@ const fileSchema = v.object({
 		v.record(v.string(), v.object({ repo: v.string(), number: v.number() })),
 		{},
 	),
+	numbers: v.optional(v.record(v.string(), v.number()), {}),
+	titles: v.optional(v.record(v.string(), v.string()), {}),
 });
 
 /** 投稿の元になった GitHub の issue。 */
@@ -135,6 +189,17 @@ export type SeatStore = {
 	/** 投稿の元になった issue。席を閉じたあとも残し、完了の後に issue を閉じるボタンが引く。 */
 	issueOf: (threadId: string) => IssueRef | null;
 	setIssue: (threadId: string, issue: IssueRef) => Promise<void>;
+	/** 投稿の hishaku の番号。席を閉じたあとも残し、同じ投稿でまた席を開くときに同じセッションを続ける。 */
+	numberOf: (threadId: string) => number | null;
+	setNumber: (threadId: string, number: number) => Promise<void>;
+	/**
+	 * 投稿にまだ付けられていない、付けたい件名。名前の変更の制限で待つ間も受付を作り直す間も残し、最後に覚えたものだけを付ける。
+	 * null で消す。
+	 */
+	pendingTitleOf: (threadId: string) => string | null;
+	setPendingTitle: (threadId: string, name: string | null) => Promise<void>;
+	/** 付けたい件名が残っている投稿。 */
+	pendingTitles: () => string[];
 };
 
 export const newSeat = (threadId: string, standup = false): Seat => ({
@@ -148,6 +213,8 @@ export const newSeat = (threadId: string, standup = false): Seat => ({
 	question: null,
 	expectStop: false,
 	waitingSince: null,
+	doneAt: null,
+	doneStatus: null,
 	pending: [],
 	queuedAt: null,
 	standup,
@@ -155,13 +222,13 @@ export const newSeat = (threadId: string, standup = false): Seat => ({
 	lastStatus: null,
 	request: null,
 	reaction: null,
-	panelId: null,
-	panelText: null,
-	panelAt: null,
-	label: null,
-	labelSince: null,
 	model: null,
 	modelChange: null,
+	lease: null,
+	continuation: null,
+	lend: null,
+	releaseRequested: null,
+	takeback: null,
 });
 
 /**
@@ -175,6 +242,8 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 	const partners = new Map<string, PartnerId>();
 	const models = new Map<string, string>();
 	const issues = new Map<string, IssueRef>();
+	const numbers = new Map<string, number>();
+	const titles = new Map<string, string>();
 	let orca: { runId: string | null; reception: string | null } = {
 		runId: null,
 		reception: null,
@@ -202,6 +271,12 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 		for (const [id, i] of Object.entries(parsed.output.issues)) {
 			issues.set(id, i);
 		}
+		for (const [id, n] of Object.entries(parsed.output.numbers)) {
+			numbers.set(id, n);
+		}
+		for (const [id, t] of Object.entries(parsed.output.titles)) {
+			titles.set(id, t);
+		}
 		for (const [id, s] of Object.entries(parsed.output.seats)) {
 			seats.set(id, {
 				threadId: id,
@@ -214,6 +289,8 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 				question: s.question,
 				expectStop: s.expect_stop,
 				waitingSince: s.waiting_since,
+				doneAt: s.done_at,
+				doneStatus: s.done_status,
 				pending: s.pending,
 				queuedAt: s.queued_at,
 				standup: s.standup,
@@ -226,13 +303,23 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 						}
 					: null,
 				reaction: s.reaction,
-				panelId: s.panel_id,
-				panelText: s.panel_text,
-				panelAt: s.panel_at,
-				label: s.label,
-				labelSince: s.label_since,
 				model: s.model,
 				modelChange: s.model_change,
+				lease: s.lease,
+				continuation: s.continuation,
+				lend: s.lend
+					? {
+							number: s.lend.number,
+							savedAt: s.lend.saved_at,
+							generation: s.lend.generation,
+							mac: s.lend.mac,
+							requested: s.lend.requested,
+							buttons: s.lend.buttons,
+							confirms: s.lend.confirms,
+						}
+					: null,
+				releaseRequested: s.release_requested,
+				takeback: s.takeback ? { pushedAt: s.takeback.pushed_at } : null,
 			});
 		}
 	}
@@ -255,6 +342,8 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 						question: s.question,
 						expect_stop: s.expectStop,
 						waiting_since: s.waitingSince?.getTime() ?? null,
+						done_at: s.doneAt?.getTime() ?? null,
+						done_status: s.doneStatus,
 						pending: s.pending,
 						queued_at: s.queuedAt?.getTime() ?? null,
 						standup: s.standup,
@@ -267,19 +356,33 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 								}
 							: null,
 						reaction: s.reaction,
-						panel_id: s.panelId,
-						panel_text: s.panelText,
-						panel_at: s.panelAt?.getTime() ?? null,
-						label: s.label,
-						label_since: s.labelSince?.getTime() ?? null,
 						model: s.model,
 						model_change: s.modelChange,
+						lease: s.lease,
+						continuation: s.continuation,
+						lend: s.lend
+							? {
+									number: s.lend.number,
+									saved_at: s.lend.savedAt?.getTime() ?? null,
+									generation: s.lend.generation,
+									mac: s.lend.mac,
+									requested: s.lend.requested,
+									buttons: s.lend.buttons,
+									confirms: s.lend.confirms,
+								}
+							: null,
+						release_requested: s.releaseRequested,
+						takeback: s.takeback
+							? { pushed_at: s.takeback.pushedAt?.getTime() ?? null }
+							: null,
 					},
 				]),
 			),
 			partners: Object.fromEntries(partners),
 			models: Object.fromEntries(models),
 			issues: Object.fromEntries(issues),
+			numbers: Object.fromEntries(numbers),
+			titles: Object.fromEntries(titles),
 		};
 		// 書きかけで落ちても前の内容が残るよう、別名に書いてから置き換える
 		writing = writing.then(async () => {
@@ -332,5 +435,19 @@ export const openSeatStore = async (dir: string): Promise<SeatStore> => {
 			issues.set(id, issue);
 			return flush();
 		},
+		numberOf: (id) => numbers.get(id) ?? null,
+		setNumber: (id, number) => {
+			if (numbers.get(id) === number) return Promise.resolve();
+			numbers.set(id, number);
+			return flush();
+		},
+		pendingTitleOf: (id) => titles.get(id) ?? null,
+		setPendingTitle: (id, name) => {
+			if ((titles.get(id) ?? null) === name) return Promise.resolve();
+			if (name === null) titles.delete(id);
+			else titles.set(id, name);
+			return flush();
+		},
+		pendingTitles: () => [...titles.keys()],
 	};
 };

@@ -21,19 +21,23 @@ import {
 	backgroundRunning,
 	createIntake,
 	type IntakeDeps,
+	isCloseRequest,
 	isRestartRequest,
 	seatStartFailedText,
 } from "./intake.ts";
 import type { IssueTracker } from "./issue-close.ts";
-import { ok, type PartnerId } from "./lib/core.ts";
+import { err, ok, type PartnerId } from "./lib/core.ts";
+import { externalServiceUnavailable, rateLimited } from "./lib/errors.ts";
 import { silentLogger } from "./logger.ts";
 import { openSeatStore } from "./seat-store.ts";
 import {
 	aiCommand,
 	BOT,
+	EMOJI_TAGS,
 	envelope,
 	FORUM,
 	fakeDiscord,
+	fakeHishaku,
 	fakeOrca,
 	OWNER,
 	press,
@@ -85,12 +89,17 @@ const setup = async (
 		akarin?: boolean;
 		seatReplied?: () => void;
 		issues?: IssueTracker;
+		hishaku?: ReturnType<typeof fakeHishaku>;
+		findWorkBranches?: IntakeDeps["findWorkBranches"];
+		/** 受付を作り直すときに、同じ Discord を渡す。 */
+		d?: ReturnType<typeof fakeDiscord>;
+		sys?: ReturnType<typeof fakeDiscord>;
 	} = {},
 ) => {
 	const stateDir = opts.stateDir ?? tempDir();
-	const d = fakeDiscord();
-	// mizuya の bot が書くもの（ボタンと状態の欄）は、席の bot の書き込みと分けて見る
-	const sys = fakeDiscord();
+	const d = opts.d ?? fakeDiscord();
+	// mizuya の bot が書くもの（ボタン）は、席の bot の書き込みと分けて見る
+	const sys = opts.sys ?? fakeDiscord();
 	const o = opts.orca ?? fakeOrca(opts.seatsDir);
 	let clock = T0.getTime();
 	const remembered: string[] = [];
@@ -111,6 +120,7 @@ const setup = async (
 	const ledger = createLedger(guardDirOf(stateDir));
 	let g = 0;
 	const timers = new Set<() => void>();
+	const delayed: { ms: number; fn: () => void }[] = [];
 	const deps: IntakeDeps = {
 		discord: asBot(d.api, writes.yukarin),
 		akarin: opts.akarin
@@ -121,6 +131,8 @@ const setup = async (
 				}
 			: null,
 		orca: o.orca,
+		hishaku: opts.hishaku?.hishaku ?? null,
+		findWorkBranches: opts.findWorkBranches ?? null,
 		seats,
 		approvals: await openApprovalStore(stateDir),
 		ledger,
@@ -151,11 +163,15 @@ const setup = async (
 		workForumChannelId: FORUM,
 		seatLimit: opts.seatLimit ?? 6,
 		sleepAfterMs: 2 * 60 * 60_000,
+		doneLingerMs: 60 * 60_000,
 		newGrantId: () => `g${++g}`,
 		now: () => new Date(clock),
 		every: (_ms, fn) => {
 			timers.add(fn);
 			return () => timers.delete(fn);
+		},
+		after: (ms, fn) => {
+			delayed.push({ ms, fn });
 		},
 		logger: silentLogger,
 		seatReplied: opts.seatReplied,
@@ -176,11 +192,22 @@ const setup = async (
 		advance: (ms: number) => {
 			clock += ms;
 		},
+		delayed,
+		/** 待たせた呼び出しをすべて呼ぶ。 */
+		fireDelayed: () => {
+			for (const t of delayed.splice(0)) t.fn();
+		},
 		/** 入力中の表示のタイマーを 1 回分進める。 */
 		tick: () => {
 			for (const fn of timers) fn();
 		},
 	};
+};
+
+/** 完了したあと残している席が、残す時間（setup では 60 分）を過ぎて閉じるところまで進める。 */
+const expireLinger = async (s: Awaited<ReturnType<typeof setup>>) => {
+	s.advance(60 * 60_000);
+	await s.intake.sleepIdle();
 };
 
 /** 人が仕事フォーラムに直接投稿し、席ができたところまで進める。 */
@@ -588,7 +615,7 @@ describe("取り消せない操作で止まったとき", () => {
 });
 
 describe("席の完了報告", () => {
-	it("投稿に書いてタグを完了にし、記憶に 1 行残し、席を閉じる", async () => {
+	it("投稿に書いてタグを完了にし、記憶に 1 行残し、しばらく残した席を時間がたったら閉じる", async () => {
 		const s = await setup();
 		const seat = await openPost(s);
 		await s.intake.onSeatMessage(
@@ -612,6 +639,15 @@ describe("席の完了報告", () => {
 				tools: [],
 			},
 		]);
+		expect(s.seats.get("p1")).toMatchObject({ status: "waiting", doneAt: T0 });
+		expect(s.o.opsOf("stopSeat")).toEqual([]);
+		expect(s.o.live.has(seat.terminal ?? "")).toBe(true);
+
+		s.advance(59 * 60_000);
+		await s.intake.sleepIdle();
+		expect(s.o.opsOf("stopSeat")).toEqual([]);
+		s.advance(60_000);
+		await s.intake.sleepIdle();
 		expect(s.o.opsOf("stopSeat")).toEqual([
 			expect.objectContaining({
 				dispatchId: seat.dispatchId,
@@ -639,7 +675,7 @@ describe("席の完了報告", () => {
 		expect(s.seats.get("p1")).toBeNull();
 	});
 
-	it("見張りを登録したら、タグを見張り中にして席を閉じる", async () => {
+	it("見張りを登録したら、タグを見張り中にして席をしばらく残す", async () => {
 		const s = await setup();
 		const seat = await openPost(s);
 		await s.intake.onSeatMessage(
@@ -652,7 +688,10 @@ describe("席の完了報告", () => {
 		expect(s.d.tagsOf("p1")).toEqual(["tag-watching"]);
 		expect(s.remembered[0]).toContain("見張りを始めた");
 		expect(s.activity.map((e) => e.kind)).toEqual(["done"]);
+		expect(s.seats.get("p1")?.doneAt).toEqual(T0);
+		await expireLinger(s);
 		expect(s.seats.get("p1")).toBeNull();
+		expect(s.d.tagsOf("p1")).toEqual(["tag-watching"]);
 	});
 
 	it("フォーラムに後から足したタグも、次に付け替えるときに使う", async () => {
@@ -693,7 +732,7 @@ describe("席の完了報告", () => {
 		expect(s.d.tagsOf("p1")).toEqual(["tag-working"]);
 	});
 
-	it("完了のあとにまた書くと、同じ投稿に新しい席を作ってこれまでのやりとりを渡す", async () => {
+	it("完了して席を閉じたあとにまた書くと、同じ投稿に新しい席を作ってこれまでのやりとりを渡す", async () => {
 		const s = await setup();
 		const seat = await openPost(s);
 		await s.intake.onSeatMessage(
@@ -703,6 +742,7 @@ describe("席の完了報告", () => {
 				body: "直しました\n状態: 完了",
 			}),
 		);
+		await expireLinger(s);
 		s.d.history.set("p1", [
 			{
 				id: "p1",
@@ -734,6 +774,181 @@ describe("席の完了報告", () => {
 		expect(starts[1]?.spec).toContain("[あなた] 直しました");
 		expect(starts[1]?.spec).toContain("[ちゃぬ] もう一か所あった");
 		expect(s.d.tagsOf("p1")).toEqual(["tag-working"]);
+	});
+});
+
+describe("完了したあと残している席", () => {
+	const done = (dispatchId: string | null, body: string) =>
+		seatMessage({ type: "worker_done", dispatchId, body });
+	const MAC = "mac-example";
+
+	it("残している間に書かれた続きは、生きている席にそのまま渡す", async () => {
+		const s = await setup();
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "直しました\n状態: 完了"),
+		);
+		expect(s.d.tagsOf("p1")).toEqual(["tag-done"]);
+		s.advance(30 * 60_000);
+		await s.intake.handle(say("p1", "もう一か所あった"));
+		expect(s.o.opsOf("send")).toEqual([
+			expect.objectContaining({
+				dispatchId: seat.dispatchId,
+				body: expect.stringContaining("もう一か所あった"),
+			}),
+		]);
+		expect(s.o.opsOf("startSeat")).toHaveLength(1);
+		expect(s.o.opsOf("resumeSeat")).toEqual([]);
+		expect(s.seats.get("p1")).toMatchObject({
+			status: "working",
+			doneAt: null,
+		});
+		expect(s.d.tagsOf("p1")).toEqual(["tag-working"]);
+
+		// 続きを受けた席は、残す時間を過ぎても閉じない
+		s.advance(60 * 60_000);
+		await s.intake.sleepIdle();
+		expect(s.seats.get("p1")?.status).toBe("working");
+		expect(s.o.opsOf("stopSeat")).toEqual([]);
+	});
+
+	it("残す時間を過ぎたら止めた席にせず、会話を預けて返し worktree ごと閉じる", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "直しました\n状態: 完了"),
+		);
+		await expireLinger(s);
+		expect(h.opsOf("push")).toEqual([
+			{ number: 1234, generation: 1, cwd: "/seats/seat-p1", release: true },
+		]);
+		expect(s.o.opsOf("removeWorktree")).toEqual(["/seats/seat-p1"]);
+		expect(s.seats.get("p1")).toBeNull();
+		expect(s.d.tagsOf("p1")).toEqual(["tag-done"]);
+	});
+
+	it("席が上限なら、いちばん前に終えた残している席を閉じて新しい投稿を始める", async () => {
+		const s = await setup({ seatLimit: 2 });
+		const first = await openPost(s, "p1");
+		const second = await openPost(s, "p2");
+		await s.intake.onSeatMessage(
+			done(first.dispatchId, "直しました\n状態: 完了"),
+		);
+		s.advance(60_000);
+		await s.intake.onSeatMessage(
+			done(second.dispatchId, "直しました\n状態: 完了"),
+		);
+		await openPost(s, "p3");
+		expect(s.seats.get("p3")?.status).toBe("working");
+		expect(s.d.sentTo("p3").join()).not.toContain("順番待ち");
+		expect(s.seats.get("p1")).toBeNull();
+		expect(s.o.opsOf("removeWorktree")).toEqual(["/seats/seat-p1"]);
+		expect(s.seats.get("p2")?.status).toBe("waiting");
+	});
+
+	it("止めた席を起こすときも、残している席を閉じて空ける", async () => {
+		const s = await setup({ seatLimit: 1 });
+		const first = await openPost(s, "p1");
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "question",
+				dispatchId: first.dispatchId,
+				body: "?",
+			}),
+		);
+		s.advance(3 * 60 * 60_000);
+		await s.intake.sleepIdle();
+		const second = await openPost(s, "p2");
+		await s.intake.onSeatMessage(
+			done(second.dispatchId, "直しました\n状態: 完了"),
+		);
+		await s.intake.handle(say("p1", "B で"));
+		expect(s.o.opsOf("resumeSeat")).toHaveLength(1);
+		expect(s.seats.get("p1")?.status).toBe("working");
+		expect(s.seats.get("p2")).toBeNull();
+	});
+
+	it("朝会・見回りの席は残さず、すぐ閉じる", async () => {
+		const s = await setup();
+		const id = await s.intake.startStandup("見回りの spec", "patrol");
+		await s.intake.onSeatMessage(
+			done(s.seats.get(id)?.dispatchId ?? null, "```json\n{}\n```"),
+		);
+		expect(s.standup.map((x) => x.kind)).toEqual(["patrol"]);
+		expect(s.seats.get(id)).toBeNull();
+		expect(s.o.opsOf("removeWorktree")).toEqual([`/seats/seat-${id}`]);
+	});
+
+	it("残している席を Mac に頼まれたら、すぐ預けて返し貸し出し中にする", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "直しました\n状態: 完了"),
+		);
+		h.behavior.renew = () => ok({ releaseRequestedBy: MAC });
+		await s.intake.renewLeases();
+		expect(h.opsOf("push")).toEqual([
+			{ number: 1234, generation: 1, cwd: "/seats/seat-p1", release: true },
+		]);
+		expect(s.seats.get("p1")).toMatchObject({ status: "lent", doneAt: null });
+		expect(s.d.tagsOf("p1")).toEqual(["tag-handoff"]);
+	});
+
+	it("作業中に Mac に頼まれていれば、完了したところで残さずに渡す", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		const seat = await openPost(s);
+		h.behavior.renew = () => ok({ releaseRequestedBy: MAC });
+		await s.intake.renewLeases();
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "直しました\n状態: 完了"),
+		);
+		expect(h.opsOf("push")).toHaveLength(1);
+		expect(s.seats.get("p1")?.status).toBe("lent");
+	});
+
+	it("受付を作り直しても終えた時刻を覚えていて、時間がたったら閉じる", async () => {
+		const s = await setup();
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "直しました\n状態: 完了"),
+		);
+		const reopened = await openSeatStore(s.stateDir);
+		expect(reopened.get("p1")).toMatchObject({
+			status: "waiting",
+			doneAt: T0,
+			doneStatus: "完了",
+		});
+
+		const again = await setup({
+			stateDir: s.stateDir,
+			orca: s.o,
+			d: s.d,
+			sys: s.sys,
+		});
+		await again.intake.reconcile();
+		expect(again.seats.get("p1")).toMatchObject({
+			status: "waiting",
+			doneAt: T0,
+		});
+		await expireLinger(again);
+		expect(again.seats.get("p1")).toBeNull();
+		expect(s.o.opsOf("removeWorktree")).toEqual(["/seats/seat-p1"]);
+	});
+
+	it("受付を作り直して席の Claude がいなくなっていたら、止めた席にせず閉じる", async () => {
+		const s = await setup();
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "直しました\n状態: 完了"),
+		);
+		s.o.live.delete(seat.terminal ?? "");
+		await s.intake.reconcile();
+		expect(s.seats.get("p1")).toBeNull();
+		expect(s.o.opsOf("removeWorktree")).toEqual(["/seats/seat-p1"]);
+		expect(s.d.tagsOf("p1")).toEqual(["tag-done"]);
 	});
 });
 
@@ -1151,6 +1366,24 @@ describe("起動し直して", () => {
 		expect(s.d.tagsOf("p1")).toEqual(["tag-working"]);
 	});
 
+	it("決まった言い方だけを席を閉じる一言とみなす", () => {
+		for (const t of [
+			"終了",
+			"クローズ",
+			"Close",
+			"CLOSE!",
+			"閉じて。",
+			"おわり！",
+			" 終わり ",
+			"<@1> 終了",
+		]) {
+			expect(isCloseRequest(t), t).toBe(true);
+		}
+		for (const t of ["終了したら教えて", "閉じないで", "closed", "OK"]) {
+			expect(isCloseRequest(t), t).toBe(false);
+		}
+	});
+
 	it("決まった言い方だけを起動し直す頼みとみなす", () => {
 		for (const t of [
 			"起動し直して",
@@ -1307,7 +1540,6 @@ describe("作業中かを Discord で見せる", () => {
 			}),
 		);
 		expect(s.d.reactionsOn(TEXT, req.payload.message_id)).toEqual(["✅"]);
-		expect(s.sys.panelIn("thread1")).toBe("状態: 完了");
 	});
 
 	it("順番待ちの席は受付のまま待たせる", async () => {
@@ -1316,15 +1548,12 @@ describe("作業中かを Discord で見せる", () => {
 		s.d.addThread("p2", "二つ目");
 		await s.intake.handle(say("p2", "こっちも", { first: true }));
 		expect(s.d.reactionsOn("p2", "p2")).toEqual(["👀"]);
-		expect(s.sys.panelIn("p2")).toBe("状態: 受付");
 		expect(s.d.typing).not.toContain("p2");
 	});
 
-	it("状態の欄に状態・経過時間・いまやっていることを書き、経過時間だけの変化は 5 分おきに書き換える", async () => {
+	it("席を開いて作業し、完了しても、状態だけを書いたメッセージは投稿しない", async () => {
 		const s = await setup();
 		const seat = await openPost(s);
-		expect(s.sys.panelIn("p1")).toBe("状態: 作業中（1分未満）");
-
 		await s.intake.onSeatMessage(
 			seatMessage({
 				type: "status",
@@ -1332,32 +1561,65 @@ describe("作業中かを Discord で見せる", () => {
 				body: "誤字を探しています",
 			}),
 		);
-		expect(s.sys.panelIn("p1")).toBe(
-			"状態: 作業中（1分未満）\nいまやっていること: 誤字を探しています",
-		);
-
-		const edits = vi.mocked(s.sys.api.editMessage);
-		const before = edits.mock.calls.length;
-		s.advance(3 * 60_000);
-		await s.intake.refreshPanels();
-		expect(edits.mock.calls.length).toBe(before);
-
-		s.advance(2 * 60_000);
-		await s.intake.refreshPanels();
-		expect(s.sys.panelIn("p1")).toBe(
-			"状態: 作業中（5分）\nいまやっていること: 誤字を探しています",
-		);
-		await s.intake.refreshPanels();
-		expect(edits.mock.calls.length).toBe(before + 1);
-
 		await s.intake.onSeatMessage(
 			seatMessage({
-				type: "question",
+				type: "worker_done",
 				dispatchId: seat.dispatchId,
-				body: "どちらにしますか",
+				body: "直しました\n状態: 完了",
 			}),
 		);
-		expect(s.sys.panelIn("p1")).toBe("状態: 決めてほしい");
+		await expireLinger(s);
+		expect(
+			s.writes.system.filter((w) => w.startsWith("createMessage")),
+		).toEqual([]);
+		expect(vi.mocked(s.sys.api.editMessage)).not.toHaveBeenCalled();
+		const posted = [
+			...s.d.sentTo("p1"),
+			...s.sys.sentTo("p1"),
+			...[...s.sys.edited.values()].map((m) => m.content),
+		];
+		expect(posted.filter((t) => t.startsWith("状態:"))).toEqual([]);
+		expect(s.d.reactionsOn("p1", "p1")).toEqual(["✅"]);
+		expect(s.d.tagsOf("p1")).toEqual(["tag-done"]);
+	});
+
+	it("状態の欄を持っていた前の seats.json も読める", async () => {
+		const dir = tempDir();
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(dir, "seats.json"),
+			JSON.stringify({
+				run_id: null,
+				reception: null,
+				seats: {
+					p1: {
+						status: "waiting",
+						path: "/seats/seat-p1",
+						terminal: "t1",
+						dispatch_id: "d1",
+						dispatch_ids: ["d1"],
+						question_id: null,
+						question: null,
+						expect_stop: false,
+						waiting_since: null,
+						pending: [],
+						queued_at: null,
+						standup: false,
+						panel_id: "m1",
+						panel_text: "状態: 決めてほしい",
+						panel_at: 0,
+						label: "決めてほしい",
+						label_since: 0,
+					},
+				},
+			}),
+		);
+		const store = await openSeatStore(dir);
+		expect(store.get("p1")).toMatchObject({
+			status: "waiting",
+			dispatchId: "d1",
+		});
+		expect(store.get("p1")).not.toHaveProperty("panelId");
 	});
 
 	it("作業中の席の数を数える。朝会と待っている席は数えない", async () => {
@@ -1538,6 +1800,7 @@ describe("Akarin の席", () => {
 			}),
 		);
 		expect(s.rememberedBy).toEqual(["akarin"]);
+		await expireLinger(s);
 		expect(s.seats.get("p1")).toBeNull();
 
 		await s.intake.handle(say("p1", "もう一か所お願い"));
@@ -1899,6 +2162,7 @@ describe("/ai コマンド", () => {
 				body: "直しました\n状態: 完了",
 			}),
 		);
+		await expireLinger(s);
 		const e = change("p1", "claude", "opus");
 		await s.intake.command(e);
 		expect(replyOf(s, e)).toBe("Opus に切り替えました。");
@@ -2021,5 +2285,915 @@ describe("GitHub の issue", () => {
 		expect(r.ok).toBe(true);
 		expect(s.seats.get("thread1")?.status).toBe("queued");
 		expect(s.o.opsOf("startSeat")).toEqual([]);
+	});
+});
+
+describe("hishaku の番号", () => {
+	const done = (dispatchId: string | null, body: string) =>
+		seatMessage({ type: "worker_done", dispatchId, body });
+	const ID = "11111111-2222-4333-8444-555555555555";
+
+	it("席を作るときに番号を取って投稿ごとに残し、件名の頭に付け、その番号の ID で起こす", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		await openPost(s);
+		expect(h.opsOf("createSession")).toEqual([
+			{
+				postId: "p1",
+				agent: "claude",
+				title: "README の誤字",
+				repo: null,
+				branch: null,
+			},
+		]);
+		expect(s.seats.numberOf("p1")).toBe(1234);
+		expect(s.d.channels.get("p1")?.name).toBe("[1234] README の誤字");
+		expect(h.opsOf("prepare")).toEqual([
+			{ number: 1234, cwd: "/seats/seat-p1" },
+		]);
+		const [start] = s.o.opsOf("startSeat") as {
+			how: unknown;
+			spec: string;
+			title: string;
+		}[];
+		expect(start?.how).toEqual({ sessionId: ID, resume: false });
+		expect(start?.spec).toContain("この投稿の hishaku の番号: 1234");
+		// 席の端末の題には番号を付けない
+		expect(start?.title).toBe("README の誤字");
+		expect(s.seats.get("p1")?.lease).toBe(1);
+		// 受付を作り直しても同じ番号を使う
+		const reopened = await openSeatStore(s.stateDir);
+		expect(reopened.numberOf("p1")).toBe(1234);
+	});
+
+	it("仕事チャンネルの依頼から立てた投稿は、要約の件名の頭に番号を付ける", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		await s.intake.handle(envelope({}));
+		expect(s.d.posts[0]?.name).toBe("請求書の整理");
+		expect(s.d.channels.get("thread1")?.name).toBe("[1234] 請求書の整理");
+	});
+
+	it("Manager に届かなければ番号なしで今の起動のまま始める", async () => {
+		const h = fakeHishaku();
+		h.behavior.create = () =>
+			err({ type: "HishakuFailed", reason: "POST /v1/sessions 503" });
+		const s = await setup({ hishaku: h });
+		await openPost(s);
+		expect(s.seats.numberOf("p1")).toBeNull();
+		expect(s.d.channels.get("p1")?.name).toBe("README の誤字");
+		expect(h.opsOf("prepare")).toEqual([]);
+		const [start] = s.o.opsOf("startSeat") as { how: unknown; spec: string }[];
+		expect(start?.how).toBe("start");
+		expect(start?.spec).not.toContain("hishaku の番号");
+	});
+
+	it("hs prepare が失敗したら warn を残して今の起動に戻す", async () => {
+		const h = fakeHishaku();
+		h.behavior.prepare = () =>
+			err({ type: "HishakuFailed", reason: "hs: Manager に届きません" });
+		const s = await setup({ hishaku: h });
+		await openPost(s);
+		const [start] = s.o.opsOf("startSeat") as { how: unknown }[];
+		expect(start?.how).toBe("start");
+		expect(s.seats.get("p1")?.lease).toBeNull();
+		expect(s.seats.get("p1")?.status).toBe("working");
+	});
+
+	it("他の機械が借りていれば席を起こさず、書き込みを溜めて取り戻すボタンを出す", async () => {
+		const h = fakeHishaku();
+		h.behavior.prepare = () =>
+			err({
+				type: "LeaseHeld",
+				holder: "mac-example",
+				leaseExpiresAt: "2026-11-05T08:02:00.000Z",
+			});
+		const s = await setup({ hishaku: h });
+		s.d.addThread("p1", "README の誤字");
+		await s.intake.handle(say("p1", "README の誤字を直して", { first: true }));
+		expect(s.o.opsOf("startSeat")).toHaveLength(1);
+		const seat = s.seats.get("p1");
+		expect(seat?.status).toBe("lent");
+		expect(seat?.pending.join()).toContain("README の誤字を直して");
+		expect(s.sys.sent.at(-1)).toMatchObject({
+			content:
+				"いまは Mac で作業中です（1234）。この書き込みは Mac が返したあとに席へ渡します。すぐこちらで続けるなら「取り戻す」を押してください。",
+			buttons: ["lend:takeback"],
+		});
+		expect(s.d.tagsOf("p1")).toEqual(["tag-handoff"]);
+	});
+
+	it("持ち主が自分のままなら（前の受付が返さずに落ちた）取り直して起こす", async () => {
+		const h = fakeHishaku();
+		let n = 0;
+		h.behavior.prepare = () =>
+			n++ === 0
+				? err({ type: "LeaseHeld", holder: "box01", leaseExpiresAt: "" })
+				: ok({ agent: "claude", sessionId: ID, resume: true, generation: 5 });
+		const s = await setup({ hishaku: h });
+		await openPost(s);
+		expect(h.opsOf("prepare")).toEqual([
+			{ number: 1234, cwd: "/seats/seat-p1" },
+			{ number: 1234, cwd: "/seats/seat-p1", takeover: true },
+		]);
+		expect(s.seats.get("p1")?.lease).toBe(5);
+	});
+
+	it("完了で閉じるときは会話を預けて貸し出しを返してから worktree を消す", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "直しました\n状態: 完了"),
+		);
+		expect(h.opsOf("push")).toEqual([]);
+		await expireLinger(s);
+		expect(h.opsOf("push")).toEqual([
+			{ number: 1234, generation: 1, cwd: "/seats/seat-p1", release: true },
+		]);
+		const ops = s.o.calls.map((c) => c.op);
+		expect(ops.indexOf("stopSeat")).toBeLessThan(ops.indexOf("removeWorktree"));
+		expect(s.seats.numberOf("p1")).toBe(1234);
+	});
+
+	it("完了のあとにまた書くと同じ番号の会話を続け、やりとりの代わりに返事だけを渡す", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "直しました\n状態: 完了"),
+		);
+		await expireLinger(s);
+		h.behavior.prepare = () =>
+			ok({ agent: "claude", sessionId: ID, resume: true, generation: 2 });
+		await s.intake.handle(say("p1", "もう一か所あった"));
+		expect(h.opsOf("createSession")).toHaveLength(1);
+		const starts = s.o.opsOf("startSeat") as { how: unknown; spec: string }[];
+		expect(starts[1]?.how).toEqual({ sessionId: ID, resume: true });
+		expect(starts[1]?.spec).toContain("もう一か所あった");
+		expect(starts[1]?.spec).not.toContain(PREAMBLE);
+		expect(starts[1]?.spec).not.toContain("--- ここまで ---");
+	});
+
+	it("完了のあとに Manager に届かなければ、これまでのやりとりを渡す", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "直しました\n状態: 完了"),
+		);
+		await expireLinger(s);
+		h.behavior.prepare = () =>
+			err({ type: "HishakuFailed", reason: "hs: Manager に届きません" });
+		await s.intake.handle(say("p1", "もう一か所あった"));
+		const starts = s.o.opsOf("startSeat") as { how: unknown; spec: string }[];
+		expect(starts[1]?.how).toBe("start");
+		expect(starts[1]?.spec.startsWith(PREAMBLE)).toBe(true);
+		expect(starts[1]?.spec).toContain("--- ここまで ---");
+	});
+
+	it("起動し直すときは会話を預けて返してから、同じ番号を借り直して起こす", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		await openPost(s);
+		h.behavior.prepare = () =>
+			ok({ agent: "claude", sessionId: ID, resume: true, generation: 2 });
+		await s.intake.handle(say("p1", "起動し直して"));
+		expect(h.calls.map((c) => c.op)).toEqual([
+			"createSession",
+			"prepare",
+			"push",
+			"prepare",
+		]);
+		const [resume] = s.o.opsOf("resumeSeat") as { how: unknown }[];
+		expect(resume?.how).toEqual({ sessionId: ID, resume: true });
+		expect(s.seats.get("p1")?.lease).toBe(2);
+	});
+
+	it("引き継ぎでは会話を預けて返したことを確かめ、返事に hs open を付ける", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(
+				seat.dispatchId,
+				"わかりました。席はここで止めて、続きは Mac で開けるようにしました。\nhttps://github.com/example/app/issues/9\n状態: 引き継ぎ",
+			),
+		);
+		expect(h.opsOf("push")).toEqual([
+			{ number: 1234, generation: 1, cwd: "/seats/seat-p1", release: true },
+		]);
+		const reply = s.d.sentTo("p1").at(-1) ?? "";
+		expect(
+			reply.endsWith(
+				"https://github.com/example/app/issues/9\n\n`hs open 1234`",
+			),
+		).toBe(true);
+		expect(s.d.tagsOf("p1")).toEqual(["tag-handoff"]);
+		expect(s.activity.map((e) => e.kind)).toEqual(["handoff"]);
+		expect(s.seats.get("p1")?.status).toBe("lent");
+		expect(s.o.opsOf("removeWorktree")).toEqual(["/seats/seat-p1"]);
+	});
+
+	it("引き継ぎでは預ける前に作業ブランチを meta に書き、書けなくても止める流れを続ける", async () => {
+		const h = fakeHishaku();
+		h.behavior.update = () =>
+			err({ type: "HishakuFailed", reason: "PATCH /v1/sessions/1234 503" });
+		const dirs: string[] = [];
+		const s = await setup({
+			hishaku: h,
+			findWorkBranches: async (dir) => {
+				dirs.push(dir);
+				return [{ repo: "example/app", branch: "dev/fix" }];
+			},
+		});
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "Mac に引き継ぎます\n状態: 引き継ぎ"),
+		);
+		expect(dirs).toEqual(["/seats/seat-p1"]);
+		const ops = h.calls.map((c) => c.op);
+		expect(ops.slice(ops.indexOf("update"))).toEqual(["update", "push"]);
+		expect(h.opsOf("update")).toEqual([
+			{ number: 1234, repo: "example/app", branch: "dev/fix" },
+		]);
+		expect(s.d.sentTo("p1").at(-1)).toContain("`hs open 1234`");
+		expect(s.seats.get("p1")?.status).toBe("lent");
+	});
+
+	it("引き継ぎで会話を預けられなければ hs open を付けず、そう書き添える", async () => {
+		const h = fakeHishaku();
+		h.behavior.push = () =>
+			err({ type: "HishakuFailed", reason: "hs: Manager に届きません" });
+		const s = await setup({ hishaku: h });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "Mac に引き継ぎます\n状態: 引き継ぎ"),
+		);
+		const reply = s.d.sentTo("p1").at(-1) ?? "";
+		expect(reply).not.toContain("hs open");
+		expect(reply).toContain("申し送り issue から始めます");
+	});
+
+	it("寝かせる席は会話を預けて返し、起こすときに借り直す", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "どちらにしますか\n状態: 決めてほしい"),
+		);
+		s.advance(3 * 60 * 60_000);
+		await s.intake.sleepIdle();
+		expect(s.seats.get("p1")?.status).toBe("sleeping");
+		expect(s.seats.get("p1")?.lease).toBeNull();
+		expect(h.opsOf("push")).toHaveLength(1);
+		await s.intake.handle(say("p1", "A で"));
+		expect(h.opsOf("prepare")).toHaveLength(2);
+		expect(s.seats.get("p1")?.status).toBe("working");
+	});
+
+	it("貸し出しを延ばし、取られていたら投稿に一言書いて以後は預けない", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		await openPost(s);
+		await s.intake.renewLeases();
+		expect(h.opsOf("renew")).toEqual([{ number: 1234, generation: 1 }]);
+		h.behavior.renew = () => err({ type: "LeaseStolen" });
+		await s.intake.renewLeases();
+		expect(s.seats.get("p1")?.lease).toBeNull();
+		expect(s.d.sentTo("p1").at(-1)).toContain("別の機械で開かれました");
+		await s.intake.renewLeases();
+		expect(h.opsOf("renew")).toHaveLength(2);
+	});
+
+	it("朝会の席は番号を取らない", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		await s.intake.startStandup("朝会の材料");
+		expect(h.calls).toEqual([]);
+	});
+});
+
+describe("Mac への貸し出しと取り戻し", () => {
+	const done = (dispatchId: string | null, body: string) =>
+		seatMessage({ type: "worker_done", dispatchId, body });
+	const ID = "11111111-2222-4333-8444-555555555555";
+	const MAC = "mac-example";
+	const macHolds = (
+		h: ReturnType<typeof fakeHishaku>,
+		generation: number,
+		pushedAt: string | null = null,
+	) => {
+		h.behavior.meta = () =>
+			ok({
+				holder: MAC,
+				generation,
+				leaseExpiresAt: new Date("2026-11-05T09:00:00Z"),
+				pushedAt: pushedAt === null ? null : new Date(pushedAt),
+				repo: null,
+				branch: null,
+			});
+	};
+	const macReturned = (
+		h: ReturnType<typeof fakeHishaku>,
+		generation: number,
+	) => {
+		h.behavior.meta = () =>
+			ok({
+				holder: null,
+				generation,
+				leaseExpiresAt: null,
+				pushedAt: null,
+				repo: null,
+				branch: null,
+			});
+	};
+	const asked = (h: ReturnType<typeof fakeHishaku>) => {
+		h.behavior.renew = () => ok({ releaseRequestedBy: MAC });
+	};
+	/** Mac に頼まれ、手が止まっている席を渡したところまで進める。 */
+	const lend = async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "どちらにしますか\n状態: 決めてほしい"),
+		);
+		asked(h);
+		await s.intake.renewLeases();
+		return { h, s };
+	};
+
+	it("頼まれても作業中なら渡さず、ターンの終わりを待って預けて返し、席を閉じて貸し出し中にする", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		const seat = await openPost(s);
+		asked(h);
+		await s.intake.renewLeases();
+		expect(h.opsOf("push")).toEqual([]);
+		expect(s.seats.get("p1")?.status).toBe("working");
+		expect(s.seats.get("p1")?.releaseRequested).toBe(MAC);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "ここまで直しました\n状態: 決めてほしい"),
+		);
+		expect(h.opsOf("push")).toEqual([
+			{ number: 1234, generation: 1, cwd: "/seats/seat-p1", release: true },
+		]);
+		const ops = s.o.calls.map((c) => c.op);
+		expect(ops.indexOf("stopSeat")).toBeLessThan(ops.indexOf("removeWorktree"));
+		expect(s.seats.get("p1")?.status).toBe("lent");
+		expect(s.sys.sent.at(-1)).toMatchObject({
+			content: "Mac に貸し出しました（1234）。席は止めています。",
+			buttons: ["lend:takeback"],
+		});
+		expect(s.d.tagsOf("p1")).toEqual(["tag-handoff"]);
+	});
+
+	it("手が止まっている席は頼まれたらすぐ渡す。自分の Commander の頼みは渡さない", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "どちらにしますか\n状態: 決めてほしい"),
+		);
+		h.behavior.renew = () => ok({ releaseRequestedBy: "box01" });
+		await s.intake.renewLeases();
+		expect(s.seats.get("p1")?.status).toBe("waiting");
+		asked(h);
+		await s.intake.renewLeases();
+		expect(h.opsOf("push")).toHaveLength(1);
+		expect(s.seats.get("p1")?.status).toBe("lent");
+	});
+
+	it("貸し出し中は meta を見て、Mac が借りたら再開を、返したら戻ったことを 1 度ずつ書いて状態を戻す", async () => {
+		const { h, s } = await lend();
+		await s.intake.watchLends();
+		expect(s.sys.sentTo("p1").filter((t) => t.startsWith("Mac で"))).toEqual(
+			[],
+		);
+		macHolds(h, 2);
+		s.advance(5 * 60_000);
+		await s.intake.watchLends();
+		await s.intake.watchLends();
+		expect(s.sys.sentTo("p1").filter((t) => t.startsWith("Mac で"))).toEqual([
+			"Mac で再開しました（17:05）。",
+		]);
+		macReturned(h, 2);
+		await s.intake.watchLends();
+		await s.intake.watchLends();
+		expect(
+			s.sys.sentTo("p1").filter((t) => t.startsWith("Mac から戻りました")),
+		).toEqual([
+			"Mac から戻りました。この投稿に書けば、席が前の会話のまま続けます。",
+		]);
+		expect(s.seats.get("p1")).toBeNull();
+		expect(s.d.tagsOf("p1")).toEqual(["tag-decide"]);
+		h.behavior.prepare = () =>
+			ok({ agent: "claude", sessionId: ID, resume: true, generation: 3 });
+		await s.intake.handle(say("p1", "続きをお願い"));
+		const starts = s.o.opsOf("startSeat") as { how: unknown; spec: string }[];
+		expect(starts[1]?.how).toEqual({ sessionId: ID, resume: true });
+		expect(starts[1]?.spec).toContain("続きをお願い");
+	});
+
+	it("引き継ぎの貸し出し待ちは、見回りの合間に Mac が借りて返しても世代が進んでいれば戻ったと分かる", async () => {
+		const h = fakeHishaku();
+		const s = await setup({ hishaku: h });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "Mac に引き継ぎます\n状態: 引き継ぎ"),
+		);
+		macReturned(h, 1);
+		await s.intake.watchLends();
+		expect(s.seats.get("p1")?.status).toBe("lent");
+		macReturned(h, 2);
+		await s.intake.watchLends();
+		expect(s.seats.get("p1")).toBeNull();
+		expect(s.sys.sentTo("p1").at(-1)).toBe(
+			"Mac から戻りました。この投稿に書けば、席が前の会話のまま続けます。",
+		);
+	});
+
+	it("貸し出し中に書かれたら席に渡さずに溜め、Mac が返したら溜めた分を渡して席を起こす", async () => {
+		const { h, s } = await lend();
+		macHolds(h, 2);
+		await s.intake.watchLends();
+		await s.intake.handle(say("p1", "B でお願い"));
+		expect(s.o.opsOf("startSeat")).toHaveLength(1);
+		expect(s.o.opsOf("send")).toEqual([]);
+		expect(s.sys.sent.at(-1)).toMatchObject({
+			content:
+				"いまは Mac で作業中です（1234）。この書き込みは Mac が返したあとに席へ渡します。すぐこちらで続けるなら「取り戻す」を押してください。",
+			buttons: ["lend:takeback"],
+		});
+		macReturned(h, 2);
+		h.behavior.prepare = () =>
+			ok({ agent: "claude", sessionId: ID, resume: true, generation: 3 });
+		await s.intake.watchLends();
+		const starts = s.o.opsOf("startSeat") as { how: unknown; spec: string }[];
+		expect(starts).toHaveLength(2);
+		expect(starts[1]?.how).toEqual({ sessionId: ID, resume: true });
+		expect(starts[1]?.spec).toContain(
+			"Mac に貸している間に持ち主が投稿に書いたこと",
+		);
+		expect(starts[1]?.spec).toContain("B でお願い");
+		expect(s.sys.sentTo("p1")).toContain(
+			"Mac から戻りました。貸し出し中の書き込みを席に渡して、前の会話のまま続けます。",
+		);
+		expect(s.seats.get("p1")?.status).toBe("working");
+		expect(s.seats.get("p1")?.lend).toBeNull();
+	});
+
+	it("取り戻すは確かめてから貸し出しを奪い、席を前の会話のまま起こして両方の bot で知らせる", async () => {
+		const { h, s } = await lend();
+		macHolds(h, 2, "2026-11-05T07:40:00.000Z");
+		await s.intake.watchLends();
+		await s.intake.press(press("p1", "x", "lend:takeback"));
+		expect(s.sys.sent.at(-1)).toMatchObject({
+			content:
+				"Mac はまだ 1234 を持っています（最後に預けたのは 16:40）。取り戻すと、Mac でそのあとに進んだ分は正本に入らず、枝として残ります。",
+			buttons: ["lend:confirm", "lend:cancel"],
+		});
+		expect(h.opsOf("prepare")).toHaveLength(1);
+		const confirm = `sent${s.sys.sent.length}`;
+		h.behavior.prepare = () =>
+			ok({ agent: "claude", sessionId: ID, resume: true, generation: 3 });
+		await s.intake.press(press("p1", confirm, "lend:confirm"));
+		expect(h.opsOf("prepare").at(-1)).toEqual({
+			number: 1234,
+			cwd: "/seats/seat-p1",
+			takeover: true,
+		});
+		const starts = s.o.opsOf("startSeat") as { how: unknown; spec: string }[];
+		expect(starts[1]?.how).toEqual({ sessionId: ID, resume: true });
+		expect(starts[1]?.spec).toContain("Mac からこの投稿の会話を取り戻した");
+		expect(s.sys.sentTo("p1")).toContain(
+			"取り戻しました（世代 3）。席を前の会話のまま起こします。",
+		);
+		expect(s.d.sentTo("p1").at(-1)).toBe(
+			"戻りました。Mac で 16:40 までに進めたところから続けますね。",
+		);
+		expect(s.seats.get("p1")?.status).toBe("working");
+		expect(s.seats.get("p1")?.lease).toBe(3);
+		expect(s.seats.get("p1")?.takeback).toBeNull();
+		expect(s.sys.edited.get(confirm)?.content).toContain("取り戻すと");
+		// 二度押しても何も起きない
+		await s.intake.press(press("p1", confirm, "lend:confirm"));
+		expect(h.opsOf("prepare")).toHaveLength(2);
+	});
+
+	it("Mac が置いた時刻を Manager が知らせなければ、受付が最後に預けた時刻を見せる", async () => {
+		const { h, s } = await lend();
+		macHolds(h, 2);
+		await s.intake.press(press("p1", "x", "lend:takeback"));
+		expect(s.sys.sent.at(-1)?.content).toContain("最後に預けたのは 17:00");
+	});
+
+	it("やめるなら何もせずボタンを外す。持ち主以外の押下は無視する", async () => {
+		const { h, s } = await lend();
+		macHolds(h, 2);
+		await s.intake.press(press("p1", "x", "lend:takeback", "someone"));
+		expect(s.sys.sentTo("p1").some((t) => t.startsWith("Mac はまだ"))).toBe(
+			false,
+		);
+		await s.intake.press(press("p1", "x", "lend:takeback"));
+		const confirm = `sent${s.sys.sent.length}`;
+		await s.intake.press(press("p1", confirm, "lend:confirm", "someone"));
+		await s.intake.press(press("p1", confirm, "lend:cancel"));
+		expect(s.sys.edited.get(confirm)?.content).toContain(
+			"取り戻すのをやめました。",
+		);
+		expect(h.opsOf("prepare")).toHaveLength(1);
+		expect(s.seats.get("p1")?.status).toBe("lent");
+	});
+
+	it("取り戻すを押したときに Mac がもう返していれば、奪わずに戻す", async () => {
+		const { h, s } = await lend();
+		macReturned(h, 2);
+		await s.intake.press(press("p1", "x", "lend:takeback"));
+		expect(s.sys.sentTo("p1").at(-1)).toBe(
+			"Mac から戻りました。この投稿に書けば、席が前の会話のまま続けます。",
+		);
+		expect(s.seats.get("p1")).toBeNull();
+	});
+
+	it("貸し出し中の席は受付を作り直しても貸し出し中のまま読み直す", async () => {
+		const { s } = await lend();
+		const reopened = await openSeatStore(s.stateDir);
+		expect(reopened.get("p1")?.status).toBe("lent");
+		expect(reopened.get("p1")?.lend).toEqual({
+			number: 1234,
+			savedAt: T0,
+			generation: 1,
+			mac: false,
+			requested: true,
+			buttons: [`sent${s.sys.sent.length}`],
+			confirms: [],
+		});
+	});
+
+	/** 貸し出しで出したメッセージのうち、ボタンを外した（本文はそのままで書き換えた）もの。 */
+	const cleared = (s: Awaited<ReturnType<typeof setup>>) =>
+		s.sys.sent
+			.map((m, i) => ({ id: `sent${i + 1}`, content: m.content }))
+			.filter((m) => s.sys.edited.get(m.id)?.content === m.content)
+			.map((m) => m.id);
+	const lastSent = (s: Awaited<ReturnType<typeof setup>>) =>
+		`sent${s.sys.sent.length}`;
+
+	it("Mac から戻ったら、受付を作り直したあとでも、貸し出しで出した取り戻すのボタンをすべて外す", async () => {
+		const { h, s } = await lend();
+		const lent = lastSent(s);
+		macHolds(h, 2);
+		await s.intake.watchLends();
+		await s.intake.handle(say("p1", "B でお願い"));
+		const held = lastSent(s);
+		const r = await setup({
+			hishaku: h,
+			stateDir: s.stateDir,
+			d: s.d,
+			sys: s.sys,
+			orca: s.o,
+		});
+		macReturned(h, 2);
+		await r.intake.watchLends();
+		expect(r.seats.get("p1")?.status).toBe("working");
+		expect(cleared(s)).toEqual([lent, held]);
+		expect(s.sys.edited.get(lent)?.content).toBe(
+			"Mac に貸し出しました（1234）。席は止めています。",
+		);
+	});
+
+	it("取り戻すを確定したら、取り戻すと確認のボタンをすべて外す", async () => {
+		const { h, s } = await lend();
+		const lent = lastSent(s);
+		macHolds(h, 2);
+		await s.intake.watchLends();
+		await s.intake.press(press("p1", lent, "lend:takeback"));
+		const first = lastSent(s);
+		await s.intake.press(press("p1", lent, "lend:takeback"));
+		const second = lastSent(s);
+		h.behavior.prepare = () =>
+			ok({ agent: "claude", sessionId: ID, resume: true, generation: 3 });
+		await s.intake.press(press("p1", second, "lend:confirm"));
+		expect(s.seats.get("p1")?.status).toBe("working");
+		expect(cleared(s)).toEqual([lent, first, second]);
+	});
+
+	it("やめたら確認のボタンをすべて外し、貸し出しは続くので取り戻すのボタンは残す", async () => {
+		const { h, s } = await lend();
+		const lent = lastSent(s);
+		macHolds(h, 2);
+		await s.intake.press(press("p1", lent, "lend:takeback"));
+		const first = lastSent(s);
+		await s.intake.press(press("p1", lent, "lend:takeback"));
+		const second = lastSent(s);
+		await s.intake.press(press("p1", second, "lend:cancel"));
+		expect(cleared(s)).toEqual([first]);
+		expect(s.sys.edited.get(second)?.content).toContain(
+			"取り戻すのをやめました。",
+		);
+		expect(s.sys.edited.has(lent)).toBe(false);
+		expect(s.seats.get("p1")?.lend?.confirms).toEqual([]);
+		expect(s.seats.get("p1")?.lend?.buttons).toEqual([lent]);
+	});
+
+	it("貸し出し中の投稿を閉じたら、取り戻すのボタンを外す", async () => {
+		const { s } = await lend();
+		const lent = lastSent(s);
+		await s.intake.press(press("p1", "x", "thread:dismiss"));
+		expect(s.seats.get("p1")).toBeNull();
+		expect(cleared(s)).toEqual([lent]);
+	});
+
+	it("ボタンを外せなくても、Mac から戻る流れは止めない", async () => {
+		const { h, s } = await lend();
+		vi.mocked(s.sys.api.editMessage).mockResolvedValueOnce(
+			err(externalServiceUnavailable({ service: "discord" })),
+		);
+		macReturned(h, 2);
+		await s.intake.watchLends();
+		expect(s.seats.get("p1")).toBeNull();
+		expect(s.sys.sentTo("p1").at(-1)).toBe(
+			"Mac から戻りました。この投稿に書けば、席が前の会話のまま続けます。",
+		);
+	});
+});
+
+describe("件名の状態の絵文字", () => {
+	const done = (dispatchId: string | null, body: string) =>
+		seatMessage({ type: "worker_done", dispatchId, body });
+	/** 状態のタグに絵文字を付けたフォーラムで受付を作る。 */
+	const emojiSetup = async (
+		opts: { hishaku?: ReturnType<typeof fakeHishaku>; seatLimit?: number } = {},
+	) => {
+		const d = fakeDiscord();
+		const forum = d.channels.get(FORUM);
+		if (!forum) throw new Error("no forum");
+		d.channels.set(FORUM, { ...forum, availableTags: EMOJI_TAGS });
+		return setup({ d, ...opts });
+	};
+	const nameOf = (s: Awaited<ReturnType<typeof setup>>, threadId = "p1") =>
+		s.d.channels.get(threadId)?.name;
+	const renames = (s: Awaited<ReturnType<typeof setup>>) =>
+		vi.mocked(s.d.api.renameThread).mock.calls.length;
+
+	it.each([
+		["決めてほしい", "🤔[1234] README の誤字"],
+		["引き継ぎ", "👨‍💼[1234] README の誤字"],
+	])("%s になったら件名の頭に絵文字を付ける", async (status, title) => {
+		const s = await emojiSetup({ hishaku: fakeHishaku() });
+		const seat = await openPost(s);
+		expect(nameOf(s)).toBe("[1234] README の誤字");
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, `済みました\n状態: ${status}`),
+		);
+		expect(nameOf(s)).toBe(title);
+		expect(s.seats.pendingTitleOf("p1")).toBeNull();
+	});
+
+	it.each([
+		["完了", "tag-done", "🎉[1234] README の誤字"],
+		["見張り中", "tag-watching", "👀[1234] README の誤字"],
+	])(
+		"%s で残している間はタグだけ変え、席を閉じるときに件名の頭に絵文字を付ける",
+		async (status, tag, title) => {
+			const s = await emojiSetup({ hishaku: fakeHishaku() });
+			const seat = await openPost(s);
+			const before = renames(s);
+			await s.intake.onSeatMessage(
+				done(seat.dispatchId, `済みました\n状態: ${status}`),
+			);
+			expect(s.d.tagsOf("p1")).toEqual([tag]);
+			expect(nameOf(s)).toBe("[1234] README の誤字");
+			expect(renames(s)).toBe(before);
+			await expireLinger(s);
+			expect(nameOf(s)).toBe(title);
+			expect(s.seats.get("p1")).toBeNull();
+		},
+	);
+
+	it("残している間に続きを書かれても、件名は一度も変えない", async () => {
+		const s = await emojiSetup({ hishaku: fakeHishaku() });
+		const seat = await openPost(s);
+		const before = renames(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "済みました\n状態: 完了"),
+		);
+		await s.intake.handle(say("p1", "もう少し聞きたい"));
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "答えました\n状態: 完了"),
+		);
+		await s.intake.handle(say("p1", "もう一つ"));
+		expect(s.d.tagsOf("p1")).toEqual(["tag-working"]);
+		expect(renames(s)).toBe(before);
+	});
+
+	it("席が足りなくて残している席を閉じるときも、件名に絵文字を付ける", async () => {
+		const s = await emojiSetup({ hishaku: fakeHishaku(), seatLimit: 1 });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "済みました\n状態: 完了"),
+		);
+		await openPost(s, "p2");
+		expect(s.seats.get("p1")).toBeNull();
+		expect(nameOf(s)).toBe("🎉[1234] README の誤字");
+	});
+
+	it("順番待ちがあってすぐ閉じるときは、その場で件名に絵文字を付ける", async () => {
+		const s = await emojiSetup({ hishaku: fakeHishaku(), seatLimit: 1 });
+		const seat = await openPost(s);
+		s.d.addThread("p2", "二つ目");
+		await s.intake.handle(say("p2", "二つ目の依頼", { first: true }));
+		expect(s.seats.get("p2")?.status).toBe("queued");
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "済みました\n状態: 完了"),
+		);
+		expect(s.seats.get("p1")).toBeNull();
+		expect(nameOf(s)).toBe("🎉[1234] README の誤字");
+	});
+
+	it("残している席に閉じる一言が書かれたら、席に渡さずに件名に絵文字を付けて閉じる", async () => {
+		const h = fakeHishaku();
+		const s = await emojiSetup({ hishaku: h });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "済みました\n状態: 完了"),
+		);
+		const word = say("p1", "終了。");
+		await s.intake.handle(word);
+		expect(s.o.opsOf("send")).toEqual([]);
+		expect(s.seats.get("p1")).toBeNull();
+		expect(nameOf(s)).toBe("🎉[1234] README の誤字");
+		expect(h.opsOf("push")).toEqual([
+			{ number: 1234, generation: 1, cwd: "/seats/seat-p1", release: true },
+		]);
+		expect(s.o.opsOf("removeWorktree")).toEqual(["/seats/seat-p1"]);
+		expect(s.d.reactionsOn("p1", word.payload.message_id)).toEqual(["✅"]);
+		expect(s.d.reactionsOn("p1", "p1")).toEqual([]);
+		expect(s.d.tagsOf("p1")).toEqual(["tag-done"]);
+	});
+
+	it("席が作業中なら、閉じる一言もふつうの返事として渡す", async () => {
+		const s = await emojiSetup({ hishaku: fakeHishaku() });
+		await openPost(s);
+		await s.intake.handle(say("p1", "終了"));
+		expect(s.o.opsOf("send")).toHaveLength(1);
+		expect(s.seats.get("p1")?.status).toBe("working");
+	});
+
+	it("作業中に戻っても件名は前の絵文字のまま", async () => {
+		const s = await emojiSetup({ hishaku: fakeHishaku() });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "どちらにしますか\n状態: 決めてほしい"),
+		);
+		expect(nameOf(s)).toBe("🤔[1234] README の誤字");
+		const calls = vi.mocked(s.d.api.renameThread).mock.calls.length;
+		await s.intake.handle(say("p1", "A で"));
+		expect(s.d.tagsOf("p1")).toEqual(["tag-working"]);
+		expect(nameOf(s)).toBe("🤔[1234] README の誤字");
+		expect(vi.mocked(s.d.api.renameThread).mock.calls).toHaveLength(calls);
+	});
+
+	it.each([
+		["完了", "済みました"],
+		["見張り中", "見張りを登録しました"],
+	])(
+		"%s で閉じたあとまた書かれて作業中に戻ったら、終わった絵文字を外す",
+		async (status, body) => {
+			const s = await emojiSetup({ hishaku: fakeHishaku() });
+			const seat = await openPost(s);
+			await s.intake.onSeatMessage(
+				done(seat.dispatchId, `${body}\n状態: ${status}`),
+			);
+			await expireLinger(s);
+			expect(nameOf(s)).not.toBe("[1234] README の誤字");
+			await s.intake.handle(say("p1", "もう少し聞きたい"));
+			expect(s.d.tagsOf("p1")).toEqual(["tag-working"]);
+			expect(nameOf(s)).toBe("[1234] README の誤字");
+		},
+	);
+
+	it("制限で 🎉 を付けられずに待っている間に作業中に戻ったら、🎉 を付けない", async () => {
+		const s = await emojiSetup({ hishaku: fakeHishaku() });
+		const seat = await openPost(s);
+		const rename = vi.mocked(s.d.api.renameThread);
+		rename.mockImplementationOnce(async () =>
+			err(rateLimited({ retryAfterMs: 300_000 })),
+		);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "済みました\n状態: 完了"),
+		);
+		await expireLinger(s);
+		expect(s.seats.pendingTitleOf("p1")).toBe("🎉[1234] README の誤字");
+		await s.intake.handle(say("p1", "もう少し聞きたい"));
+		expect(s.seats.pendingTitleOf("p1")).toBe("[1234] README の誤字");
+		s.fireDelayed();
+		await vi.waitFor(() => expect(s.seats.pendingTitleOf("p1")).toBeNull());
+		expect(nameOf(s)).toBe("[1234] README の誤字");
+	});
+
+	it("番号の無い投稿は絵文字と件名の間に空白を置く", async () => {
+		const s = await emojiSetup();
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "直しました\n状態: 完了"),
+		);
+		await expireLinger(s);
+		expect(nameOf(s)).toBe("🎉 README の誤字");
+	});
+
+	it("絵文字の無いタグやカスタム絵文字のタグでは絵文字を付けず、前の絵文字も外す", async () => {
+		const d = fakeDiscord();
+		const forum = d.channels.get(FORUM);
+		if (!forum) throw new Error("no forum");
+		d.channels.set(FORUM, {
+			...forum,
+			availableTags: EMOJI_TAGS.map((t) =>
+				t.name === "完了" ? { ...t, emoji: null } : t,
+			),
+		});
+		const s = await setup({ d, hishaku: fakeHishaku() });
+		s.d.addThread("p1", "🤔[1234] README の誤字");
+		await s.intake.handle(say("p1", "README の誤字を直して", { first: true }));
+		const seat = s.seats.get("p1");
+		await s.intake.onSeatMessage(
+			done(seat?.dispatchId ?? null, "直しました\n状態: 完了"),
+		);
+		await expireLinger(s);
+		expect(nameOf(s)).toBe("[1234] README の誤字");
+	});
+
+	it("同じ件名なら名前を変えない", async () => {
+		const s = await emojiSetup({ hishaku: fakeHishaku() });
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "question",
+				dispatchId: seat.dispatchId,
+				body: "A か B か",
+			}),
+		);
+		expect(nameOf(s)).toBe("🤔[1234] README の誤字");
+		const calls = vi.mocked(s.d.api.renameThread).mock.calls.length;
+		await s.intake.onSeatMessage(
+			done(seat.dispatchId, "やはり聞きたい\n状態: 決めてほしい"),
+		);
+		expect(vi.mocked(s.d.api.renameThread).mock.calls).toHaveLength(calls);
+	});
+
+	it("名前の変更の制限に当たったら、待ってから最後に覚えた件名だけを付ける", async () => {
+		const s = await emojiSetup({ hishaku: fakeHishaku() });
+		const seat = await openPost(s);
+		const rename = vi.mocked(s.d.api.renameThread);
+		rename.mockImplementationOnce(async () =>
+			err(rateLimited({ retryAfterMs: 300_000 })),
+		);
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "question",
+				dispatchId: seat.dispatchId,
+				body: "A か B か",
+			}),
+		);
+		expect(nameOf(s)).toBe("[1234] README の誤字");
+		// タグは止めない
+		expect(s.d.tagsOf("p1")).toEqual(["tag-decide"]);
+		expect(s.delayed.map((t) => t.ms)).toEqual([300_000]);
+		await s.intake.handle(say("p1", "A で"));
+		await s.intake.onSeatMessage(
+			done(s.seats.get("p1")?.dispatchId ?? null, "直しました\n状態: 完了"),
+		);
+		await expireLinger(s);
+		// 待っている間は呼ばず、付けたい件名だけを覚え直す
+		expect(rename.mock.calls.map((c) => c[1])).toEqual([
+			"[1234] README の誤字",
+			"🤔[1234] README の誤字",
+		]);
+		const reopened = await openSeatStore(s.stateDir);
+		expect(reopened.pendingTitleOf("p1")).toBe("🎉[1234] README の誤字");
+		s.fireDelayed();
+		await vi.waitFor(() => expect(nameOf(s)).toBe("🎉[1234] README の誤字"));
+		expect(rename.mock.calls.map((c) => c[1])).toEqual([
+			"[1234] README の誤字",
+			"🤔[1234] README の誤字",
+			"🎉[1234] README の誤字",
+		]);
+		await vi.waitFor(() => expect(s.seats.pendingTitleOf("p1")).toBeNull());
+	});
+
+	it("起動時に、前の受付が付けられなかった件名を付ける", async () => {
+		const d = fakeDiscord();
+		const forum = d.channels.get(FORUM);
+		if (!forum) throw new Error("no forum");
+		d.channels.set(FORUM, { ...forum, availableTags: EMOJI_TAGS });
+		const stateDir = tempDir();
+		const store = await openSeatStore(stateDir);
+		await store.setPendingTitle("p1", "🎉[1234] README の誤字");
+		d.addThread("p1", "[1234] README の誤字");
+		const s = await setup({ d, stateDir });
+		await s.intake.reconcile();
+		await vi.waitFor(() => expect(nameOf(s)).toBe("🎉[1234] README の誤字"));
 	});
 });

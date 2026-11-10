@@ -24,6 +24,7 @@ import { startWorkGateway } from "./gateway.ts";
 import { createGithubEventBatcher, runGithubEvents } from "./github-events.ts";
 import { guardDirOf } from "./guard/env.ts";
 import { createLedger } from "./guard/ledger.ts";
+import { createHishaku } from "./hishaku.ts";
 import { startInbox } from "./inbox.ts";
 import { agentOf, createIntake, type SeatPartner } from "./intake.ts";
 import { createGhIssueTracker } from "./issue-close.ts";
@@ -73,6 +74,7 @@ import {
 	startUsagePolling,
 	usageByPartner,
 } from "./usage.ts";
+import { createFindWorkBranches } from "./work-branch.ts";
 
 const config = loadConfig(process.env);
 if (!config.ok) {
@@ -196,6 +198,25 @@ const orca = createOrcaCli({
 	trust: (dir) => trustWorkspace(claudeConfigPathOf(process.env), dir),
 	logger,
 });
+// hs は prepare と push の間の状態を XDG_CACHE_HOME に残す。受付を作り直しても続きを預けられるよう state の volume に置く
+const hishaku = cfg.hishaku
+	? createHishaku({
+			...cfg.hishaku,
+			exec: spawnExec,
+			env: {
+				...env,
+				CODEX_HOME: cfg.codexHome,
+				XDG_CACHE_HOME: join(cfg.stateDir, "cache"),
+			},
+			cwd: cfg.workDir,
+		})
+	: null;
+if (!hishaku) {
+	logger.warn("hishaku disabled", {
+		reason:
+			"HISHAKU_URL / HISHAKU_ACCESS_CLIENT_ID / HISHAKU_ACCESS_CLIENT_SECRET",
+	});
+}
 const ORCA_READY_TIMEOUT_MS = 180_000;
 const seats = await openSeatStore(cfg.stateDir);
 const approvals = await openApprovalStore(cfg.stateDir);
@@ -282,6 +303,10 @@ const intake = createIntake({
 	seatReplied: () => syncScheduler?.(),
 	discord,
 	orca,
+	hishaku,
+	findWorkBranches: hishaku
+		? createFindWorkBranches({ exec: spawnExec, env })
+		: null,
 	seats,
 	approvals,
 	ledger,
@@ -320,6 +345,7 @@ const intake = createIntake({
 	issues: createGhIssueTracker({ exec: spawnExec, env, cwd: cfg.workDir }),
 	seatLimit: cfg.seatLimit,
 	sleepAfterMs: cfg.seatSleepAfterMs,
+	doneLingerMs: cfg.seatDoneLingerMs,
 	logger,
 });
 await intake.reconcile();
@@ -347,10 +373,17 @@ const sleepTimer = setInterval(() => {
 	void intake.sleepIdle().catch((e: unknown) => {
 		logger.error("seat sleep crashed", { error: String(e) });
 	});
-	void intake.refreshPanels().catch((e: unknown) => {
-		logger.error("seat panel refresh crashed", { error: String(e) });
+	void intake.watchLends().catch((e: unknown) => {
+		logger.error("hishaku lend watch crashed", { error: String(e) });
 	});
 }, 60_000);
+// hs の貸し出しの期限（数分）より短い間隔で延ばす
+const LEASE_RENEW_MS = 30_000;
+const leaseTimer = setInterval(() => {
+	void intake.renewLeases().catch((e: unknown) => {
+		logger.error("hishaku renew crashed", { error: String(e) });
+	});
+}, LEASE_RENEW_MS);
 
 // 席の Claude の SessionStart hook は写しだけを読み、席を起動するたびに GitHub へ行かない
 const REPO_MAP_SYNC_MS = 60 * 60_000;
@@ -666,6 +699,7 @@ const shutdown = (signal: string) => {
 	logger.info("shutting down", { signal });
 	stopped = true;
 	clearInterval(sleepTimer);
+	clearInterval(leaseTimer);
 	repoMapSync.stop();
 	usage.stop();
 	standupTimer?.stop();
