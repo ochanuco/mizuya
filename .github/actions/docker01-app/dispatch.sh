@@ -40,24 +40,43 @@ fi
 url="https://github.com/$repo/actions/runs/$run_id"
 echo "chabatake run: $url"
 
+# The run's state is read until it completes. A response that cannot be read (GitHub answered the
+# first poll right after a dispatch with an empty body) is polled again, not taken as a failed deploy.
 deadline=$(( $(date +%s) + WAIT_MINUTES * 60 ))
+status="unread"
+conclusion="-"
 while :; do
-  read -r status conclusion < <(gh api "repos/$repo/actions/runs/$run_id" --jq '"\(.status) \(.conclusion // "-")"')
-  [[ "$status" == completed ]] && break
+  if state=$(gh api "repos/$repo/actions/runs/$run_id" --jq '"\(.status) \(.conclusion // "-")"' 2>"$RUNNER_TEMP/poll.err") \
+      && [[ "$state" =~ ^[a-z_]+\ [a-z_-]+$ ]]; then
+    read -r status conclusion <<<"$state"
+    [[ "$status" == completed ]] && break
+  else
+    echo "could not read the state of run $run_id, polling again: ${state:-(empty response)} $(tr '\n' ' ' <"$RUNNER_TEMP/poll.err")" >&2
+  fi
   if (( $(date +%s) >= deadline )); then
     conclusion="unknown"
     break
   fi
-  sleep 15
+  sleep "${POLL_SECONDS:-15}"
 done
 
-failed_jobs=$(gh api "repos/$repo/actions/runs/$run_id/jobs" --paginate \
-  --jq '.jobs[] | select(.conclusion == "failure") | .name')
+# The failed jobs only add detail to the summary, so failing to list them does not change the result.
+if ! failed_jobs=$(gh api "repos/$repo/actions/runs/$run_id/jobs" --paginate \
+    --jq '.jobs[] | select(.conclusion == "failure") | .name' 2>"$RUNNER_TEMP/jobs.err"); then
+  echo "::warning::could not list the jobs of run $run_id: $(tr '\n' ' ' <"$RUNNER_TEMP/jobs.err")"
+  failed_jobs=""
+fi
 
 case "$conclusion" in
   success) result="success" ;;
   cancelled) result=$([[ -z "$failed_jobs" ]] && echo "cancelled" || echo "cancelled after a failed job") ;;
-  unknown) result="unknown: still $status after $WAIT_MINUTES min" ;;
+  unknown)
+    if [[ "$status" == unread ]]; then
+      result="unknown: the run's state could not be read for $WAIT_MINUTES min"
+    else
+      result="unknown: still $status after $WAIT_MINUTES min"
+    fi
+    ;;
   *) result="$conclusion" ;;
 esac
 
