@@ -178,3 +178,79 @@ describe("chakai の REST の口", () => {
 		);
 	});
 });
+
+it("担当タスクは 90 件の後ろまで、同じ条件とカーソルで読む", async () => {
+	const cursor = "next+/=cursor";
+	const { chakai, calls } = make((url) => {
+		const params = new URL(url).searchParams;
+		return params.has("cursor")
+			? json({ tasks: [{ ...TASK, id: "last" }], next_cursor: null })
+			: json({
+					tasks: Array.from({ length: 90 }, (_, i) => ({
+						...TASK,
+						id: `t${i}`,
+					})),
+					next_cursor: cursor,
+				});
+	});
+	const result = await chakai.assigned("akarin", "pj/1", "todo");
+	expect(result.ok && result.value.tasks).toHaveLength(91);
+	expect(result.ok && result.value.tasks.at(-1)?.id).toBe("last");
+	expect(result.ok && result.value.full).toBe(false);
+	expect(calls).toHaveLength(2);
+	const params = new URL(calls[1]?.url ?? "").searchParams;
+	expect(Object.fromEntries(params)).toEqual({
+		project_id: "pj/1",
+		state: "todo",
+		assignee_id: "akarin",
+		limit: "90",
+		cursor,
+	});
+});
+
+it("直下の子も全ページを読み、ページ間の重複を除く", async () => {
+	const { chakai, calls } = make((url) =>
+		new URL(url).searchParams.has("cursor")
+			? json({ tasks: [TASK, { ...TASK, id: "child2" }], next_cursor: null })
+			: json({ tasks: [TASK], next_cursor: "next" }),
+	);
+	const result = await chakai.children("yukarin", "parent");
+	expect(result.ok && result.value.map((t) => t.id)).toEqual(["t1", "child2"]);
+	expect(new URL(calls[1]?.url ?? "").searchParams.get("parent_id")).toBe(
+		"parent",
+	);
+});
+
+it("終端が明示されれば 90 件ちょうどでも上限警告を出さない", async () => {
+	const { chakai, calls } = make(() =>
+		json({ tasks: Array.from({ length: 90 }, () => TASK), next_cursor: null }),
+	);
+	const result = await chakai.assigned("yukarin", "pj1", "todo");
+	expect(result.ok && result.value.full).toBe(false);
+	expect(calls).toHaveLength(1);
+});
+
+it("途中のページの失敗や壊れたカーソルは部分結果にせず失敗を返す", async () => {
+	for (const response of [
+		json({ error: "unavailable", message: "失敗" }, 503),
+		json({ tasks: [], next_cursor: 1 }),
+	]) {
+		const { chakai } = make((url) =>
+			new URL(url).searchParams.has("cursor")
+				? response
+				: json({ tasks: [TASK], next_cursor: "next" }),
+		);
+		expect((await chakai.assigned("akarin", "pj1", "todo")).ok).toBe(false);
+	}
+});
+
+it("繰り返すカーソルで検索が終わらなくならない", async () => {
+	const { chakai, calls } = make(() =>
+		json({ tasks: [TASK], next_cursor: "same" }),
+	);
+	expect(await chakai.assigned("akarin", "pj1", "todo")).toMatchObject({
+		ok: false,
+		error: { type: "ChakaiFailed" },
+	});
+	expect(calls).toHaveLength(2);
+});

@@ -261,7 +261,7 @@ export const pickupTasks = async (deps: TaskPickupDeps): Promise<void> => {
 			});
 			continue;
 		}
-		// 検索は続きを読めないので、プロジェクトごとに分けて 1 回の上限に届きにくくする
+		// 検索の失敗がほかのプロジェクトに波及しないよう、プロジェクトごとに読む
 		for (const project of projects.value) {
 			await recover(actor, project.id);
 			const found = await chakai.assigned(actor, project.id, "todo");
