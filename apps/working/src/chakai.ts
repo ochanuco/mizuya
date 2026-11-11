@@ -9,14 +9,14 @@ export type Chakai = {
 	projects: (actor: PartnerId) => Promise<Result<ChakaiProject[], ChakaiError>>;
 	/**
 	 * プロジェクトの中で、担当が actor の state のタスク。
-	 * chakai の検索は続きを読めないので、1 回の上限まで読み、上限に届いていれば full で知らせる。
+	 * カーソルで終端まで読む。旧 API が上限で切った場合だけ full で知らせる。
 	 */
 	assigned: (
 		actor: PartnerId,
 		projectId: string,
 		state: ChakaiState,
 	) => Promise<Result<{ tasks: ChakaiTask[]; full: boolean }, ChakaiError>>;
-	/** 直下の子。上限を超える分は返らない。 */
+	/** 直下の子を終端まで読む。 */
 	children: (
 		actor: PartnerId,
 		id: string,
@@ -113,7 +113,13 @@ const taskSchema = v.pipe(
 	),
 );
 
-const tasksSchema = v.object({ tasks: v.array(taskSchema) });
+const tasksSchema = v.object({
+	tasks: v.array(taskSchema),
+	// chakai の配備より先に Working が更新されても、旧 API の上限警告は残す
+	next_cursor: v.optional(
+		v.nullable(v.pipe(v.string(), v.minLength(1), v.maxLength(4096))),
+	),
+});
 
 const projectsSchema = v.object({
 	projects: v.array(v.object({ id: v.string(), repos: v.array(v.string()) })),
@@ -194,32 +200,53 @@ export const createChakai = (opts: {
 
 	const id = encodeURIComponent;
 
+	const searchAll = async (
+		actor: PartnerId,
+		query: string,
+	): Promise<Result<{ tasks: ChakaiTask[]; full: boolean }, ChakaiError>> => {
+		const tasks = new Map<string, ChakaiTask>();
+		const cursors = new Set<string>();
+		let cursor: string | undefined;
+		while (true) {
+			const r = await call(
+				actor,
+				"GET",
+				`/tasks?${query}&limit=${SEARCH_LIMIT}${cursor ? `&cursor=${id(cursor)}` : ""}`,
+				tasksSchema,
+			);
+			if (!r.ok) return r;
+			for (const task of r.value.tasks) tasks.set(task.id, task);
+			const next = r.value.next_cursor;
+			if (next === null || next === undefined) {
+				return ok({
+					tasks: [...tasks.values()],
+					full: next === undefined && r.value.tasks.length >= SEARCH_LIMIT,
+				});
+			}
+			if (cursors.has(next)) {
+				return err({
+					type: "ChakaiFailed",
+					code: null,
+					reason: "chakai の検索が同じカーソルを繰り返した",
+				});
+			}
+			cursors.add(next);
+			cursor = next;
+		}
+	};
+
 	return {
 		projects: async (actor) => {
 			const r = await call(actor, "GET", "/projects", projectsSchema);
 			return r.ok ? ok(r.value.projects) : r;
 		},
-		assigned: async (actor, projectId, state) => {
-			const r = await call(
+		assigned: (actor, projectId, state) =>
+			searchAll(
 				actor,
-				"GET",
-				`/tasks?project_id=${id(projectId)}&state=${state}&assignee_id=${id(actor)}&limit=${SEARCH_LIMIT}`,
-				tasksSchema,
-			);
-			return r.ok
-				? ok({
-						tasks: r.value.tasks,
-						full: r.value.tasks.length >= SEARCH_LIMIT,
-					})
-				: r;
-		},
+				`project_id=${id(projectId)}&state=${state}&assignee_id=${id(actor)}`,
+			),
 		children: async (actor, taskId) => {
-			const r = await call(
-				actor,
-				"GET",
-				`/tasks?parent_id=${id(taskId)}&limit=${SEARCH_LIMIT}`,
-				tasksSchema,
-			);
+			const r = await searchAll(actor, `parent_id=${id(taskId)}`);
 			return r.ok ? ok(r.value.tasks) : r;
 		},
 		getTask: (actor, taskId) =>
