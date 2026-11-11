@@ -3384,6 +3384,7 @@ describe("chakai の親タスクの席", () => {
 		const [send] = s.o.opsOf("send") as { body: string }[];
 		expect(send?.body).toContain("## 2 件目のタスク");
 		expect(send?.body).toContain("ID: c2");
+		expect(send?.body).toContain("PR の本文に書く行: chakai:c2\n");
 		expect(s.seats.get("thread1")?.status).toBe("working");
 		expect(s.d.tagsOf("thread1")).toEqual(["tag-working"]);
 		expect(s.d.sentTo("thread1")).toEqual(
@@ -3486,7 +3487,7 @@ describe("chakai の親タスクの席", () => {
 		expect(c.runs[0]?.ended).toBe(false);
 	});
 
-	it("todo の子孫が無い親は親そのものを渡し、review になったら解放する", async () => {
+	const beginParentOnly = async () => {
 		const c = fakeChakai();
 		c.repos.set("pj1", ["example/repo"]);
 		const parent = c.add({ id: "p", title: "調べる" });
@@ -3498,14 +3499,49 @@ describe("chakai の親タスクの席", () => {
 			partner: "yukarin",
 			repo: "example/repo",
 		});
+		return { s, c };
+	};
+
+	it("todo の子孫が無い親は親そのものを渡し、done になったら完了のタグで解放する", async () => {
+		const { s, c } = await beginParentOnly();
 		const [start] = s.o.opsOf("startSeat") as { spec: string }[];
 		expect(start?.spec).toContain("親タスクそのものを作業する");
+		expect(start?.spec).toContain("PR の本文に書く行: chakai:p\n");
+		expect(start?.spec).not.toContain("done にせず");
 		expect(c.tasks.get("p")?.state).toBe("doing");
-		c.move("p", "review", "調べた結果を見てほしい");
+		c.move("p", "done");
+		await turnEnd(s);
+		expect(c.runs[0]?.ended).toBe(true);
+		expect(c.tasks.get("p")?.state).toBe("done");
+		expect(s.seats.get("thread1")).toBeNull();
+		expect(s.o.opsOf("removeWorktree")).toHaveLength(1);
+		expect(s.d.tagsOf("thread1")).toEqual(["tag-done"]);
+		expect(s.d.sentTo("thread1").at(-1)).toContain(
+			"done にしたので、席を解放しました",
+		);
+	});
+
+	it("子の無い親を席が review にしたら解放せず、決めてほしいで待ち、答えのあとの done で閉じる", async () => {
+		const { s, c } = await beginParentOnly();
+		c.move("p", "review", "どちらの方式にするか");
+		await turnEnd(s);
+		expect(c.runs[0]?.ended).toBe(false);
+		expect(s.seats.get("thread1")?.status).toBe("waiting");
+		expect(s.d.tagsOf("thread1")).toEqual(["tag-decide"]);
+
+		s.d.messages.set("m1", {
+			id: "m1",
+			authorId: OWNER,
+			authorName: "owner",
+			isBot: false,
+			content: "A で",
+		});
+		await s.intake.handle(say("thread1", "A で"));
+		c.move("p", "done");
 		await turnEnd(s);
 		expect(c.runs[0]?.ended).toBe(true);
 		expect(s.seats.get("thread1")).toBeNull();
-		expect(s.d.tagsOf("thread1")).toEqual(["tag-decide"]);
+		expect(s.d.tagsOf("thread1")).toEqual(["tag-done"]);
 	});
 
 	it("台帳を読めないときは次を渡さず、決めてほしいで待つ", async () => {

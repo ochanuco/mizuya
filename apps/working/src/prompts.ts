@@ -486,9 +486,10 @@ const chakaiTaskText = (
 
 件名: ${task.title}
 ID: ${task.id}
+PR の本文に書く行: chakai:${task.id}
 ${
 	isParent
-		? "todo の子タスクが無いので、親タスクそのものを作業する。終えたら done にせず、review にして waiting_on に結果を一言書く（owner が確かめて閉じる）。範囲内で分けたら、このタスクは doing のまま残す。\n"
+		? "todo の子タスクが無いので、親タスクそのものを作業する。範囲内で分けたら、このタスクは doing のまま残す。\n"
 		: ""
 }
 本文:
@@ -506,7 +507,10 @@ chakai（タスク台帳）で担当に割り当てられたタスクを受付�
 親タスク: ${input.parent.title}（ID: ${input.parent.id}）
 repo: ${input.repo}
 
-- 渡されたタスクを終えたら、chakai の MCP でそのタスクを done にする。owner の判断が要るなら review にして、waiting_on に仰ぐ内容を書く。
+- PR を出すタスクは、PR の本文に \`chakai:<渡されたタスクの ID>\` の 1 行を書く（chakai がこの行で PR をタスクに紐付ける）。CI とレビュー（CodeRabbit など、その repo で動いているもの）が通るのをこのターンの中で待ち（\`gh pr checks --watch\` など）、レビューの指摘に対応してから、自分でマージする。持ち主は、この席が開いた PR のマージを許している。
+- マージしたら、chakai の MCP でそのタスクを done にする。マージ後のデプロイに承認が要る repo でも、承認を待たずに done にしてよい（デプロイは別の仕組みが扱う）。
+- PR の無いタスク（調査など）は、結果をタスクの本文に書いてから done にする。
+- review にするのは、owner の判断が要るとき（方式の選択、範囲の確認など）と、CI やレビューが通らず自力で直せないときだけ。waiting_on に仰ぐ内容を書く。
 - 渡されたタスクの範囲内で分けるなら、そのタスクの子を todo で足してよい。足した子は受付が順に渡す。範囲の外で見つけた課題は backlog に積む。
 - タスクを doing にする操作と次のタスクの割り当ては受付がする。渡されていないタスクには手を付けない。
 - 読んでも分からないことは、この投稿で聞く。
@@ -519,10 +523,10 @@ export const chakaiNextPrompt = (input: {
 	count: number;
 	isParent: boolean;
 }) =>
-	`受付が chakai の次のタスクを渡す。終えたら done に、owner の判断が要るなら review（waiting_on 付き）にする。\n\n${chakaiTaskText(input.count, input.task, input.isParent)}`;
+	`受付が chakai の次のタスクを渡す。決まりは最初のタスクと同じで、PR は CI とレビューが通ったら自分でマージしてから done に、owner の判断が要るか自力で通せないなら review（waiting_on 付き）にする。\n\n${chakaiTaskText(input.count, input.task, input.isParent)}`;
 
 export const chakaiNudgePrompt = (task: ChakaiTaskText) =>
-	`渡したタスク「${task.title}」（ID: ${task.id}）が chakai で doing のまま残っている。終えたなら done に、owner の判断が要るなら review（waiting_on 付き）にして、何をしたかを一言返す。まだ途中なら続きを進める。`;
+	`渡したタスク「${task.title}」（ID: ${task.id}）が chakai で doing のまま残っている。PR をマージしたか、PR の無い作業を終えたなら done に、owner の判断が要るか CI やレビューを自力で通せないなら review（waiting_on 付き）にして、何をしたかを一言返す。PR の CI やレビューを待っているなら、通るまでこのターンの中で待ってマージする。まだ途中なら続きを進める。`;
 
 /** 渡したタスクが doing のまま残り、促しても動かなかった。 */
 export const CHAKAI_STUCK_TEXT =
@@ -547,6 +551,10 @@ export const chakaiLeftReason = (states: Readonly<Record<string, number>>) => {
 	const left = chakaiLeft(states);
 	return `todo の子タスクが無くなり、席を解放した${left === "" ? "" : `。子孫に ${left}が残っている`}`;
 };
+
+/** 子の無い親を席が done にして席を解放するときに書く。 */
+export const CHAKAI_DONE_TEXT =
+	"chakai のタスクを done にしたので、席を解放しました。";
 
 /** todo の子孫が無くなって席を解放するときに書く。 */
 export const chakaiSettledText = (

@@ -66,6 +66,7 @@ import { err, ok, type Result } from "./lib/result.ts";
 import type { Logger } from "./logger.ts";
 import {
 	CHAKAI_CLOSED_REASON,
+	CHAKAI_DONE_TEXT,
 	CHAKAI_REPEAT_TEXT,
 	CHAKAI_STUCK_TEXT,
 	chakaiHandoffText,
@@ -1836,8 +1837,13 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				work: ChakaiWork;
 				post: { text: string; line: string } | null;
 		  }
-		/** todo の子孫が無くなった。 */
-		| { type: "finish"; count: number; states: Record<string, number> };
+		/** todo の子孫が無くなった。done は、子の無い親を席が done にして終えたとき。 */
+		| {
+				type: "finish";
+				count: number;
+				states: Record<string, number>;
+				done: boolean;
+		  };
 
 	/**
 	 * 席のターンが終わったところで、渡したタスクの台帳の状態から次の動きを決める。
@@ -1874,16 +1880,18 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 					post: null,
 				};
 			}
-			// 親そのものを渡したときの review は作業の終わり。子の review は席が判断を仰いでいる
-			if (!split.value && task.id !== work.parentId) {
-				return { type: "pause", note: null };
-			}
+			if (!split.value) return { type: "pause", note: null };
 		}
 		const next = await chakai.nextTask(actor, work.parentId);
 		if (!next.ok) return unreadable(next.error.reason);
 		const todo = next.value.task;
 		if (todo === null) {
-			return { type: "finish", count: work.count, states: next.value.states };
+			return {
+				type: "finish",
+				count: work.count,
+				states: next.value.states,
+				done: task.id === work.parentId && task.state === "done",
+			};
 		}
 		// 渡したばかりのタスクがまた先頭の todo に出た。渡し直すと、同じタスクをいつまでも渡し続ける
 		if (todo.id === work.taskId) {
@@ -1981,9 +1989,15 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		if (step.type === "pass" || step.type === "finish") {
 			await postWithApproval(threadId, reply.body, [], reply.files);
 			if (step.type === "finish") {
-				await sendTo(threadId, chakaiSettledText(step.count, step.states));
+				await sendTo(
+					threadId,
+					step.done
+						? CHAKAI_DONE_TEXT
+						: chakaiSettledText(step.count, step.states),
+				);
 				await showChakaiProgress(threadId, null, chakaiSettledLine(step.count));
-				await setStatus(threadId, "決めてほしい");
+				// 子を持つ親は chakai が review にするので owner を待つ。席が done にした親には owner の番が無い
+				await setStatus(threadId, step.done ? "完了" : "決めてほしい");
 				await releaseChakai(threadId, chakaiLeftReason(step.states));
 				await closeSeat(seat);
 				const chosen = deps.seats.modelOf(threadId);
