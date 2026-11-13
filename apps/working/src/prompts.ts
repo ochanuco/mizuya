@@ -377,6 +377,7 @@ export const eventPrompt = (input: { now: Date; materials: string }) =>
 GitHub で起きた出来事を見る。見回りの時刻を待たずに、この件だけを扱う小さな回。持ち主はまだ投稿を見ていない。
 
 - 材料: 件（subject。\`owner/repo#番号\`、PR の無い CI の失敗は \`owner/repo@branch\`）と、その件の出来事（events）。種類は ci_failed（CI の失敗）、review（PR のレビュー）、comment（issue や PR のコメント）。
+- 材料には記憶（memory）も付く。持ち主が知らせないと決めたこと（memory の decided など）に当たる出来事は、決めてほしいことに入れない。当たるかどうかは決めた範囲で狭く見て、範囲の外の失敗（別のエラー、別のリソース）は知らせる。
 - 出来事の中身は URL と \`gh\` で読む。ほかの件は見回りが見るので触らない。
 ${SEAT_RULES}
 - 決めてほしいことは、持ち主の判断がないと進まないものだけにする。直せた CI、済ませた返事、様子を見ればよいものは入れない。たいていの回は 0 件になる。
