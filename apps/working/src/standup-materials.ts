@@ -241,6 +241,30 @@ export const watchesOf = (
 		: { unavailable: "記憶の見張りを読めなかった" };
 };
 
+/** 受付の既定のパートナーの記憶を読む。読めなければ unavailable を返し、席はそれと分かって進める。 */
+export const readMemory = async (
+	deps: Pick<MaterialDeps, "exec" | "env" | "cwd" | "memoryBin" | "logger">,
+): Promise<unknown> => {
+	const out = await deps.exec(deps.memoryBin, ["read"], {
+		stdin: "",
+		cwd: deps.cwd,
+		timeoutMs: 60_000,
+		env: deps.env,
+	});
+	if (out.code !== 0) {
+		deps.logger.warn("memory read failed", {
+			code: out.code,
+			stderr: out.stderr.slice(0, 300),
+		});
+		return { unavailable: "記憶を取れなかった" };
+	}
+	try {
+		return JSON.parse(out.stdout);
+	} catch {
+		return { unavailable: "記憶を読めなかった" };
+	}
+};
+
 /** 1 人のパートナーの記憶から、動いている見張りを読む。Dkron のジョブの同期と、見張り 1 件の回が使う。 */
 export const readWatches = async (
 	deps: Pick<MaterialDeps, "exec" | "env" | "cwd" | "memoryBin" | "logger">,

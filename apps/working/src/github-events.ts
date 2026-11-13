@@ -3,6 +3,7 @@ import { toModelJson } from "./lib/core.ts";
 import type { Logger } from "./logger.ts";
 import type { PatrolSnapshot, PatrolStore } from "./patrol.ts";
 import { eventPrompt } from "./prompts.ts";
+import { memoryForSeat } from "./standup-materials.ts";
 
 const text = v.string();
 const repo = v.pipe(v.string(), v.nonEmpty());
@@ -100,6 +101,8 @@ export type EventRunDeps = {
 	store: PatrolStore;
 	selfLogin: string | null;
 	start: (spec: string, kind: "event") => Promise<string>;
+	/** 席に渡す記憶。持ち主が知らせないと決めた件を、席が投稿せずに済ませるため。 */
+	readMemory: () => Promise<unknown>;
 	now?: () => Date;
 	logger: Logger;
 };
@@ -132,12 +135,14 @@ export const runGithubEvents = async (
 		bySubject.set(key, [...(bySubject.get(key) ?? []), e]);
 	}
 	const now = (deps.now ?? (() => new Date()))();
+	const memory =
+		bySubject.size > 0 ? memoryForSeat(await deps.readMemory()) : undefined;
 	const seats: string[] = [];
 	for (const [subject, group] of bySubject) {
 		const id = await deps.start(
 			eventPrompt({
 				now,
-				materials: toModelJson({ subject, events: group }),
+				materials: toModelJson({ subject, events: group, memory }),
 			}),
 			"event",
 		);

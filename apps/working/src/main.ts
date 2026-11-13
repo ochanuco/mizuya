@@ -61,6 +61,7 @@ import {
 } from "./standup.ts";
 import {
 	gatherStandupMaterials,
+	readMemory,
 	readWatches,
 	withoutWatches,
 } from "./standup-materials.ts";
@@ -695,6 +696,7 @@ const githubEvents = cfg.standup.enabled
 								store: patrolStore,
 								selfLogin,
 								start: intake.startStandup,
+								readMemory: () => readMemory(memoryDeps),
 								logger,
 							},
 							events,

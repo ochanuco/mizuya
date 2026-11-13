@@ -107,8 +107,10 @@ describe("runGithubEvents", () => {
 	const run = async (
 		store: ReturnType<typeof memoryStore>,
 		events: GithubWorkEvent[],
+		memory: unknown = { decided: [] },
 	) => {
 		const specs: string[] = [];
+		const readMemory = vi.fn(async () => memory);
 		const seats = await runGithubEvents(
 			{
 				store,
@@ -117,12 +119,13 @@ describe("runGithubEvents", () => {
 					specs.push(spec);
 					return `${kind}-${specs.length}`;
 				},
+				readMemory,
 				now: () => new Date("2026-11-06T06:00:00Z"),
 				logger: silentLogger,
 			},
 			events,
 		);
-		return { seats, specs };
+		return { seats, specs, readMemory };
 	};
 
 	it("件ごとに 1 つの席を立て、席にはその件の出来事だけを渡す", async () => {
@@ -160,8 +163,27 @@ describe("runGithubEvents", () => {
 	});
 
 	it("全部が見送りなら席を立てない", async () => {
-		const { seats } = await run(memoryStore({}), [comment("working-me")]);
+		const { seats, readMemory } = await run(memoryStore({}), [
+			comment("working-me"),
+		]);
 		expect(seats).toEqual([]);
+		expect(readMemory).not.toHaveBeenCalled();
+	});
+
+	it("席に記憶を渡す（持ち主が知らせないと決めた件を席が見分けるため）。見張りは渡さない", async () => {
+		const { specs, readMemory } = await run(
+			memoryStore({}),
+			[review(3), ciFailed([9])],
+			{
+				decided: [{ summary: "oci01 の容量不足は知らせない" }],
+				watches: [{ id: "w1" }],
+			},
+		);
+		expect(readMemory).toHaveBeenCalledTimes(1);
+		for (const spec of specs) {
+			expect(spec).toContain("oci01 の容量不足は知らせない");
+			expect(spec).not.toContain("w1");
+		}
 	});
 });
 
