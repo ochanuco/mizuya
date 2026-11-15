@@ -1,6 +1,6 @@
 # Working のコンテナ。Working 受付と、受付が hs turn で走らせる席の Claude CLI・Codex CLI を同じコンテナで動かす。
 # ビルドコンテキストはリポジトリルート: docker build -f apps/working/Dockerfile .
-FROM node:26.12.1-slim AS build
+FROM node:26.13.0-slim AS build
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 # Node 25 から corepack が同梱されなくなったので npm から入れる
@@ -11,15 +11,15 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
     pnpm install --frozen-lockfile --filter @mizuya/working... \
  && pnpm --filter @mizuya/working deploy --prod --legacy /out
 
-FROM node:26.12.1-slim AS node
+FROM node:26.13.0-slim AS node
 
 # TAKT の claude-sdk provider の SDK。~/.takt の下に入り、イメージに焼き込む。版は mise/config.toml の takt と揃える。
-FROM node:26.12.1-slim AS takt
+FROM node:26.13.0-slim AS takt
 ENV TAKT_CONFIG_DIR=/home/worker/.takt
 RUN npx -y takt@0.74.0 install claude-sdk
 
 # 人格の元ファイル。正本は yunomi の partners にあり、版をコミット SHA で固定して取り込む。YUNOMI_REF は Renovate が yunomi の main に追従して上げる。
-FROM node:26.12.1-slim AS persona
+FROM node:26.13.0-slim AS persona
 # renovate: datasource=git-refs depName=https://github.com/ochanuco/yunomi currentValue=main
 ARG YUNOMI_REF=74fa78fcb5d79e97492a0dda6ac29b2eadf54402
 ADD https://github.com/ochanuco/yunomi.git#${YUNOMI_REF}:partners /partners
