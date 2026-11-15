@@ -508,7 +508,7 @@ mizuya の bot には、仕事チャンネルと仕事フォーラムで、読�
 
 ## 配備
 
-main への push で `.github/workflows/working-image.yml` が `ghcr.io/ochanuco/mizuya-working:main` と `:sha-<short>` を公開する。PR ではビルドだけ確かめる。公開の後、Environment `production-approval` で持ち主が承認すると、`deploy` job が chabatake の `docker01-app` を dispatch して `:sha-<short>` を docker01 に配置する（`.github/actions/docker01-app`）。docker01 の stack は chabatake の `docker01/mizuya-working` にある。作り直すと作業中の席が切れるので、承認は作業の切れ目に出す。
+main への push で `.github/workflows/working-image.yml` が `ghcr.io/ochanuco/mizuya-working:main` と `:sha-<short>` を公開する。PR ではビルドだけ確かめる。公開の後、Environment `production-approval` で持ち主が承認すると、`deploy` job が chabatake の `docker01-app` を dispatch して `:sha-<short>` を docker01 に配置する（`ochanuco/.github` の `actions/chabatake-dispatch`）。docker01 の stack は chabatake の `docker01/mizuya-working` にある。作り直すと作業中の席が切れるので、承認は作業の切れ目に出す。
 
 docker01 に、yunomi の gateway とは別の compose project で置く（`compose.example.yaml`）。gateway を更新しても Working の作業は止まらない。
 
