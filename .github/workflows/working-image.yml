@@ -95,5 +95,5 @@ jobs:
         with:
           workflow: docker01-app.yml
           inputs: '{"service": "mizuya-working", "tag": "${{ needs.publish.outputs.tag }}"}'
-          title: 'docker01-app: mizuya-working ${{ needs.publish.outputs.tag }}'
+          title: "docker01-app: mizuya-working ${{ needs.publish.outputs.tag }}"
           op-service-account-token: ${{ secrets.OP_SA_DEPLOY }}
