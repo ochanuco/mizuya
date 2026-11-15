@@ -91,12 +91,9 @@ jobs:
       group: docker01-mizuya-working
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ochanuco/.github/actions/chabatake-dispatch@194995de7425c6457f8d802510787afd02ed9235 # v1.7.0
         with:
-          sparse-checkout: .github/actions
-          persist-credentials: false
-      - uses: ./.github/actions/docker01-app
-        with:
-          service: mizuya-working
-          tag: ${{ needs.publish.outputs.tag }}
+          workflow: docker01-app.yml
+          inputs: '{"service": "mizuya-working", "tag": "${{ needs.publish.outputs.tag }}"}'
+          title: "docker01-app: mizuya-working ${{ needs.publish.outputs.tag }}"
           op-service-account-token: ${{ secrets.OP_SA_DEPLOY }}
