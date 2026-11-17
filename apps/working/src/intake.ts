@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ActivityEntry, ActivityKind } from "./activity-log.ts";
+import type { LabelSeatPulls } from "./actor-label.ts";
 import {
 	type ApprovalAnswer,
 	approvalAnswerOf,
@@ -185,6 +186,8 @@ export type IntakeDeps = {
 	hishaku?: Hishaku | null;
 	/** 席の worktree の clone から作業ブランチを探す。あれば会話を預けて返す前に hishaku の meta に書く。 */
 	findWorkBranches?: FindWorkBranches | null;
+	/** 席の clone が出した PR に、席の人格の actor label を付ける。 */
+	labelSeatPulls?: LabelSeatPulls | null;
 	seats: SeatStore;
 	/** 投稿で許可を待っている操作。 */
 	approvals: ApprovalStore;
@@ -397,6 +400,15 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		deps.akarin && deps.seats.partnerOf(threadId) === "akarin"
 			? "akarin"
 			: "yukarin";
+	/** 席を動かした agent は partnerOf で決まるので、chakai に名乗る X-Actor と同じ人格になる。 */
+	const labelPulls = async (seat: Seat) => {
+		if (!deps.labelSeatPulls || !seat.path) return;
+		await deps.labelSeatPulls({
+			threadId: seat.threadId,
+			dir: seat.path,
+			partner: partnerOf(seat.threadId),
+		});
+	};
 	const speaker = (partner: PartnerId): SeatPartner =>
 		partner === "akarin" && deps.akarin ? deps.akarin : yukarin;
 	/** どの席の bot が書いたメッセージか。 */
@@ -1479,6 +1491,8 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	 */
 	const closeSeat = async (seat: Seat): Promise<boolean> => {
 		await clearLendButtons(seat);
+		// worktree を消すと clone から作業ブランチを辿れなくなる
+		await labelPulls(seat);
 		const stopped = await deps.engine.stopSeat(seat);
 		if (!stopped.ok) {
 			log.error("seat stop failed", {
@@ -1974,6 +1988,8 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			await closeSeat(seat);
 			return;
 		}
+		// 返事を遅らせないよう待たない。席を閉じるときにもう一度付ける
+		void labelPulls(seat);
 		// 状態の行は添付の行を外したあとの最後の行。付けられなかった知らせはその後ろに足す
 		const { body, refs } = takeAttachRefs(msg.body);
 		const taken = takeStatus(body);
@@ -2442,6 +2458,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			await closeSeat(seat);
 			return;
 		}
+		void labelPulls(seat);
 		await postWithApproval(threadId, STOPPED_TEXT, blocked, [], true);
 		await seats.set(toWaiting(seat, null));
 		await setStatus(threadId, "決めてほしい");

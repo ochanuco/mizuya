@@ -94,6 +94,7 @@ const setup = async (
 		hishaku?: ReturnType<typeof fakeHishaku>;
 		chakai?: ReturnType<typeof fakeChakai>;
 		findWorkBranches?: IntakeDeps["findWorkBranches"];
+		labelSeatPulls?: IntakeDeps["labelSeatPulls"];
 		/** 受付を作り直すときに、同じ Discord を渡す。 */
 		d?: ReturnType<typeof fakeDiscord>;
 		sys?: ReturnType<typeof fakeDiscord>;
@@ -136,6 +137,7 @@ const setup = async (
 		engine: o.engine,
 		hishaku: opts.hishaku?.hishaku ?? null,
 		findWorkBranches: opts.findWorkBranches ?? null,
+		labelSeatPulls: opts.labelSeatPulls ?? null,
 		seats,
 		approvals: await openApprovalStore(stateDir),
 		ledger,
@@ -620,6 +622,30 @@ describe("取り消せない操作で止まったとき", () => {
 });
 
 describe("席の完了報告", () => {
+	it("返事のたびと、閉じる前（worktree を消す前）に、席の人格で PR の label を付けに行く", async () => {
+		const order: string[] = [];
+		const s = await setup({
+			labelSeatPulls: async (input) => {
+				const removed = s.o.opsOf("removeWorktree").length;
+				order.push(`label ${input.dir} ${input.partner} removed=${removed}`);
+			},
+		});
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "worker_done",
+				dispatchId: seat.dispatchId,
+				body: "直して PR を出しました\n状態: 完了",
+				outcome: "succeeded",
+			}),
+		);
+		expect(order).toEqual(["label /seats/seat-p1 yukarin removed=0"]);
+		s.advance(60 * 60_000);
+		await s.intake.sleepIdle();
+		expect(order.at(-1)).toBe("label /seats/seat-p1 yukarin removed=0");
+		expect(s.o.opsOf("removeWorktree")).toEqual(["/seats/seat-p1"]);
+	});
+
 	it("投稿に書いてタグを完了にし、記憶に 1 行残し、しばらく残した席を時間がたったら閉じる", async () => {
 		const s = await setup();
 		const seat = await openPost(s);
