@@ -628,6 +628,7 @@ const schedulerSync = schedulerConfig
 							)
 						: [],
 					selfUrl: schedulerConfig.selfUrl,
+					node: schedulerConfig.node,
 					token: schedulerConfig.token,
 				}),
 			intervalMs: schedulerConfig.syncIntervalMs,

@@ -279,12 +279,21 @@ describe("loadConfig", () => {
 				clientSecret: "ssecret",
 				token: "run-token",
 				selfUrl: "http://working.example.com:8192/run",
+				node: null,
 				port: 8092,
 				syncIntervalMs: 600_000,
 				patrolSchedule: "0 0 */2 * * *",
 			});
 			expect(r.ok && r.value.standup.timer).toBe(false);
 			expect(r.ok && r.value.standup.enabled).toBe(true);
+		});
+
+		it("ジョブを動かす node を渡せる。名前に使えない文字があれば起動しない", () => {
+			const r = loadConfig({ ...base, ...scheduler, SCHEDULER_NODE: "home01" });
+			expect(r.ok && r.value.scheduler?.node).toBe("home01");
+			expect(
+				loadConfig({ ...base, ...scheduler, SCHEDULER_NODE: "a b" }).ok,
+			).toBe(false);
 		});
 
 		it("ポート、同期の間隔、見回りの schedule を変えられる", () => {

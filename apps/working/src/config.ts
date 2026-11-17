@@ -71,6 +71,7 @@ const envSchema = v.object({
 	SCHEDULER_SELF_URL: v.optional(v.pipe(v.string(), v.url())),
 	SCHEDULER_PORT: v.optional(positiveInt),
 	SCHEDULER_SYNC_INTERVAL_MINUTES: v.optional(positiveInt),
+	SCHEDULER_NODE: v.optional(v.pipe(v.string(), v.regex(/^[A-Za-z0-9_.-]+$/))),
 	PATROL_SCHEDULE: v.optional(nonEmpty),
 	HISHAKU_URL: v.optional(v.pipe(v.string(), v.url())),
 	HISHAKU_ACCESS_CLIENT_ID: v.optional(nonEmpty),
@@ -170,6 +171,11 @@ export type WorkingConfig = {
 		token: string;
 		/** Dkron から届く、LAN に公開したこの受付の口（`/run` まで）。 */
 		selfUrl: string;
+		/**
+		 * ジョブを動かす Dkron の node（agent の tag `node`）。null なら tag を付けず、どの node でも動く。
+		 * `selfUrl` は LAN の口なので、Dkron が複数の node を持つときは LAN にいる node に絞る。
+		 */
+		node: string | null;
 		port: number;
 		syncIntervalMs: number;
 		/** 見回りのジョブの schedule（Dkron の 6 フィールドの cron、Asia/Tokyo）。 */
@@ -236,6 +242,7 @@ export const loadConfig = (
 					clientSecret: e.SCHEDULER_ACCESS_CLIENT_SECRET,
 					token: e.SCHEDULER_TOKEN,
 					selfUrl: e.SCHEDULER_SELF_URL,
+					node: e.SCHEDULER_NODE ?? null,
 					port: e.SCHEDULER_PORT ?? 8092,
 					syncIntervalMs: (e.SCHEDULER_SYNC_INTERVAL_MINUTES ?? 10) * 60_000,
 					patrolSchedule: e.PATROL_SCHEDULE ?? "0 0 */2 * * *",

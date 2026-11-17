@@ -91,6 +91,8 @@ export type DkronJob = {
 	executor: "http";
 	executor_config: Record<string, string>;
 	metadata: Record<string, string>;
+	/** 動かす node の条件。`{ node: "<名前>:1" }` は tag `node` がその名前の node のうち 1 つで動かす。 */
+	tags: Record<string, string>;
 };
 
 const TIMEZONE = "Asia/Tokyo";
@@ -132,6 +134,8 @@ export type DesiredJobsInput = {
 	/** Dkron から届く、受付の起こされる口。 */
 	selfUrl: string;
 	token: string;
+	/** null なら tag を付けない。 */
+	node: string | null;
 };
 
 export type DesiredJobs = {
@@ -182,6 +186,7 @@ export const desiredJobs = (input: DesiredJobsInput): DesiredJobs => {
 			expectCode: "202",
 		},
 		metadata: { owner: JOB_OWNER, ...metadata },
+		tags: input.node === null ? {} : { node: `${input.node}:1` },
 	});
 	const jobs: DkronJob[] = [];
 	if (input.standupAt !== null) {
@@ -249,6 +254,7 @@ const currentJobSchema = v.object({
 	executor: v.optional(v.string(), ""),
 	executor_config: stringRecord,
 	metadata: stringRecord,
+	tags: stringRecord,
 });
 
 export type CurrentJob = v.InferOutput<typeof currentJobSchema>;
@@ -269,7 +275,8 @@ const sameJob = (want: DkronJob, got: CurrentJob) =>
 	want.retries === got.retries &&
 	want.executor === got.executor &&
 	sameRecord(want.executor_config, got.executor_config) &&
-	sameRecord(want.metadata, got.metadata);
+	sameRecord(want.metadata, got.metadata) &&
+	sameRecord(want.tags, got.tags);
 
 export type SyncPlan = {
 	create: DkronJob[];

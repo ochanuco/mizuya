@@ -342,6 +342,7 @@ Dkron の API と UI には認証が無いので、Dkron は LAN に口を出さ
 | 同上（間隔の見張り）               | `@every <interval_minutes>m`                                               | なし         |
 
 - どのジョブも `concurrency: "forbid"`、`executor: "http"` で、`SCHEDULER_SELF_URL` に `Authorization: Bearer <SCHEDULER_TOKEN>` を付けて POST し、202 を待つ。失敗すれば 2 回までやり直す。
+- `SCHEDULER_NODE` を設定すると、どのジョブにも tag `{"node": "<値>:1"}` を付け、agent の tag `node` がその名前の node のうち 1 つだけで動かす。起こされる口は LAN にあるので、LAN の外の node（Dkron の server など）が POST しても届かない。設定しなければ tag を付けず、Dkron の生きている node のどれでも動く。tag の違いも突き合わせで直す。
 - 受付のジョブは `metadata.owner` が `mizuya-working`。それ以外のジョブには触らない。
 - 見張りのジョブ名は id を小文字にし、使えない文字を `-` に置き換える。見張りが止められたり期限が切れたりすれば、次の同期でジョブを消す。記憶を読めなかったパートナーの見張りのジョブは消さずに残す。`schedule` も `interval_minutes` も無い見張りはジョブを置かず、同期のたびに warn のログ（`watch has no schedule`）を残す。
 - `STANDUP_ENABLED=false` なら受付のジョブをすべて消す。
@@ -486,6 +487,7 @@ run を始める・閉じる、次のタスクを取る、タスクを doing に
 | `SCHEDULER_ACCESS_CLIENT_ID` / `SCHEDULER_ACCESS_CLIENT_SECRET`   | いいえ | Dkron の前の Cloudflare Access の service token。受付だけが使い、席には渡さない                                                                                |
 | `SCHEDULER_TOKEN`                                                 | いいえ | Dkron が起こされる口に付けるトークン。ジョブに書く                                                                                                             |
 | `SCHEDULER_SELF_URL`                                              | いいえ | Dkron から届く起こされる口（`http://<host>:<公開したポート>/run`）                                                                                             |
+| `SCHEDULER_NODE`                                                  | いいえ | ジョブを動かす Dkron の node（agent の tag `node`）。下の「Dkron から起こす」                                                                                  |
 | `SCHEDULER_PORT`                                                  | いいえ | 起こされる口のポート。既定は `8092`                                                                                                                            |
 | `SCHEDULER_SYNC_INTERVAL_MINUTES`                                 | いいえ | Dkron のジョブを突き合わせる間隔（分）。既定は `10`                                                                                                            |
 | `PATROL_SCHEDULE`                                                 | いいえ | Dkron の見回りのジョブの schedule（先頭が秒の 6 フィールドの cron、Asia/Tokyo）。既定は `0 0 */2 * * *`                                                        |

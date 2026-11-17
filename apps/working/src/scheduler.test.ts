@@ -125,6 +125,7 @@ const input = {
 	watches: [] as const,
 	selfUrl: "http://working.example.com:8192/run",
 	token: "run-token",
+	node: null,
 };
 
 describe("desiredJobs", () => {
@@ -153,6 +154,13 @@ describe("desiredJobs", () => {
 				expectCode: "202",
 			},
 		});
+	});
+
+	it("node を渡せば、tag node がその名前の node のうち 1 つで動かす。渡さなければ tag を付けない", () => {
+		expect(desiredJobs(input).jobs.map((j) => j.tags)).toEqual([{}, {}]);
+		expect(
+			desiredJobs({ ...input, node: "home01" }).jobs.map((j) => j.tags),
+		).toEqual([{ node: "home01:1" }, { node: "home01:1" }]);
 	});
 
 	it("見張りは 1 件ずつ、間隔ごとのジョブにする。読めなかったパートナーは覚えておく", () => {
@@ -251,6 +259,18 @@ describe("planSync", () => {
 			),
 		).toEqual(["standup"]);
 		expect(plan.remove).toEqual([]);
+	});
+
+	it("tag が違えば更新する", () => {
+		const d = desiredJobs({ ...input, node: "home01" });
+		const [standup] = d.jobs;
+		if (!standup) throw new Error("jobs");
+		expect(
+			planSync(d, [asCurrent({ ...standup, tags: {} })]).update.map(
+				(j) => j.name,
+			),
+		).toEqual(["standup"]);
+		expect(planSync(d, [asCurrent(standup)]).update).toEqual([]);
 	});
 
 	it("あるべき一覧に無い受付のジョブは消し、ほかの持ち主のジョブには触らない", () => {
