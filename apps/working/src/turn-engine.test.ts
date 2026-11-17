@@ -8,6 +8,7 @@ import { silentLogger } from "./logger.ts";
 import type { SeatMessage } from "./seat-engine.ts";
 import { tempDir } from "./test-support.ts";
 import {
+	claudeSeatEnv,
 	createTurnEngine,
 	type SpawnTurn,
 	seatEnv,
@@ -80,6 +81,7 @@ const setup = async () => {
 			PATH: process.env.PATH ?? "",
 			MIZUYA_STATE_DIR: "/state",
 		},
+		claudeEnv: { LANGFUSE_PUBLIC_KEY: "pk", LANGFUSE_USER_ID: "yukarin" },
 		hishakuEnv: {
 			HISHAKU_URL: "https://hishaku.example.com",
 			XDG_CACHE_HOME: "/cache",
@@ -159,6 +161,8 @@ describe("createTurnEngine", () => {
 		expect(call?.prompt).toBe("頼みごと");
 		expect(call?.env.MIZUYA_STATE_DIR).toBe("/state");
 		expect(call?.env.HISHAKU_URL).toBeUndefined();
+		expect(call?.env.LANGFUSE_PUBLIC_KEY).toBe("pk");
+		expect(call?.env.LANGFUSE_USER_ID).toBe("yukarin");
 		expect(call?.env.HISHAKU_REPORT_URL).toMatch(
 			/^http:\/\/127\.0\.0\.1:\d+\/seats\/turn%3Aseat-1$/,
 		);
@@ -224,6 +228,7 @@ describe("createTurnEngine", () => {
 		expect(calls[0]?.args).toContain("danger-full-access");
 		expect(calls[0]?.env.HISHAKU_URL).toBe("https://hishaku.example.com");
 		expect(calls[0]?.env.XDG_CACHE_HOME).toBe("/cache");
+		expect(calls[0]?.env.LANGFUSE_PUBLIC_KEY).toBeUndefined();
 	});
 
 	it("他の機械が借りていれば起こさず、作った worktree を消す", async () => {
@@ -468,6 +473,32 @@ describe("seatEnv", () => {
 			PATH: "/home/w/.local/share/mise/shims:/usr/bin",
 			MIZUYA_STATE_DIR: "/state",
 			MIZUYA_SEATS_DIR: "/seats",
+		});
+	});
+});
+
+describe("claudeSeatEnv", () => {
+	it("Langfuse の設定だけを渡し、trace の user を Yukarin にする", () => {
+		expect(
+			claudeSeatEnv({
+				LANGFUSE_PUBLIC_KEY: "pk",
+				LANGFUSE_SECRET_KEY: "sk",
+				LANGFUSE_BASE_URL: "http://langfuse.example.com:3000",
+				CC_LANGFUSE_CAPTURE_IMAGES: "false",
+				GH_TOKEN: "gh",
+			}),
+		).toEqual({
+			LANGFUSE_PUBLIC_KEY: "pk",
+			LANGFUSE_SECRET_KEY: "sk",
+			LANGFUSE_BASE_URL: "http://langfuse.example.com:3000",
+			CC_LANGFUSE_CAPTURE_IMAGES: "false",
+			LANGFUSE_USER_ID: "yukarin",
+		});
+	});
+
+	it("キーが無ければキーを渡さない", () => {
+		expect(claudeSeatEnv({ LANGFUSE_SECRET_KEY: "" })).toEqual({
+			LANGFUSE_USER_ID: "yukarin",
 		});
 	});
 });

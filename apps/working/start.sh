@@ -10,6 +10,14 @@ mkdir -p /home/worker/work/.tokeneconomizer
 if ! { claude plugin marketplace add /opt/tokeneconomizer && claude plugin install tokeneconomizer@tokeneconomizer; } >/dev/null 2>&1; then
 	echo "start.sh: Claude CLI に TokenEconomizer を入れられなかった" >&2
 fi
+# Langfuse の plugin も同じ。キーは受付が Claude の席にだけ渡し、キーの無い Claude（受付の要約など）では hook が何も送らずに終わる。
+if ! { claude plugin marketplace add /opt/langfuse-observability && claude plugin install langfuse-observability@langfuse-observability; } >/dev/null 2>&1; then
+	echo "start.sh: Claude CLI に Langfuse の plugin を入れられなかった" >&2
+fi
+# hook はキーを見る前に依存（langfuse の SDK）を uv で揃える。最初の Stop で数秒待たせないよう、先に UV_CACHE_DIR に入れておく。
+if ! uv sync --quiet --script /opt/langfuse-observability/hooks/langfuse_hook.py >/dev/null 2>&1; then
+	echo "start.sh: Langfuse の plugin の依存を入れられなかった" >&2
+fi
 # Codex は plugin を CODEX_HOME に写して使うので、image の版を上げたら入れ直す必要がある。毎回入れ直せば済む。
 # Codex の席の hook は requirements.toml が持ち、plugin から来るのは skill（$tokeneconomizer:status など）だけ。
 if ! { codex plugin marketplace add /opt/tokeneconomizer && codex plugin add tokeneconomizer@tokeneconomizer; } >/dev/null 2>&1; then
