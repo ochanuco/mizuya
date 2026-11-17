@@ -74,7 +74,7 @@ import {
 	startStandupTimer,
 } from "./standup-timer.ts";
 import { createSystemPoster } from "./system.ts";
-import { createTurnEngine, seatEnv } from "./turn-engine.ts";
+import { claudeSeatEnv, createTurnEngine, seatEnv } from "./turn-engine.ts";
 import {
 	claudeCredentialsPathOf,
 	createClaudeUsageReader,
@@ -206,6 +206,7 @@ const engine = createTurnEngine({
 		stateDir: cfg.stateDir,
 		seatsDir: cfg.seatsDir,
 	}),
+	claudeEnv: claudeSeatEnv(process.env),
 	hishakuEnv: cfg.hishaku
 		? {
 				HISHAKU_URL: cfg.hishaku.url,

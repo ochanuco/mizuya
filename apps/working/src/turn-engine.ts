@@ -105,11 +105,37 @@ export const seatEnv = (
 	return out;
 };
 
+/**
+ * Claude の席にだけ足す環境変数。Langfuse の plugin（managed settings で有効）が席の会話を trace にして送る。
+ * Codex の席と、受付が自分で動かす claude には渡さない。キーが無ければ plugin の hook は何も送らずに終わる。
+ */
+const CLAUDE_SEAT_ENV_KEYS = [
+	"LANGFUSE_PUBLIC_KEY",
+	"LANGFUSE_SECRET_KEY",
+	"LANGFUSE_BASE_URL",
+	"CC_LANGFUSE_CAPTURE_IMAGES",
+] as const;
+
+export const claudeSeatEnv = (
+	env: Record<string, string | undefined>,
+): Record<string, string> => {
+	const out: Record<string, string> = {};
+	for (const key of CLAUDE_SEAT_ENV_KEYS) {
+		const val = env[key];
+		if (val !== undefined && val !== "") out[key] = val;
+	}
+	// Claude の席はいつも Yukarin（intake の agentOf）。trace の user で人格を見分ける
+	out.LANGFUSE_USER_ID = "yukarin";
+	return out;
+};
+
 export type TurnEngineOptions = {
 	hsBin: string;
 	exec: Exec;
 	/** 席の agent に渡す環境（seatEnv）。 */
 	seatEnv: Record<string, string>;
+	/** Claude の席にだけ足す環境（claudeSeatEnv）。 */
+	claudeEnv?: Record<string, string>;
 	/** 番号の会話を走らせるときに hs に足す環境（HISHAKU_* と、prepare と同じ XDG_CACHE_HOME）。 */
 	hishakuEnv: Record<string, string>;
 	/** 席の worktree の元にする git リポジトリ。 */
@@ -311,6 +337,7 @@ export const createTurnEngine = (
 				: ["turn", "--agent", run.agent, ...localHowArgs(run.how), ...common];
 		const env = {
 			...opts.seatEnv,
+			...(run.agent === "claude" ? opts.claudeEnv : {}),
 			...(byNumber ? opts.hishakuEnv : {}),
 			HISHAKU_REPORT_URL: `${base ?? ""}/seats/${encodeURIComponent(run.terminal)}`,
 			HISHAKU_REPORT_TOKEN: run.token,

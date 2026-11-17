@@ -20,7 +20,7 @@ Working（仕事）を受け持つコンテナ。Claude CLI、Codex CLI、hishak
 | `guard/managed-settings.json`   | hook を登録する Claude CLI の managed settings。`/etc/claude-code/` に置く                                                                                                                                                               |
 | `guard/codex-requirements.toml` | 同じ hook を登録する Codex CLI の managed な要件。`/etc/codex/requirements.toml` に置く                                                                                                                                                  |
 | `guard/CLAUDE.md`               | rtk が縮めた出力の読み方を席の Claude に伝える managed の CLAUDE.md。`/etc/claude-code/` に置く                                                                                                                                          |
-| `start.sh`                      | コンテナの entrypoint。席の元の git リポジトリ（`init-seats-repo.sh`）と TokenEconomizer を用意してから受付を動かす。受付が終われば、コンテナも終わる                                                                                    |
+| `start.sh`                      | コンテナの entrypoint。席の元の git リポジトリ（`init-seats-repo.sh`）と、TokenEconomizer・Langfuse の plugin を用意してから受付を動かす。受付が終われば、コンテナも終わる                                                               |
 
 `hs` は GitHub Releases（`ochanuco/hishaku`）の `hs_linux_<arch>.tar.gz` を使い、同じ版の `checksums.txt` で確かめてから `/usr/local/bin/hs` に置く。版は Dockerfile の `HS_VERSION` の 1 か所にあり、Renovate が Releases に追従して上げる。
 
@@ -206,11 +206,12 @@ managed settings（`/etc/claude-code/managed-settings.json`、root の持ち物�
 - `autoMode.allow`: `ochanuco/*` の PR のマージを、auto モードの既定の「Merge Without Review」の対象から外す。持ち主ひとりで回していて approve する人がいないため。持ち主が頼んだマージか、席が頼まれた作業のために開いた PR に限る。`--admin` での必須チェックの回避は外さない。
 - PreToolUse hook（`rtk hook claude`、Bash だけ）: rtk が出力を縮めるよう Bash のコマンドを書き換える。guard と並んで動き、guard が止めればそちらが勝つ。
 - `extraKnownMarketplaces` と `enabledPlugins`: TokenEconomizer（image の `/opt/tokeneconomizer`）を強制的に有効にする。`allowManagedHooksOnly` の下で plugin の hook が動くのは、managed settings が有効にした plugin だけ。start.sh が起動のたびに `claude plugin install` で入れる。学んだことは `~/.tokeneconomizer`（work の volume）に残る。
+- `extraKnownMarketplaces` と `enabledPlugins`: Langfuse の plugin（`langfuse-observability@langfuse-observability`、image の `/opt/langfuse-observability`）も同じく強制的に有効にし、start.sh が入れる。plugin は Stop と SessionEnd の hook で、その回の会話を Langfuse に trace として送る。版はコミット SHA で固定し、Renovate が tag と一緒に上げる。hook は uv の script として動き、依存の langfuse の SDK は start.sh が起動のたびに `UV_CACHE_DIR` に揃える。キー（`LANGFUSE_PUBLIC_KEY`・`LANGFUSE_SECRET_KEY`）が無い Claude では、hook は何も送らずに終わる。hook のログは `~/.claude/state/langfuse_hook.log`。
 - `ENABLE_TOOL_SEARCH=false`: MCP の道具を遅延読み込みせず、最初から読み込む。席の Claude は `ToolSearch` を使わずに chimera や chakai などの道具を呼べる。
 
 hook は席の場所（`CLAUDE_PROJECT_DIR`）で、止めた操作の紐づけ先をその投稿にする。
 
-席の agent の環境は、受付が許可リストで組む。`HOME`・`LANG`・`TZ`・`USER`・`CLAUDE_CONFIG_DIR`・`CODEX_HOME`・`GH_TOKEN`・`GIT_*`・`MISE_*`・`UV_*`・`npm_config_store_dir`、mise の shims を先頭にした `PATH`、hook が使う `MIZUYA_STATE_DIR`・`MIZUYA_SEATS_DIR` だけを渡す。番号の会話を走らせる `hs` には `HISHAKU_*` と `XDG_CACHE_HOME` を足し、`hs` は agent を起こす前に service token を外す。Discord のトークン、受け箱の token と service token、`MAC_STATE_TOKEN`・`SEAT_STATUS_TOKEN`、記憶の口・chimera・chakai の service token、スケジューラの token は渡さない。
+席の agent の環境は、受付が許可リストで組む。`HOME`・`LANG`・`TZ`・`USER`・`CLAUDE_CONFIG_DIR`・`CODEX_HOME`・`GH_TOKEN`・`GIT_*`・`MISE_*`・`UV_*`・`npm_config_store_dir`、mise の shims を先頭にした `PATH`、hook が使う `MIZUYA_STATE_DIR`・`MIZUYA_SEATS_DIR` だけを渡す。Claude の席にだけ、Langfuse の plugin が読む `LANGFUSE_PUBLIC_KEY`・`LANGFUSE_SECRET_KEY`・`LANGFUSE_BASE_URL`・`CC_LANGFUSE_CAPTURE_IMAGES` と、trace の user にする `LANGFUSE_USER_ID=yukarin` を足す。Codex の席と、受付が自分で動かす `claude`（件名の要約など）には渡さない。番号の会話を走らせる `hs` には `HISHAKU_*` と `XDG_CACHE_HOME` を足し、`hs` は agent を起こす前に service token を外す。Discord のトークン、受け箱の token と service token、`MAC_STATE_TOKEN`・`SEAT_STATUS_TOKEN`、記憶の口・chimera・chakai の service token、スケジューラの token は渡さない。
 
 受付は起動のたびに、Claude CLI の設定（`CLAUDE_CONFIG_DIR/.claude.json`）の user スコープの MCP サーバー `chakai`（タスク台帳）を書き直す。Access のヘッダーと `X-Actor: yukarin` を値のまま書き、chakai は `X-Actor` で Yukarin の席からの呼び出しと見分ける。書くときは Claude CLI と同じ `.claude.json.lock` のロックを取り、ほかの設定は残す。`.claude.json` は hook が読み出しを止める。`CHAKAI_*` が欠けていれば消す。使い方は chakai の MCP が instructions で返すので、`WORKING_INSTRUCTIONS` には書かない。件名の要約は同じ設定を読むので、`--strict-mcp-config` で MCP サーバーにつながせない。
 
@@ -481,6 +482,9 @@ run を始める・閉じる、次のタスクを取る、タスクを doing に
 | `PLAYWRIGHT_ACCESS_CLIENT_ID` / `PLAYWRIGHT_ACCESS_CLIENT_SECRET` | いいえ | Playwright MCP の Cloudflare Access の service token。URL とそろったときだけ渡す                                                                               |
 | `CHAKAI_MCP_URL`                                                  | いいえ | chakai（タスク台帳）の MCP の URL。席の agent に MCP サーバー `chakai` として渡す。受付は同じ origin の REST（`/v1`）で担当の付いたタスクを拾い、席を回す      |
 | `CHAKAI_ACCESS_CLIENT_ID` / `CHAKAI_ACCESS_CLIENT_SECRET`         | いいえ | chakai の Cloudflare Access の service token。URL とそろったときだけ席に渡し、タスクの見回りを動かす。席も受付も `X-Actor`（`yukarin` / `akarin`）を付けて呼ぶ |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY`                     | いいえ | 席の Claude の会話を送る Langfuse の project の API キー。Claude の席にだけ渡す。無ければ trace を送らない                                                     |
+| `LANGFUSE_BASE_URL`                                               | いいえ | Langfuse の URL（`http://<Langfuse の host>:3000`）。Claude の席にだけ渡す                                                                                     |
+| `CC_LANGFUSE_CAPTURE_IMAGES`                                      | いいえ | `false` で画像を Langfuse に上げず、印の文字だけを残す。Claude の席にだけ渡す                                                                                  |
 | `MEMORY_BIN`                                                      | いいえ | 朝会で記憶を読む CLI。既定は `yunomi-memory`                                                                                                                   |
 | `MAC_STATE_TOKEN`                                                 | いいえ | Mac と共有するトークン。設定したときだけ席の状態の受け口を開く                                                                                                 |
 | `MAC_STATE_PORT`                                                  | いいえ | 席の状態の受け口のポート。既定は `8090`                                                                                                                        |

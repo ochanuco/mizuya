@@ -20,6 +20,14 @@
       ],
       extractVersionTemplate: '^v(?<version>.*)$',
     },
+    {
+      // 席の Claude の Langfuse plugin。tag を追い、取り込みに使うコミット SHA も一緒に上げる
+      customType: 'regex',
+      managerFilePatterns: ['/^apps/working/Dockerfile$/'],
+      matchStrings: [
+        '# renovate: datasource=(?<datasource>github-tags) depName=(?<depName>langfuse/Claude-Observability-Plugin) currentValue=(?<currentValue>\\S+)\\nARG LANGFUSE_PLUGIN_REF=(?<currentDigest>[0-9a-f]{40})',
+      ],
+    },
   ],
   packageRules: [
     {

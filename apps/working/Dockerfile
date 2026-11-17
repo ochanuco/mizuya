@@ -129,6 +129,14 @@ RUN arch="$(dpkg --print-architecture)" \
 ARG TOKENECONOMIZER_VERSION=v0.1.0
 ADD https://github.com/microsoft/TokenEconomizer.git#${TOKENECONOMIZER_VERSION} /opt/tokeneconomizer
 
+# 席の Claude の会話を自前の Langfuse に trace として送る plugin。TokenEconomizer と同じく、managed settings が directory の marketplace として指し、
+# enabledPlugins で強制的に有効にする。tag は付け替えられるので、取り込みはコミット SHA で固定し、Renovate が tag と SHA を一緒に上げる。
+# renovate: datasource=github-tags depName=langfuse/Claude-Observability-Plugin currentValue=v1.2.2
+ARG LANGFUSE_PLUGIN_REF=b1619f994240ad49de4a97caa01d7d7853944fc0
+ADD https://github.com/langfuse/Claude-Observability-Plugin.git#${LANGFUSE_PLUGIN_REF} /opt/langfuse-observability
+# plugin の hook は uv の script として動く。席の外（受付が動かす要約の claude）には mise の shims が無いので、image に置く。
+COPY --from=ghcr.io/astral-sh/uv:0.13.9 /uv /usr/local/bin/uv
+
 # 取り消せない操作を止める PreToolUse hook。managed settings も hook も root の持ち物にし、
 # Claude CLI（worker で動く）が書き換えて止めるのをやめさせられないようにする。
 COPY apps/working/guard/managed-settings.json /etc/claude-code/managed-settings.json

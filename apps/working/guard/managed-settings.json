@@ -67,9 +67,16 @@
 				"source": "directory",
 				"path": "/opt/tokeneconomizer"
 			}
+		},
+		"langfuse-observability": {
+			"source": {
+				"source": "directory",
+				"path": "/opt/langfuse-observability"
+			}
 		}
 	},
 	"enabledPlugins": {
-		"tokeneconomizer@tokeneconomizer": true
+		"tokeneconomizer@tokeneconomizer": true,
+		"langfuse-observability@langfuse-observability": true
 	}
 }
