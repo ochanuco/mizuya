@@ -37,6 +37,10 @@ describe("buildSeatPreamble", () => {
 });
 
 describe("workingInstructions", () => {
+	it("表示名を呼び捨てにせず、さんを付けて呼ばせる", () => {
+		expect(WORKING_INSTRUCTIONS).toContain("名前に「さん」を付けて呼ぶ");
+	});
+
 	it.each(["Yukarin", "Akarin"])(
 		"%s の席は見張りを自分で登録・停止し、登録した内容を返事に書く",
 		(name) => {
