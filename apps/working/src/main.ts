@@ -8,6 +8,7 @@ import {
 	postActivityLog,
 	startDailyTimer,
 } from "./activity-log.ts";
+import { createLabelSeatPulls } from "./actor-label.ts";
 import { openApprovalStore } from "./approval-store.ts";
 import {
 	createAttachmentCollector,
@@ -367,6 +368,7 @@ const intake = createIntake({
 	findWorkBranches: hishaku
 		? createFindWorkBranches({ exec: spawnExec, env })
 		: null,
+	labelSeatPulls: createLabelSeatPulls({ exec: spawnExec, env, log: logger }),
 	seats,
 	approvals,
 	ledger,
