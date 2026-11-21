@@ -55,7 +55,7 @@ Working（仕事）を受け持つコンテナ。Claude CLI、Codex CLI、hishak
 | 席の質問（`hs ask`）、取り消せない操作で止まったとき                                           | 投稿に書いてタグを `決めてほしい` にし、持ち主の返事を次のターンの指示として渡す                                                                                                                                  |
 | 席の途中経過（`hs status`）                                                                    | そのまま投稿に書く。状態とタグは変えない                                                                                                                                                                          |
 | 席の返事（ターンの最後のメッセージ・`hs ask`・`hs status`）に `添付:` や `chimera:` の行がある | 行を本文から外し、席のファイルや chimera の元の画像を投稿に付ける                                                                                                                                                 |
-| 投稿に「起動し直して」と書く                                                                   | 席の agent を止め、会話を hishaku に預けてから、同じ番号のセッションを同じ worktree で起こす（コネクタの認証を足したあとなどに使う）                                                                              |
+| 投稿に「起動し直して」と書く                                                                   | 席の agent を止め、会話を hishaku に預けてから、同じ番号のセッションを同じ worktree で起こす（MCP の設定を変えたあとなどに使う）                                                                                  |
 | 席の完了報告（ターンの最後のメッセージ）                                                       | 投稿に書いてタグを `完了` にし、記憶に 1 行残す。席は `SEAT_DONE_LINGER_MINUTES` の間は閉じずに残し、件名の 🎉 は席を閉じるときに付ける                                                                           |
 | 完了のあとにまた書く                                                                           | 席を残している間なら、残している席に返事を渡す。閉じたあとなら同じ投稿に新しい席を作り、同じ番号のセッションを前の会話のまま続けて返事だけを渡す。Manager に届かなければ、これまでのやりとり（最大 100 件）を渡す |
 | 手を止めた席に「終了」「中止」などの一言だけを書く                                             | 席の agent に渡さずに閉じる（会話を hishaku に預けて返し、worktree を消す）。タグを `完了` にし、件名に 🎉 を、書き込みに ✅ をすぐ付ける。ほかには何も書かない                                                   |
@@ -207,7 +207,7 @@ managed settings（`/etc/claude-code/managed-settings.json`、root の持ち物�
 - PreToolUse hook（`rtk hook claude`、Bash だけ）: rtk が出力を縮めるよう Bash のコマンドを書き換える。guard と並んで動き、guard が止めればそちらが勝つ。
 - `extraKnownMarketplaces` と `enabledPlugins`: TokenEconomizer（image の `/opt/tokeneconomizer`）を強制的に有効にする。`allowManagedHooksOnly` の下で plugin の hook が動くのは、managed settings が有効にした plugin だけ。start.sh が起動のたびに `claude plugin install` で入れる。学んだことは `~/.tokeneconomizer`（work の volume）に残る。
 - `extraKnownMarketplaces` と `enabledPlugins`: Langfuse の plugin（`langfuse-observability@langfuse-observability`、image の `/opt/langfuse-observability`）も同じく強制的に有効にし、start.sh が入れる。plugin は Stop と SessionEnd の hook で、その回の会話を Langfuse に trace として送る。版はコミット SHA で固定し、Renovate が tag と一緒に上げる。hook は uv の script として動き、依存の langfuse の SDK は start.sh が起動のたびに `UV_CACHE_DIR` に揃える。キー（`LANGFUSE_PUBLIC_KEY`・`LANGFUSE_SECRET_KEY`）が無い Claude では、hook は何も送らずに終わる。hook のログは `~/.claude/state/langfuse_hook.log`。
-- `ENABLE_TOOL_SEARCH=false`: MCP の道具を遅延読み込みせず、最初から読み込む。席の Claude は `ToolSearch` を使わずに chimera や chakai などの道具を呼べる。
+- `disableClaudeAiConnectors`: ログインした claude.ai のアカウントのコネクタ（Gmail、Google Drive など）を席に読み込ませない。席は持ち主の名前で動き、Web のページや依頼の文面も読むので、使わない道具は持たせない。席に要る道具は MCP サーバーとして明示して足す。MCP の道具は既定の tool search で遅延読み込みし、最初の入力には名前だけが載る。
 
 hook は席の場所（`CLAUDE_PROJECT_DIR`）で、止めた操作の紐づけ先をその投稿にする。
 

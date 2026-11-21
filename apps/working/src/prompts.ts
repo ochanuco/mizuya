@@ -294,8 +294,8 @@ export const HANDOFF_UNSAVED_NOTE =
 /** 持ち主の頼みで席を起動し直したときに渡す。 */
 export const restartNote = (question: string | null) =>
 	question === null
-		? "持ち主の頼みで、この席の Claude を起動し直した（コネクタの認証を足したあとなど）。前の会話の続きから進める。"
-		: `持ち主の頼みで、この席の Claude を起動し直した（コネクタの認証を足したあとなど）。前に ask で聞いた「${question}」は取り下げてあるので、答えが要るなら聞き直して、前の会話の続きから進める。`;
+		? "持ち主の頼みで、この席の Claude を起動し直した（MCP の設定を変えたあとなど）。前の会話の続きから進める。"
+		: `持ち主の頼みで、この席の Claude を起動し直した（MCP の設定を変えたあとなど）。前に ask で聞いた「${question}」は取り下げてあるので、答えが要るなら聞き直して、前の会話の続きから進める。`;
 
 /** 止めていた席を起こすときに足す。前の質問の答えは待っていない。 */
 export const wakeNote = (question: string | null) =>
