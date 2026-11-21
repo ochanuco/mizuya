@@ -108,6 +108,7 @@ describe("runGithubEvents", () => {
 		store: ReturnType<typeof memoryStore>,
 		events: GithubWorkEvent[],
 		memory: unknown = { decided: [] },
+		seatBranches = [{ repo: "o/r", branch: "dev/x" }],
 	) => {
 		const specs: string[] = [];
 		const readMemory = vi.fn(async () => memory);
@@ -120,6 +121,7 @@ describe("runGithubEvents", () => {
 					return `${kind}-${specs.length}`;
 				},
 				readMemory,
+				seatBranches: async () => seatBranches,
 				now: () => new Date("2026-11-06T06:00:00Z"),
 				logger: silentLogger,
 			},
@@ -153,6 +155,34 @@ describe("runGithubEvents", () => {
 			},
 		]);
 		expect(changes).toEqual({});
+	});
+
+	it("席の worktree で開いていない branch の CI の失敗は拾わず、見回りに残す", async () => {
+		const store = memoryStore({ failing_prs: {} });
+		const { seats } = await run(
+			store,
+			[ciFailed([7]), { ...ciFailed([8]), branch: null } as GithubWorkEvent],
+			{ decided: [] },
+			[{ repo: "o/r", branch: "dev/other" }],
+		);
+		expect(seats).toEqual([]);
+		const { changes } = diffPatrol(store.saved ?? {}, [
+			{
+				name: "failing_prs",
+				items: [{ key: "o/r#7", fingerprint: "", item: { number: 7 } }],
+			},
+		]);
+		expect(Object.keys(changes)).toEqual(["failing_prs"]);
+	});
+
+	it("席の branch は repo の大文字小文字を区別せずに見分け、レビューは branch を問わず拾う", async () => {
+		const { seats } = await run(
+			memoryStore({}),
+			[ciFailed([7], "O/R"), review(3)],
+			{ decided: [] },
+			[{ repo: "o/r", branch: "dev/x" }],
+		);
+		expect(seats).toHaveLength(2);
 	});
 
 	it("見回りがまだ回っていなければ snapshot を作らない（見回りの初回が全部を新着と見ないため）", async () => {

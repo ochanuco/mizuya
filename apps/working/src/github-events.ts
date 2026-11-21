@@ -4,6 +4,7 @@ import type { Logger } from "./logger.ts";
 import type { PatrolSnapshot, PatrolStore } from "./patrol.ts";
 import { eventPrompt } from "./prompts.ts";
 import { memoryForSeat } from "./standup-materials.ts";
+import type { WorkBranch } from "./work-branch.ts";
 
 const text = v.string();
 const repo = v.pipe(v.string(), v.nonEmpty());
@@ -101,10 +102,33 @@ export type EventRunDeps = {
 	store: PatrolStore;
 	selfLogin: string | null;
 	start: (spec: string, kind: "event") => Promise<string>;
+	/** いま席の worktree で開いている branch。CI の失敗を、席の branch の分だけすぐ拾うために使う。 */
+	seatBranches: () => Promise<readonly WorkBranch[]>;
 	/** 席に渡す記憶。持ち主が知らせないと決めた件を、席が投稿せずに済ませるため。 */
 	readMemory: () => Promise<unknown>;
 	now?: () => Date;
 	logger: Logger;
+};
+
+/**
+ * CI の失敗は、席の worktree で開いている branch の分だけを通す。
+ * 持ち主が Mac で作業中の branch は、落ちてもすぐ直すつもりのことが多く、席が先に直すと持ち主の作業とぶつかる。
+ * 席も Mac も同じアカウントで push するので、誰が push したかでは見分けられない。
+ * 通さなかった失敗は failing_prs に足さないので、まだ落ちていれば見回りが拾う。
+ */
+const seatBranchFilter = async (
+	deps: Pick<EventRunDeps, "seatBranches">,
+	events: readonly GithubWorkEvent[],
+): Promise<(e: GithubWorkEvent) => boolean> => {
+	if (!events.some((e) => e.kind === "ci_failed")) return () => true;
+	const keyOf = (repo: string, branch: string) =>
+		`${repo.toLowerCase()} ${branch}`;
+	const seat = new Set(
+		(await deps.seatBranches()).map((b) => keyOf(b.repo, b.branch)),
+	);
+	return (e) =>
+		e.kind !== "ci_failed" ||
+		(e.branch !== null && seat.has(keyOf(e.repo, e.branch)));
 };
 
 /**
@@ -117,8 +141,10 @@ export const runGithubEvents = async (
 ): Promise<string[]> => {
 	const log = deps.logger;
 	if (events.length === 0) return [];
+	const onSeatBranch = await seatBranchFilter(deps, events);
+	const ours = events.filter(onSeatBranch);
 	const prev = await deps.store.load();
-	const selected = selectEvents(events, {
+	const selected = selectEvents(ours, {
 		selfLogin: deps.selfLogin,
 		snapshot: prev ?? {},
 	});
@@ -126,6 +152,7 @@ export const runGithubEvents = async (
 	if (prev !== null) await deps.store.save(selected.snapshot);
 	log.info("github events", {
 		received: events.length,
+		off_seat_branch: events.length - ours.length,
 		selected: selected.events.length,
 	});
 

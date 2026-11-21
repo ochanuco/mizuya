@@ -361,14 +361,13 @@ const chakai = cfg.chakai
 		})
 	: null;
 
+const findWorkBranches = createFindWorkBranches({ exec: spawnExec, env });
 const intake = createIntake({
 	seatReplied: () => syncScheduler?.(),
 	discord,
 	engine,
 	hishaku,
-	findWorkBranches: hishaku
-		? createFindWorkBranches({ exec: spawnExec, env })
-		: null,
+	findWorkBranches: hishaku ? findWorkBranches : null,
 	labelSeatPulls: createLabelSeatPulls({ exec: spawnExec, env, log: logger }),
 	seats,
 	approvals,
@@ -700,6 +699,17 @@ const githubEvents = cfg.standup.enabled
 								store: patrolStore,
 								selfLogin,
 								start: intake.startStandup,
+								// Mac に貸した席は worktree を消して path を空にするので、ここに入らない
+								seatBranches: async () =>
+									(
+										await Promise.all(
+											seats
+												.all()
+												.flatMap((s) =>
+													s.path ? [findWorkBranches(s.path)] : [],
+												),
+										)
+									).flat(),
 								readMemory: () => readMemory(memoryDeps),
 								logger,
 							},
