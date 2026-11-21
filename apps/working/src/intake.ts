@@ -2406,7 +2406,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		}
 	};
 
-	/** 持ち主の頼みで席の Claude を止め、同じ会話のまま起こし直す。コネクタの認証を足したあとなどに使う。 */
+	/** 持ち主の頼みで席の Claude を止め、同じ会話のまま起こし直す。MCP の設定を変えたあとなどに使う。 */
 	const restart = async (threadId: string): Promise<boolean> => {
 		const seat = seats.get(threadId);
 		if (

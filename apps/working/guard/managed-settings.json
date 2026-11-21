@@ -46,9 +46,7 @@
 			}
 		]
 	},
-	"env": {
-		"ENABLE_TOOL_SEARCH": "false"
-	},
+	"disableClaudeAiConnectors": true,
 	"autoMode": {
 		"allow": [
 			"$defaults",
