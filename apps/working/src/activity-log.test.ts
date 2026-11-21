@@ -94,13 +94,10 @@ describe("formatActivityLog", () => {
 			"### 止められた操作\n- 「デプロイ」（Akarin） Bash 2 件、Write 1 件",
 			[
 				"### マージされた PR",
-				"r",
-				"- [#1 誤字を直す](<https://github.com/o/r/pull/1>)",
-				"- [#3 型を直す](<https://github.com/o/r/pull/3>)",
-				"s",
-				"- [#5 README](<https://github.com/o/s/pull/5>)",
+				"- r: [#1 誤字を直す](<https://github.com/o/r/pull/1>)、[#3 型を直す](<https://github.com/o/r/pull/3>)",
+				"- s: [#5 README](<https://github.com/o/s/pull/5>)",
 			].join("\n"),
-			"### 出した PR\nr\n- [#2 設定を足す](<https://github.com/o/r/pull/2>)",
+			"### 出した PR\n- r: [#2 設定を足す](<https://github.com/o/r/pull/2>)",
 		]);
 	});
 
