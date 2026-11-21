@@ -164,14 +164,14 @@ const toolCounts = (tools: readonly string[]) => {
 // Discord が URL ごとにプレビューを広げて投稿が長くなるので、<> で包んで止める
 const prLink = (p: ActivityPr) => `[#${p.number} ${p.title}](<${p.url}>)`;
 
-/** repo ごとに 1 行にまとめ、owner を外した名前の後に PR を並べる。 */
+/** repo ごとに、owner を外した名前の下へ PR を入れ子の箇条書きで並べる。 */
 const prLines = (prs: readonly ActivityPr[]) => {
 	const byRepo = new Map<string, ActivityPr[]>();
 	for (const p of prs) byRepo.set(p.repo, [...(byRepo.get(p.repo) ?? []), p]);
-	return [...byRepo].map(
-		([repo, list]) =>
-			`- ${repo.slice(repo.indexOf("/") + 1)}: ${list.map(prLink).join("、")}`,
-	);
+	return [...byRepo].flatMap(([repo, list]) => [
+		`- ${repo.slice(repo.indexOf("/") + 1)}`,
+		...list.map((p) => `  - ${prLink(p)}`),
+	]);
 };
 
 export type ActivityReport = {
