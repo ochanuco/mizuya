@@ -162,33 +162,44 @@ const toolCounts = (tools: readonly string[]) => {
 };
 
 // Discord が URL ごとにプレビューを広げて投稿が長くなるので、<> で包んで止める
-const prLine = (p: ActivityPr) =>
-	`- ${p.repo}#${p.number} ${p.title} <${p.url}>`;
+const prLink = (p: ActivityPr) => `[#${p.number} ${p.title}](<${p.url}>)`;
 
-/** 1 日分の活動ログの本文。何もなければ null。prs が null なら PR を取れなかった。 */
+/** repo ごとに、owner を外した名前の下へ PR を入れ子の箇条書きで並べる。 */
+const prLines = (prs: readonly ActivityPr[]) => {
+	const byRepo = new Map<string, ActivityPr[]>();
+	for (const p of prs) byRepo.set(p.repo, [...(byRepo.get(p.repo) ?? []), p]);
+	return [...byRepo].flatMap(([repo, list]) => [
+		`- ${repo.slice(repo.indexOf("/") + 1)}`,
+		...list.map((p) => `  - ${prLink(p)}`),
+	]);
+};
+
+export type ActivityReport = {
+	/** チャンネルに出す件数のまとめ。1 行目はスレッドの名前にも使う。 */
+	summary: string;
+	/** スレッドに書く詳細。節ごとに 1 メッセージ。 */
+	details: string[];
+};
+
+/** 1 日分の活動ログ。何もなければ null。prs が null なら PR を取れなかった。 */
 export const formatActivityLog = (input: {
 	until: Date;
 	entries: readonly ActivityEntry[];
 	prs: ActivityPrs | null;
-}): string | null => {
+}): ActivityReport | null => {
 	const { entries, prs } = input;
 	const noPrs = prs === null || prs.merged.length + prs.opened.length === 0;
 	if (entries.length === 0 && noPrs) return null;
 
-	const sections: string[] = [];
-	const threadLine = (e: ActivityEntry) =>
-		`- 「${e.title}」（${PARTNER_NAME[e.partner]}）`;
-	const section = (heading: string, lines: string[]) => {
-		if (lines.length > 0) sections.push(`${heading}\n${lines.join("\n")}`);
-	};
-	section(
-		"終えた仕事",
-		entries.filter((e) => e.kind === "done").map(threadLine),
-	);
-	section(
-		"Mac に引き継いだ仕事",
-		entries.filter((e) => e.kind === "handoff").map(threadLine),
-	);
+	// 同じ投稿を開き直して何度閉じても、最後に閉じたときの 1 件に数える
+	const closed = new Map<string, ActivityEntry>();
+	for (const e of entries) {
+		if (e.kind === "blocked") continue;
+		closed.delete(e.threadId);
+		closed.set(e.threadId, e);
+	}
+	const done = [...closed.values()].filter((e) => e.kind === "done");
+	const handoff = [...closed.values()].filter((e) => e.kind === "handoff");
 	// 同じ投稿で何度止めても 1 行にまとめる
 	const blocked = new Map<string, ActivityEntry & { all: string[] }>();
 	for (const e of entries.filter((x) => x.kind === "blocked")) {
@@ -198,19 +209,52 @@ export const formatActivityLog = (input: {
 			all: [...(prev?.all ?? []), ...e.tools],
 		});
 	}
+	const blockedOps = [...blocked.values()].reduce(
+		(n, e) => n + Math.max(e.all.length, 1),
+		0,
+	);
+
+	const counts = (items: [string, number][]) =>
+		items
+			.filter(([, n]) => n > 0)
+			.map(([label, n]) => `${label} ${n} 件`)
+			.join("・");
+	const work = counts([
+		["終えた仕事", done.length],
+		["Mac に引き継いだ仕事", handoff.length],
+		["止められた操作", blockedOps],
+	]);
+	const pulls =
+		prs === null
+			? "PR は取れなかった"
+			: counts([
+					["マージされた PR", prs.merged.length],
+					["出した PR", prs.opened.length],
+				]);
+	const summary = [
+		`${formatJst(input.until).slice(0, 10)} の活動ログ`,
+		...[work, pulls].filter((l) => l !== ""),
+	].join("\n");
+
+	const sections: string[] = [];
+	const threadLine = (e: ActivityEntry) =>
+		`- 「${e.title}」（${PARTNER_NAME[e.partner]}）`;
+	const section = (heading: string, lines: string[]) => {
+		if (lines.length > 0) sections.push(`### ${heading}\n${lines.join("\n")}`);
+	};
+	section("終えた仕事", done.map(threadLine));
+	section("Mac に引き継いだ仕事", handoff.map(threadLine));
 	section(
 		"止められた操作",
 		[...blocked.values()].map((e) =>
 			`${threadLine(e)} ${toolCounts(e.all)}`.trimEnd(),
 		),
 	);
-	if (prs === null) {
-		sections.push("PR は取れなかった");
-	} else {
-		section("マージされた PR", prs.merged.map(prLine));
-		section("出した PR", prs.opened.map(prLine));
+	if (prs !== null) {
+		section("マージされた PR", prLines(prs.merged));
+		section("出した PR", prLines(prs.opened));
 	}
-	return `${formatJst(input.until).slice(0, 10)} の活動ログ\n\n${sections.join("\n\n")}`;
+	return { summary, details: sections };
 };
 
 const searchSchema = v.array(
@@ -328,12 +372,15 @@ export const gatherActivityPrs = async (deps: {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** 前の回からいままでの分を 1 投稿にまとめる。何もなければ投稿しない。 */
+/**
+ * 前の回からいままでの分を、チャンネルに件数のまとめを出し、そこから立てたスレッドに詳細を書く。
+ * 何もなければ投稿しない。
+ */
 export const postActivityLog = async (deps: {
 	log: ActivityLog;
 	gatherPrs: (since: Date, until: Date) => Promise<ActivityPrs | null>;
 	discord: DiscordApi;
-	threadId: string;
+	channelId: string;
 	now: () => Date;
 	logger: Logger;
 }): Promise<void> => {
@@ -342,8 +389,8 @@ export const postActivityLog = async (deps: {
 		(await deps.log.postedUntil()) ?? new Date(until.getTime() - DAY_MS);
 	const entries = await deps.log.between(since, until);
 	const prs = await deps.gatherPrs(since, until);
-	const text = formatActivityLog({ until, entries, prs });
-	if (text === null) {
+	const report = formatActivityLog({ until, entries, prs });
+	if (report === null) {
 		// PR を取れなかっただけなら、次の回に同じ範囲をもう一度見る
 		if (prs !== null) await deps.log.markPosted(until);
 		deps.logger.info("activity log skipped", {
@@ -352,17 +399,46 @@ export const postActivityLog = async (deps: {
 		});
 		return;
 	}
-	const sent = await deps.discord.send(deps.threadId, text);
+	const sent = await deps.discord.send(deps.channelId, report.summary);
 	if (!sent.ok) {
 		deps.logger.error("activity log post failed", { error: sent.error.type });
 		return;
 	}
+	// まとめは出たので、詳細を書けなくても次の回に同じまとめを出し直さない
 	await deps.log.markPosted(until);
 	deps.logger.info("activity log posted", {
 		entries: entries.length,
 		merged: prs?.merged.length ?? null,
 		opened: prs?.opened.length ?? null,
 	});
+	if (report.details.length === 0) return;
+	const summaryId = sent.value.messageIds[0];
+	const thread =
+		summaryId === undefined
+			? null
+			: await deps.discord.startThread(
+					deps.channelId,
+					summaryId,
+					report.summary.split("\n")[0] ?? "活動ログ",
+				);
+	if (thread === null || !thread.ok) {
+		deps.logger.warn("activity log thread failed", {
+			error: thread?.error.type ?? null,
+		});
+	}
+	// スレッドを立てられなければ、まとめへの返信として同じチャンネルに書く
+	for (const section of report.details) {
+		const detailed =
+			thread?.ok === true
+				? await deps.discord.send(thread.value.threadId, section)
+				: await deps.discord.send(deps.channelId, section, summaryId);
+		if (!detailed.ok) {
+			deps.logger.error("activity log details failed", {
+				error: detailed.error.type,
+			});
+			return;
+		}
+	}
 };
 
 /** 毎日 `at`（JST）に 1 回 run を呼ぶ。1 回が終わってから次を予約する。 */

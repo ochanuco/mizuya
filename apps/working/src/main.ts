@@ -658,7 +658,7 @@ const activityLogTimer = activityLogConfig
 							logger,
 						}),
 					discord,
-					threadId: activityLogConfig.threadId,
+					channelId: activityLogConfig.channelId,
 					now: () => new Date(),
 					logger,
 				}),

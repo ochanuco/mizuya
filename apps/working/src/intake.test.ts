@@ -61,6 +61,7 @@ const WRITES = new Set([
 	"send",
 	"createForumPost",
 	"createMessage",
+	"startThread",
 	"editMessage",
 	"setTags",
 	"addReaction",
