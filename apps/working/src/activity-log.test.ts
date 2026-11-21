@@ -88,29 +88,20 @@ describe("formatActivityLog", () => {
 				"マージされた PR 3 件・出した PR 1 件",
 			].join("\n"),
 		);
-		expect(report?.details).toBe(
+		expect(report?.details).toEqual([
+			"### 終えた仕事\n- 「README の誤字」（Yukarin）",
+			"### Mac に引き継いだ仕事\n- 「Mac の設定」（Yukarin）",
+			"### 止められた操作\n- 「デプロイ」（Akarin） Bash 2 件、Write 1 件",
 			[
-				"### 終えた仕事",
-				"- 「README の誤字」（Yukarin）",
-				"",
-				"### Mac に引き継いだ仕事",
-				"- 「Mac の設定」（Yukarin）",
-				"",
-				"### 止められた操作",
-				"- 「デプロイ」（Akarin） Bash 2 件、Write 1 件",
-				"",
 				"### マージされた PR",
 				"r",
 				"- [#1 誤字を直す](<https://github.com/o/r/pull/1>)",
 				"- [#3 型を直す](<https://github.com/o/r/pull/3>)",
 				"s",
 				"- [#5 README](<https://github.com/o/s/pull/5>)",
-				"",
-				"### 出した PR",
-				"r",
-				"- [#2 設定を足す](<https://github.com/o/r/pull/2>)",
 			].join("\n"),
-		);
+			"### 出した PR\nr\n- [#2 設定を足す](<https://github.com/o/r/pull/2>)",
+		]);
 	});
 
 	it("開き直した投稿を引き継いだら、引き継いだほうにだけ数える", () => {

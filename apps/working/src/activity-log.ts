@@ -177,8 +177,8 @@ const prLines = (prs: readonly ActivityPr[]) => {
 export type ActivityReport = {
 	/** チャンネルに出す件数のまとめ。1 行目はスレッドの名前にも使う。 */
 	summary: string;
-	/** スレッドに書く詳細。 */
-	details: string;
+	/** スレッドに書く詳細。節ごとに 1 メッセージ。 */
+	details: string[];
 };
 
 /** 1 日分の活動ログ。何もなければ null。prs が null なら PR を取れなかった。 */
@@ -254,7 +254,7 @@ export const formatActivityLog = (input: {
 		section("マージされた PR", prLines(prs.merged));
 		section("出した PR", prLines(prs.opened));
 	}
-	return { summary, details: sections.join("\n\n") };
+	return { summary, details: sections };
 };
 
 const searchSchema = v.array(
@@ -411,7 +411,7 @@ export const postActivityLog = async (deps: {
 		merged: prs?.merged.length ?? null,
 		opened: prs?.opened.length ?? null,
 	});
-	if (report.details === "") return;
+	if (report.details.length === 0) return;
 	const summaryId = sent.value.messageIds[0];
 	const thread =
 		summaryId === undefined
@@ -427,14 +427,17 @@ export const postActivityLog = async (deps: {
 		});
 	}
 	// スレッドを立てられなければ、まとめへの返信として同じチャンネルに書く
-	const detailed =
-		thread?.ok === true
-			? await deps.discord.send(thread.value.threadId, report.details)
-			: await deps.discord.send(deps.channelId, report.details, summaryId);
-	if (!detailed.ok) {
-		deps.logger.error("activity log details failed", {
-			error: detailed.error.type,
-		});
+	for (const section of report.details) {
+		const detailed =
+			thread?.ok === true
+				? await deps.discord.send(thread.value.threadId, section)
+				: await deps.discord.send(deps.channelId, section, summaryId);
+		if (!detailed.ok) {
+			deps.logger.error("activity log details failed", {
+				error: detailed.error.type,
+			});
+			return;
+		}
 	}
 };
 
