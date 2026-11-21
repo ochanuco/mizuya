@@ -12,7 +12,7 @@ import type { Exec } from "./exec.ts";
 import { silentLogger } from "./logger.ts";
 import { fakeDiscord, tempDir } from "./test-support.ts";
 
-const THREAD = "log-thread";
+const CHANNEL = "log-channel";
 // 2026-11-06 23:30 JST
 const NIGHT = new Date("2026-11-06T14:30:00Z");
 const HOUR = 3600_000;
@@ -46,11 +46,12 @@ describe("formatActivityLog", () => {
 		);
 	});
 
-	it("仕事・止められた操作・PR を節に分け、止めた操作は道具の名前と件数だけを書く", () => {
-		const text = formatActivityLog({
+	it("件数をまとめ、詳細は節に分ける。同じ投稿を何度閉じても 1 件に数える", () => {
+		const report = formatActivityLog({
 			until: NIGHT,
 			entries: [
 				entry(),
+				entry({ at: new Date(NIGHT.getTime() - 30 * 60_000) }),
 				entry({ kind: "handoff", threadId: "p2", title: "Mac の設定" }),
 				entry({
 					kind: "blocked",
@@ -67,37 +68,72 @@ describe("formatActivityLog", () => {
 					tools: ["Write"],
 				}),
 			],
-			prs: { merged: [pr(1, "誤字を直す")], opened: [pr(2, "設定を足す")] },
+			prs: {
+				merged: [
+					pr(1, "誤字を直す"),
+					pr(3, "型を直す"),
+					{
+						...pr(5, "README"),
+						repo: "o/s",
+						url: "https://github.com/o/s/pull/5",
+					},
+				],
+				opened: [pr(2, "設定を足す")],
+			},
 		});
-		expect(text).toBe(
+		expect(report?.summary).toBe(
 			[
 				"2026-11-06 の活動ログ",
-				"",
-				"終えた仕事",
+				"終えた仕事 1 件・Mac に引き継いだ仕事 1 件・止められた操作 3 件",
+				"マージされた PR 3 件・出した PR 1 件",
+			].join("\n"),
+		);
+		expect(report?.details).toBe(
+			[
+				"### 終えた仕事",
 				"- 「README の誤字」（Yukarin）",
 				"",
-				"Mac に引き継いだ仕事",
+				"### Mac に引き継いだ仕事",
 				"- 「Mac の設定」（Yukarin）",
 				"",
-				"止められた操作",
+				"### 止められた操作",
 				"- 「デプロイ」（Akarin） Bash 2 件、Write 1 件",
 				"",
-				"マージされた PR",
-				"- o/r#1 誤字を直す <https://github.com/o/r/pull/1>",
+				"### マージされた PR",
+				"r",
+				"- [#1 誤字を直す](<https://github.com/o/r/pull/1>)",
+				"- [#3 型を直す](<https://github.com/o/r/pull/3>)",
+				"s",
+				"- [#5 README](<https://github.com/o/s/pull/5>)",
 				"",
-				"出した PR",
-				"- o/r#2 設定を足す <https://github.com/o/r/pull/2>",
+				"### 出した PR",
+				"r",
+				"- [#2 設定を足す](<https://github.com/o/r/pull/2>)",
 			].join("\n"),
 		);
 	});
 
+	it("開き直した投稿を引き継いだら、引き継いだほうにだけ数える", () => {
+		const report = formatActivityLog({
+			until: NIGHT,
+			entries: [
+				entry(),
+				entry({ kind: "handoff", at: new Date(NIGHT.getTime() - 60_000) }),
+			],
+			prs: NO_PRS,
+		});
+		expect(report?.summary).toBe(
+			"2026-11-06 の活動ログ\nMac に引き継いだ仕事 1 件",
+		);
+	});
+
 	it("PR を取れなくても席の記録があれば出し、取れなかったと書く", () => {
-		const text = formatActivityLog({
+		const report = formatActivityLog({
 			until: NIGHT,
 			entries: [entry()],
 			prs: null,
 		});
-		expect(text).toContain("PR は取れなかった");
+		expect(report?.summary).toContain("PR は取れなかった");
 	});
 });
 
@@ -130,19 +166,26 @@ describe("postActivityLog", () => {
 				log,
 				gatherPrs,
 				discord: d.api,
-				threadId: THREAD,
+				channelId: CHANNEL,
 				now: () => NIGHT,
 				logger: silentLogger,
 			});
 		return { log, d, gatherPrs, post };
 	};
 
-	it("初めての回は 24 時間前から見て 1 投稿にまとめ、ここまでを残す", async () => {
+	it("初めての回は 24 時間前から見て、まとめから立てたスレッドに詳細を書き、ここまでを残す", async () => {
 		const s = await setup(NO_PRS);
 		await s.log.record(entry());
 		await s.post();
-		expect(s.d.sentTo(THREAD)).toHaveLength(1);
-		expect(s.d.sentTo(THREAD)[0]).toContain("README の誤字");
+		expect(s.d.sentTo(CHANNEL)).toEqual([
+			"2026-11-06 の活動ログ\n終えた仕事 1 件",
+		]);
+		expect(s.d.threads).toEqual([
+			{ channelId: CHANNEL, messageId: "sent1", name: "2026-11-06 の活動ログ" },
+		]);
+		expect(s.d.sentTo("thread1")).toEqual([
+			"### 終えた仕事\n- 「README の誤字」（Yukarin）",
+		]);
 		expect(s.gatherPrs).toHaveBeenCalledWith(
 			new Date(NIGHT.getTime() - 24 * HOUR),
 			NIGHT,
@@ -161,20 +204,30 @@ describe("postActivityLog", () => {
 	it("何もなかった日は投稿しない", async () => {
 		const s = await setup(NO_PRS);
 		await s.post();
-		expect(s.d.sentTo(THREAD)).toEqual([]);
+		expect(s.d.sentTo(CHANNEL)).toEqual([]);
 		expect(await s.log.postedUntil()).toEqual(NIGHT);
 	});
 
 	it("PR を取れず席の記録も無ければ、投稿せず次の回に同じ範囲を見直す", async () => {
 		const s = await setup(null);
 		await s.post();
-		expect(s.d.sentTo(THREAD)).toEqual([]);
+		expect(s.d.sentTo(CHANNEL)).toEqual([]);
 		expect(await s.log.postedUntil()).toBeNull();
 	});
 
-	it("投稿に失敗したら、まとめた印を残さない", async () => {
+	it("スレッドを立てられなければ、まとめへの返信として詳細を書く", async () => {
 		const s = await setup(NO_PRS);
-		s.d.refuseSendTo.add(THREAD);
+		s.d.refuseThreadIn.add(CHANNEL);
+		await s.log.record(entry());
+		await s.post();
+		expect(s.d.sentTo(CHANNEL)).toHaveLength(2);
+		expect(s.d.sentTo(CHANNEL)[1]).toContain("README の誤字");
+		expect(await s.log.postedUntil()).toEqual(NIGHT);
+	});
+
+	it("まとめの投稿に失敗したら、まとめた印を残さない", async () => {
+		const s = await setup(NO_PRS);
+		s.d.refuseSendTo.add(CHANNEL);
 		await s.log.record(entry());
 		await s.post();
 		expect(await s.log.postedUntil()).toBeNull();

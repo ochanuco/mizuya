@@ -59,10 +59,10 @@ describe("loadConfig", () => {
 		});
 	});
 
-	it("活動ログはスレッドがあるときだけまとめ、時刻の既定は 23:30", () => {
+	it("活動ログはチャンネルがあるときだけまとめ、時刻の既定は 23:30", () => {
 		const r = loadConfig({ ...base, ACTIVITY_LOG_THREAD_ID: "900" });
 		expect(r.ok && r.value.activityLog).toEqual({
-			threadId: "900",
+			channelId: "900",
 			at: { hour: 23, minute: 30 },
 		});
 		const early = loadConfig({

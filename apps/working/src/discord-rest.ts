@@ -148,6 +148,12 @@ export type DiscordApi = {
 	 * getChannel は届かないのと無いのを見分けないので、古い対応を捨ててよいかはこれで確かめる。
 	 */
 	threadExists: (threadId: string) => Promise<Result<boolean, DomainError>>;
+	/** チャンネルのメッセージからスレッドを立てる。 */
+	startThread: (
+		channelId: string,
+		messageId: string,
+		name: string,
+	) => Promise<Result<{ threadId: string }, DomainError>>;
 	/** 投稿（スレッド）の件名を変える。 */
 	renameThread: (
 		threadId: string,
@@ -455,6 +461,15 @@ export const createDiscordRest = (opts: DiscordRestOptions): DiscordApi => {
 				name: name.slice(0, THREAD_NAME_LIMIT),
 			});
 			return r.ok ? ok(undefined) : r;
+		},
+		startThread: async (channelId, messageId, name) => {
+			const r = await callJson(
+				"POST",
+				`/channels/${channelId}/messages/${messageId}/threads`,
+				channelSchema,
+				{ name: name.slice(0, THREAD_NAME_LIMIT) },
+			);
+			return r.ok ? ok({ threadId: r.value.id }) : r;
 		},
 		createMessage: async (channelId, content) =>
 			callJson("POST", `/channels/${channelId}/messages`, sentSchema, {

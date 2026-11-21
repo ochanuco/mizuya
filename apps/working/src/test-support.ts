@@ -123,6 +123,9 @@ export const fakeDiscord = () => {
 	/** bot が送ったメッセージの本文。getMessage で読み直せる。 */
 	const botMessages = new Map<string, string>();
 	const refuseSendTo = new Set<string>();
+	/** startThread を断るチャンネル。 */
+	const refuseThreadIn = new Set<string>();
+	const threads: { channelId: string; messageId: string; name: string }[] = [];
 	/** threadExists が確かめられない投稿。 */
 	const unreachable = new Set<string>();
 	const sent: {
@@ -248,6 +251,23 @@ export const fakeDiscord = () => {
 			if (ch) channels.set(threadId, { ...ch, name });
 			return ok(undefined);
 		}),
+		startThread: async (channelId, messageId, name) => {
+			if (refuseThreadIn.has(channelId)) {
+				return err(
+					permissionDenied({ actor: "discord bot", action: "POST /threads" }),
+				);
+			}
+			const id = `thread${nextThread++}`;
+			threads.push({ channelId, messageId, name });
+			channels.set(id, {
+				id,
+				name,
+				parentId: channelId,
+				appliedTagIds: [],
+				availableTags: [],
+			});
+			return ok({ threadId: id });
+		},
 		createMessage: async (channelId, content) => {
 			const id = `panel${nextMessage++}`;
 			edited.set(id, { channelId, content });
@@ -299,6 +319,8 @@ export const fakeDiscord = () => {
 		api,
 		channels,
 		messages,
+		threads,
+		refuseThreadIn,
 		sent,
 		posts,
 		history,

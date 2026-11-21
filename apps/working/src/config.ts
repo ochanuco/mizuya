@@ -191,9 +191,9 @@ export type WorkingConfig = {
 		/** 朝会の合間の見回りの間隔。null なら見回らず、朝会だけを回す。 */
 		heartbeatIntervalMs: number | null;
 	};
-	/** 席がしたことを 1 日 1 回まとめて投稿するスレッドと時刻。スレッドが無ければまとめない。 */
+	/** 席がしたことを 1 日 1 回まとめて投稿するチャンネルと時刻。チャンネルが無ければまとめない。 */
 	activityLog: {
-		threadId: string;
+		channelId: string;
 		at: { hour: number; minute: number };
 	} | null;
 };
@@ -367,7 +367,7 @@ export const loadConfig = (
 		},
 		activityLog: e.ACTIVITY_LOG_THREAD_ID
 			? {
-					threadId: e.ACTIVITY_LOG_THREAD_ID,
+					channelId: e.ACTIVITY_LOG_THREAD_ID,
 					at: timeOf(e.ACTIVITY_LOG_TIME ?? "23:30"),
 				}
 			: null,
