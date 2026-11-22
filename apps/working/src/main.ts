@@ -51,6 +51,7 @@ import {
 	type RunRequest,
 	startSchedulerSync,
 } from "./scheduler.ts";
+import { createSeatEventSender } from "./seat-events.ts";
 import { createSeatStatusServer } from "./seat-status.ts";
 import { openSeatStore } from "./seat-store.ts";
 import { createHealthServer } from "./server.ts";
@@ -390,6 +391,7 @@ const intake = createIntake({
 			logger.warn("memory write failed", { stderr: out.stderr.slice(0, 300) });
 		}
 	},
+	tellTalking: createSeatEventSender({ memory: cfg.memory, logger }),
 	recordActivity: activityLog.record,
 	standupDone: async (text, blocked, kind, partner) => {
 		await finishStandup(standupDeps, text, blocked, kind, partner);

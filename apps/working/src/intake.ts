@@ -113,6 +113,7 @@ import type {
 	SeatMessage,
 	SeatPrepare,
 } from "./seat-engine.ts";
+import type { SeatEventKind, TellTalking } from "./seat-events.ts";
 import {
 	MODEL_TAGS,
 	modelChangedText,
@@ -198,6 +199,8 @@ export type IntakeDeps = {
 	collectAttachments: AttachmentCollector;
 	/** 終わった仕事を、席を受け持ったパートナーの記憶に 1 行残す。 */
 	remember: (summary: string, partner: PartnerId) => Promise<void>;
+	/** 席が始まった・聞いた・終えた・失敗したことを Talking に知らせる口。待たずに返る。 */
+	tellTalking?: TellTalking | null;
 	/** 席がしたこと（閉じた・止められた）を活動ログに 1 行残す。 */
 	recordActivity?: (entry: ActivityEntry) => Promise<void>;
 	/** 朝会か見回りの席が返した決めてほしいことを投稿にする。 */
@@ -1205,6 +1208,32 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		});
 	};
 
+	/**
+	 * 席の出来事を Talking に知らせる。件名を引くのに Discord を読むので、待たずに裏で送る。
+	 * 時刻はこの場で取り、Worker が古い知らせを捨てられるようにする。
+	 */
+	const tell = (
+		threadId: string,
+		kind: SeatEventKind,
+		summary: string | null,
+		title?: string | null,
+	) => {
+		const tellTalking = deps.tellTalking;
+		if (!tellTalking) return;
+		const at = now();
+		const partner = partnerOf(threadId);
+		void (async () => {
+			const t = title === undefined ? await titleOf(threadId) : title;
+			await tellTalking(partner, { ...kind, threadId, title: t, summary, at });
+		})().catch((e: unknown) => {
+			log.warn("seat event failed", {
+				thread_id: threadId,
+				event: kind.event,
+				error: e instanceof Error ? e.name : "unknown",
+			});
+		});
+	};
+
 	/** 席に Claude を座らせ、溜まっている言葉を渡す。worktree があれば前の会話のまま起こす。 */
 	const launch = async (seat: Seat) => {
 		const threadId = seat.threadId;
@@ -1371,6 +1400,10 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			dispatch_id: r.value.dispatchId,
 			resumed: seat.path !== null,
 		});
+		// 前の会話を起こし直すのは続きなので、新しく座らせたときだけ知らせる
+		if (!seat.standup && seat.path === null) {
+			tell(threadId, { event: "started" }, null, title);
+		}
 		if (!seat.standup) await setStatus(threadId, "作業中");
 	};
 
@@ -1763,6 +1796,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		const reply = await seatReply(seat, msg.body);
 		await postWithApproval(threadId, reply.body, blocked, reply.files, true);
 		await seats.set(toWaiting(seat, { id: msg.id, text: reply.body }));
+		tell(threadId, { event: "asking" }, reply.body);
 		await setStatus(threadId, "決めてほしい");
 		await applyModelChange(threadId);
 		log.info("seat asked", { thread_id: threadId, blocked: blocked.length });
@@ -2013,6 +2047,11 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				);
 				await showChakaiProgress(threadId, null, chakaiSettledLine(step.count));
 				// 子を持つ親は chakai が review にするので owner を待つ。席が done にした親には owner の番が無い
+				tell(
+					threadId,
+					step.done ? { event: "done", status: "完了" } : { event: "asking" },
+					taken.body,
+				);
 				await setStatus(threadId, step.done ? "完了" : "決めてほしい");
 				await releaseChakai(threadId, chakaiLeftReason(step.states));
 				await closeSeat(seat);
@@ -2062,6 +2101,11 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				await sendTo(threadId, step.note);
 			}
 			await seats.set({ ...toWaiting(seat, null), expectStop: false });
+			tell(
+				threadId,
+				{ event: msg.outcome === "failed" ? "failed" : "asking" },
+				taken.body,
+			);
 			await setStatus(threadId, "決めてほしい");
 			await applyModelChange(threadId);
 			log.info("seat waiting", {
@@ -2072,7 +2116,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			return;
 		}
 		if (taken.status === "引き継ぎ") {
-			await handOff(seat, reply);
+			await handOff(seat, reply, taken.body);
 			return;
 		}
 		await postWithApproval(threadId, reply.body, [], reply.files);
@@ -2093,6 +2137,15 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			title: linger ? "keep" : "later",
 		});
 		const title = (await titleOf(threadId)) ?? "仕事フォーラムの投稿";
+		// 作業中と書いて手を止めたときは、Talking に知らせる状態が無い
+		if (taken.status === "完了" || taken.status === "見張り中") {
+			tell(
+				threadId,
+				{ event: "done", status: taken.status },
+				taken.body,
+				title,
+			);
+		}
 		await deps.remember(
 			taken.status === "完了"
 				? `仕事フォーラムの「${title}」を終えた`
@@ -2127,6 +2180,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	const handOff = async (
 		seat: Seat,
 		reply: { body: string; files: Attachment[] },
+		gist: string,
 	) => {
 		const threadId = seat.threadId;
 		const number = deps.seats.numberOf(threadId);
@@ -2143,6 +2197,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				: reply.body;
 		await postWithApproval(threadId, lead, [], reply.files);
 		await setStatus(threadId, "引き継ぎ", seat);
+		tell(threadId, { event: "done", status: "引き継ぎ" }, gist, title);
 		await deps.remember(
 			`仕事フォーラムの「${title}」を Mac に引き継いだ`,
 			partnerOf(threadId),
