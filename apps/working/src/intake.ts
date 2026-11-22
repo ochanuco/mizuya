@@ -1238,9 +1238,8 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 	const launch = async (seat: Seat) => {
 		const threadId = seat.threadId;
 		// 朝会・見回り・GitHub の出来事の席は Discord の投稿を持たず、ID はチャンネルではない
-		const title = seat.standup
-			? threadId
-			: ((await titleOf(threadId)) ?? threadId);
+		const named = seat.standup ? null : await titleOf(threadId);
+		const title = named ?? threadId;
 		const text = seat.pending.join("\n\n---\n\n");
 		const partner = partnerOf(threadId);
 		const agent = agentOf(partner);
@@ -1360,6 +1359,12 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			}
 			if (!seat.standup) {
 				await sendTo(threadId, seatStartFailedText(r.error));
+				tell(
+					threadId,
+					{ event: "failed" },
+					seatStartFailedText(r.error),
+					named,
+				);
 				await setStatus(threadId, "決めてほしい", seat);
 			}
 			return;
@@ -1400,10 +1405,8 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			dispatch_id: r.value.dispatchId,
 			resumed: seat.path !== null,
 		});
-		// 前の会話を起こし直すのは続きなので、新しく座らせたときだけ知らせる
-		if (!seat.standup && seat.path === null) {
-			tell(threadId, { event: "started" }, null, title);
-		}
+		// 止めた席を起こし直したときも、Talking には動き出したと知らせる
+		if (!seat.standup) tell(threadId, { event: "started" }, null, named);
 		if (!seat.standup) await setStatus(threadId, "作業中");
 	};
 
@@ -1641,9 +1644,22 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		await pass(await receive(stored, from), text);
 	};
 
-	/** 席に言葉を渡す。席の状態で渡し方が変わる。subject は動いている席に渡すときの見出し。 */
-	const pass = async (seat: Seat, text: string, subject = "持ち主の返事") => {
+	/**
+	 * 席に言葉を渡す。席の状態で渡し方が変わる。subject は動いている席に渡すときの見出し。
+	 * 手を止めていた席が動き出したら Talking に知らせる。chakai の次のタスクを続けて渡すときは run の途中なので quiet にする。
+	 */
+	const pass = async (
+		seat: Seat,
+		text: string,
+		subject = "持ち主の返事",
+		{ quiet = false }: { quiet?: boolean } = {},
+	) => {
 		const threadId = seat.threadId;
+		const resumed = () => {
+			if (!quiet && !seat.standup) {
+				tell(threadId, { event: "started" }, null);
+			}
+		};
 		switch (seat.status) {
 			case "queued":
 				await seats.set({
@@ -1680,6 +1696,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 							questionId: null,
 							waitingSince: null,
 						});
+						resumed();
 						await setStatus(threadId, "作業中");
 						return;
 					}
@@ -1729,6 +1746,8 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 			doneAt: null,
 			doneStatus: null,
 		});
+		// 動いている席に足した言葉は同じ作業の続きなので知らせない
+		if (seat.status !== "working") resumed();
 		await setStatus(threadId, "作業中");
 	};
 
@@ -2080,7 +2099,9 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				await showChakaiProgress(threadId, step.work.count, step.post.line);
 			}
 			const current = seats.get(threadId);
-			if (current !== null) await pass(current, step.prompt, CHAKAI_SUBJECT);
+			if (current !== null) {
+				await pass(current, step.prompt, CHAKAI_SUBJECT, { quiet: true });
+			}
 			log.info("chakai task handed", {
 				thread_id: threadId,
 				task: step.work.taskId,
@@ -2516,6 +2537,13 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		void labelPulls(seat);
 		await postWithApproval(threadId, STOPPED_TEXT, blocked, [], true);
 		await seats.set(toWaiting(seat, null));
+		tell(
+			threadId,
+			{ event: "asking" },
+			msg.stopReason === null
+				? null
+				: `返事を書かずに作業が止まった（${msg.stopReason}）`,
+		);
 		await setStatus(threadId, "決めてほしい");
 		await applyModelChange(threadId);
 		log.info("seat stopped", {

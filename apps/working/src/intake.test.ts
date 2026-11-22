@@ -4180,7 +4180,7 @@ describe("chakai の見回りと席", () => {
 describe("Talking への席の知らせ", () => {
 	const settle = () => new Promise((r) => setTimeout(r, 0));
 
-	it("新しく座らせた席は started を担当のパートナーに知らせ、続きの起こし直しでは知らせない", async () => {
+	it("新しく座らせた席は started を担当のパートナーに知らせ、聞いた後に答えをもらって動き出したらもう一度 started を知らせる", async () => {
 		const s = await setup();
 		const seat = await openPost(s);
 		await vi.waitFor(() => expect(s.told).toHaveLength(1));
@@ -4207,8 +4207,71 @@ describe("Talking への席の知らせ", () => {
 			summary: "どのブランチに\npush しますか？",
 		});
 		await s.intake.handle(say("p1", "main で"));
+		await vi.waitFor(() => expect(s.told).toHaveLength(3));
+		expect(s.told[2]?.event).toMatchObject({ event: "started", summary: null });
+		// 動いている席に言葉を足しても、同じ作業の続きなので知らせない
+		await s.intake.handle(say("p1", "テストも足して"));
 		await settle();
-		expect(s.told.map((t) => t.event.event)).toEqual(["started", "asking"]);
+		expect(s.told.map((t) => t.event.event)).toEqual([
+			"started",
+			"asking",
+			"started",
+		]);
+	});
+
+	it("完了して残している席に続きを頼まれたら started を知らせる", async () => {
+		const s = await setup();
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "worker_done",
+				dispatchId: seat.dispatchId,
+				body: "直しました\n状態: 完了",
+				outcome: "succeeded",
+			}),
+		);
+		await vi.waitFor(() => expect(s.told).toHaveLength(2));
+		await s.intake.handle(say("p1", "もう一か所お願い"));
+		await vi.waitFor(() => expect(s.told).toHaveLength(3));
+		expect(s.told.map((t) => t.event.event)).toEqual([
+			"started",
+			"done",
+			"started",
+		]);
+	});
+
+	it("返事を書かずに止まった席は asking を知らせ、止まった理由を要約にする", async () => {
+		const s = await setup();
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "escalation",
+				dispatchId: seat.dispatchId,
+				body: "",
+				stopReason: "no_reply",
+			}),
+		);
+		await vi.waitFor(() => expect(s.told).toHaveLength(2));
+		expect(s.told[1]?.event).toMatchObject({
+			event: "asking",
+			summary: "返事を書かずに作業が止まった（no_reply）",
+		});
+	});
+
+	it("席を始められなかったら failed を知らせ、started は知らせない", async () => {
+		const o = fakeEngine();
+		vi.mocked(o.engine.startSeat).mockResolvedValueOnce(
+			err({ type: "SeatTrustFailed", command: "hs turn", reason: "boom" }),
+		);
+		const s = await setup({ seatEngine: o });
+		s.d.addThread("p1", "README の誤字");
+		await s.intake.handle(say("p1", "README の誤字を直して", { first: true }));
+		await vi.waitFor(() => expect(s.told).toHaveLength(1));
+		expect(s.told[0]?.event).toMatchObject({
+			event: "failed",
+			title: "README の誤字",
+			summary: expect.stringContaining("席を始められませんでした"),
+		});
 	});
 
 	it("完了・見張り中・引き継ぎは done にその状態を添え、状態の行を外した本文を要約にする", async () => {
