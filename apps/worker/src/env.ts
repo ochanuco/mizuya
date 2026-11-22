@@ -11,6 +11,12 @@ export type Bindings = {
 	DISCORD_APPROVAL_CHANNEL_ID: string;
 	/** Working が受け箱につなぐときの token。無ければ受け箱の口を閉じる */
 	WORKING_INBOX_TOKEN?: string;
+	/** Access の team のドメイン。仕事の依頼の口が Access の JWT を確かめるのに使う */
+	ACCESS_TEAM_DOMAIN: string;
+	/** 仕事の依頼の口（/working/requests）の Access application の AUD。空なら口はすべて 403 */
+	WORKING_REQUESTS_ACCESS_AUD: string;
+	/** 仕事の依頼を書いてよい yunomi の service token の client id。空なら口はすべて 403 */
+	WORKING_REQUESTS_CLIENT_ID: string;
 	WORKING_INBOX: DurableObjectNamespace<WorkingInbox>;
 	APPROVAL_LEDGER: DurableObjectNamespace<ApprovalLedger>;
 };

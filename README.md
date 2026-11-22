@@ -22,6 +22,7 @@
 | `POST /github/webhook`       | `X-Hub-Signature-256` を検証し、`workflow_job` を処理する。席を動かす出来事は Working の受け箱に置く                     |
 | `POST /discord/interactions` | Ed25519 署名を検証し、PING・ボタン・`/ai` コマンドと依頼の modal を処理する。Working 向けのものは Working の受け箱に置く |
 | `GET /working/inbox`         | Working が受け箱に WebSocket でつなぐ口。Access の service token と `WORKING_INBOX_TOKEN` で確かめる                     |
+| `POST /working/requests`     | yunomi の Worker が会話で頼まれた仕事を受け箱に置く口（下の「仕事の依頼の口」）                                          |
 | `GET /health`                | 疎通確認                                                                                                                 |
 
 ## Working の受け箱
@@ -31,13 +32,61 @@ Working（docker01）は公開していないので、Worker が受けた仕事�
 - ボタン: custom_id が `working:` で始まるボタンは、deferred update で応答してから、押された場所・custom_id・押した人を置く。押した人が持ち主かどうかは Working が決める。interaction の token は 15 分で切れるので、それより古いボタンは渡さない。
 - `/ai` コマンド: `/ai <claude|codex> <モデル>`（claude は `opus`・`sonnet`・`haiku`、codex は `terra`・`sol`・`luna`）。スレッドの外で打たれたら、依頼を書く modal（複数行の欄 1 つ）を返す。modal が送信されたら本人にだけ見える「受け付けました。投稿を立てています…」で応答し、依頼・相手・モデル・打った人と interaction の token を置く。スレッドの中で打たれたら、本人にだけ見える deferred で応答し、モデルの切り替えとして置く。仕事フォーラムの投稿かどうかは Working が決め、本人にだけ見える返事を token で書き換える。ボタンと同じく 15 分より古いものは渡さない。
 - GitHub の出来事: `workflow_run` と `check_suite`（Actions 以外）の失敗、`pull_request_review` の submitted、`issue_comment` の created を、席の材料になる値だけに絞って置く（`src/work-events.ts`）。`X-GitHub-Delivery` で再送を一つにまとめる。6 時間より古いものは渡さない（Working の見回りが拾う）。
+- 仕事の依頼: yunomi の Worker が `POST /working/requests` で書いた依頼を kind `work` で置く。Working は仕事フォーラムに投稿を立てて席を開く。保持の期限（1 日）まで渡す。
 - 渡せないまま 1 日たった行は、Durable Object の alarm が消す。
+
+## 仕事の依頼の口
+
+yunomi の Talking が会話で頼まれ、オーナーが了承した仕事を Working に渡す口。席の経過は Working が yunomi の出来事の口に送り、この口は待たない。
+
+### 認証
+
+Access の JWT（`Cf-Access-Jwt-Assertion`）を Worker でも確かめる。path に絞った Access の application が chabatake にあり、yunomi の Worker の service token だけを通す。Worker は `wrangler.jsonc` の `vars` で次の 3 つを照らす。
+
+| 名前                          | 中身                                                                 |
+| ----------------------------- | -------------------------------------------------------------------- |
+| `ACCESS_TEAM_DOMAIN`          | Access の team のドメイン。JWT の発行元と鍵の取得先                  |
+| `WORKING_REQUESTS_ACCESS_AUD` | `/working/requests` の Access application の AUD                     |
+| `WORKING_REQUESTS_CLIENT_ID`  | 通してよい service token の client id。JWT の `common_name` と比べる |
+
+AUD か client id が空なら、口はすべて 403 を返す。
+
+### 形
+
+```json
+{
+	"request_id": "<UUID>",
+	"partner": "yukarin | akarin",
+	"title": "<件名>",
+	"request": "<依頼の本文>",
+	"requested_by": "<オーナーの Discord user ID>",
+	"context_url": "<会話の Discord のメッセージへのリンク | null>"
+}
+```
+
+| 項目           | 形                                                                                     |
+| -------------- | -------------------------------------------------------------------------------------- |
+| `request_id`   | UUID。同じ依頼の送り直しを一つにまとめる鍵                                             |
+| `partner`      | 席を受け持つパートナー                                                                 |
+| `title`        | 投稿の件名。改行なし、前後の空白を除いて 1 〜 100 字                                   |
+| `request`      | 何をするか。前後の空白を除いて 1 〜 2000 字                                            |
+| `requested_by` | 頼んだ人の Discord の user ID（数字だけ）。Working の持ち主でなければ Working が捨てる |
+| `context_url`  | `https://discord.com/channels/...` の形のリンク。省くと null                           |
+
+| status | 本文                                                    | いつ                                                                      |
+| ------ | ------------------------------------------------------- | ------------------------------------------------------------------------- |
+| 202    | `{ "id": "<受け箱の行の ID>" }`                         | 受け付けた。同じ `request_id` は 7 日のあいだ置き直さず、同じ `id` を返す |
+| 400    | `{ "error": "invalid_json" }`                           | 本文が JSON として読めない                                                |
+| 400    | `{ "error": "validation_failed", "message": "<理由>" }` | 本文が上の形に合わない                                                    |
+| 401    | `{ "error": "<理由>" }`                                 | JWT が無いか、検証できない（ほかの application の JWT を含む）            |
+| 403    | `{ "error": "unknown_caller" \| "not_configured" }`     | ほかの service token かログインした人、または口の設定が空                 |
+| 405    | `{ "error": "method_not_allowed" }`                     | POST 以外                                                                 |
 
 ## 構成
 
 - Cloudflare Worker `mizuya`。chabatake が管理する独自ドメインだけで受け、`workers.dev` は閉じている。Discord は HTTP interactions で受ける。常時接続は、Working が受け箱につなぐ WebSocket だけ。
-- ストレージは Working の受け箱（Durable Object `WorkingInbox` の SQLite）だけ。
-- `apps/worker/src/` の `index.ts` が経路の振り分け、`webhook.ts` が GitHub の webhook、`interactions.ts` が Discord のボタンとコマンド、`commands.ts` が `/ai` の定義と modal、`register-commands.ts` がコマンドの登録、`review.ts` がメッセージの組み立てと、メッセージから対象を読む処理、`signature.ts` が署名検証、`work-events.ts` が GitHub の出来事の絞り込み、`inbox.ts` と `inbox-object.ts` と `inbox-route.ts` が Working の受け箱、`approval-ledger.ts` と `approval-ledger-object.ts` が承認待ちの投稿の記録、`github.ts` と `discord.ts` が外部 API。
+- ストレージは Working の受け箱（Durable Object `WorkingInbox` の SQLite。仕事の依頼の `request_id` もここに残す）と、承認待ちの投稿の記録（Durable Object `ApprovalLedger`）。
+- `apps/worker/src/` の `index.ts` が経路の振り分け、`webhook.ts` が GitHub の webhook、`interactions.ts` が Discord のボタンとコマンド、`commands.ts` が `/ai` の定義と modal、`register-commands.ts` がコマンドの登録、`review.ts` がメッセージの組み立てと、メッセージから対象を読む処理、`signature.ts` が署名検証、`work-events.ts` が GitHub の出来事の絞り込み、`inbox.ts` と `inbox-object.ts` と `inbox-route.ts` が Working の受け箱、`work-request.ts` と `access.ts` が仕事の依頼の口とその Access の確かめ、`approval-ledger.ts` と `approval-ledger-object.ts` が承認待ちの投稿の記録、`github.ts` と `discord.ts` が外部 API。
 
 ## 開発
 

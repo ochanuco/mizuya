@@ -790,6 +790,9 @@ const inbox = cfg.inbox
 					});
 				},
 				...(githubEvents ? { github: githubEvents.push } : {}),
+				work: async (request) => {
+					await intake.startFromWork(request);
+				},
 			},
 			logger,
 		})

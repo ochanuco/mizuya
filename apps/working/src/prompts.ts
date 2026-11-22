@@ -152,6 +152,26 @@ ${
 依頼:
 ${input.content}`;
 
+/** 会話で頼まれた仕事の投稿の本文。依頼の本文は Talking が書いたもの。 */
+export const workPostBody = (input: {
+	authorName: string;
+	content: string;
+	link: string | null;
+}) =>
+	`${input.authorName} さんから会話で頼まれた仕事\n\n${quote(input.content, 1500)}${input.link ? `\n\n会話: ${input.link}` : ""}`;
+
+/** 会話で頼まれた仕事の席に最初に渡す文。依頼の本文は投稿で切り詰めるので、ここで全文を渡す。 */
+export const workPrompt = (input: {
+	now: Date;
+	content: string;
+	link: string | null;
+}) =>
+	`${clock(input.now)}
+持ち主が会話の中で仕事を頼み、会話の側で依頼をまとめてこの投稿を立てた。この投稿で作業して返事をする。分からないことは、この投稿で聞く。${input.link ? `\n会話のメッセージ: ${input.link}` : ""}
+
+依頼:
+${input.content}`;
+
 export const forumStarterPrompt = (input: {
 	now: Date;
 	authorName: string;

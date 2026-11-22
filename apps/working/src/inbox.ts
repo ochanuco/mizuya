@@ -10,8 +10,8 @@ import { SEAT_MODELS } from "./seat-model.ts";
 import { WORKING_BUTTON_PREFIX } from "./system.ts";
 
 /**
- * mizuya の Worker の受け箱。Worker が受けたボタン、`/ai` コマンドと GitHub の出来事を、外向きの WebSocket で受け取る。
- * 受け取った行は ack し、Worker はそれを消す。ack する前に切れた行は、つなぎ直したときにもう一度来る。
+ * mizuya の Worker の受け箱。Worker が受けたボタン、`/ai` コマンド、GitHub の出来事と yunomi からの仕事の依頼を、
+ * 外向きの WebSocket で受け取る。受け取った行は ack し、Worker はそれを消す。ack する前に切れた行は、つなぎ直したときにもう一度来る。
  */
 
 /** 接続を保つために送る文字列。Worker の Durable Object は起きずに pong を返す。 */
@@ -55,6 +55,18 @@ const knownCommandSchema = v.pipe(
 	),
 );
 
+/** Worker が受け箱に置く仕事の依頼の形。mizuya の Worker の `work-request.ts` と揃える。 */
+const workSchema = v.object({
+	request_id: v.pipe(v.string(), v.nonEmpty()),
+	partner: v.picklist(["yukarin", "akarin"]),
+	title: v.pipe(v.string(), v.nonEmpty()),
+	request: v.pipe(v.string(), v.nonEmpty()),
+	requested_by: snowflake,
+	context_url: v.nullable(v.string()),
+});
+
+export type WorkRequest = v.InferOutput<typeof workSchema>;
+
 const itemSchema = v.object({
 	type: v.literal("item"),
 	id: v.pipe(v.string(), v.nonEmpty()),
@@ -70,17 +82,20 @@ export type InboxHandlers = {
 	command: (envelope: CommandEvent) => void;
 	/** 席を動かす GitHub の出来事。未設定なら受け取って捨てる。 */
 	github?: (event: GithubWorkEvent) => void;
+	/** yunomi からの仕事の依頼。終わってから ack する。未設定なら受け取って捨てる。 */
+	work?: (request: WorkRequest) => Promise<void>;
 };
 
 /**
  * 受け箱の 1 行を読み、渡す先に渡す。ack してよければ行の ID を返す。
+ * 仕事の依頼は投稿を立て終えてから ack するので、ID を Promise で返す。
  * 読めない行や知らない種類も ack し、受け箱に残し続けない。
  */
 export const dispatchInboxMessage = (
 	raw: string,
 	handlers: InboxHandlers,
 	logger: Logger,
-): string | null => {
+): string | null | Promise<string> => {
 	if (raw === PONG) return null;
 	let json: unknown;
 	try {
@@ -108,6 +123,24 @@ export const dispatchInboxMessage = (
 			});
 		}
 		return id;
+	}
+	if (kind === "work") {
+		const work = v.safeParse(workSchema, body);
+		if (!work.success) {
+			logger.warn("inbox work request unreadable", { id });
+			return id;
+		}
+		if (!handlers.work) {
+			logger.info("inbox work request dropped", { id, reason: "no handler" });
+			return id;
+		}
+		return handlers.work(work.output).then(
+			() => id,
+			(e: unknown) => {
+				logger.error("inbox work request crashed", { id, error: String(e) });
+				return id;
+			},
+		);
 	}
 	if (kind === "command") {
 		const command = v.safeParse(knownCommandSchema, body);
@@ -194,8 +227,15 @@ export const startInbox = (opts: {
 		});
 		ws.addEventListener("message", (e: MessageEvent) => {
 			if (typeof e.data !== "string") return;
+			const send = (id: string | null) => {
+				// 切れた後に終わった行は ack しない。つなぎ直すと届き直し、受付が request_id で一つにまとめる
+				if (id !== null && ws.readyState === WebSocket.OPEN) {
+					ws.send(JSON.stringify({ type: "ack", id }));
+				}
+			};
 			const ack = dispatchInboxMessage(e.data, opts.handlers, log);
-			if (ack !== null) ws.send(JSON.stringify({ type: "ack", id: ack }));
+			if (typeof ack === "string" || ack === null) send(ack);
+			else void ack.then(send);
 		});
 		ws.addEventListener("error", () => {
 			log.warn("inbox connection error");
