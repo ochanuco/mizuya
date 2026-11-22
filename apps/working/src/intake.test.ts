@@ -29,6 +29,7 @@ import type { IssueTracker } from "./issue-close.ts";
 import { err, ok, type PartnerId } from "./lib/core.ts";
 import { externalServiceUnavailable, rateLimited } from "./lib/errors.ts";
 import { silentLogger } from "./logger.ts";
+import type { SeatEvent } from "./seat-events.ts";
 import { openSeatStore } from "./seat-store.ts";
 import { buttonMessage } from "./system.ts";
 import {
@@ -96,6 +97,7 @@ const setup = async (
 		chakai?: ReturnType<typeof fakeChakai>;
 		findWorkBranches?: IntakeDeps["findWorkBranches"];
 		labelSeatPulls?: IntakeDeps["labelSeatPulls"];
+		tellTalking?: IntakeDeps["tellTalking"];
 		/** 受付を作り直すときに、同じ Discord を渡す。 */
 		d?: ReturnType<typeof fakeDiscord>;
 		sys?: ReturnType<typeof fakeDiscord>;
@@ -110,6 +112,7 @@ const setup = async (
 	const remembered: string[] = [];
 	const rememberedBy: PartnerId[] = [];
 	const activity: ActivityEntry[] = [];
+	const told: { partner: PartnerId; event: SeatEvent }[] = [];
 	const writes = {
 		yukarin: [] as string[],
 		akarin: [] as string[],
@@ -154,6 +157,12 @@ const setup = async (
 		recordActivity: async (e) => {
 			activity.push(e);
 		},
+		tellTalking:
+			opts.tellTalking === undefined
+				? (partner, event) => {
+						told.push({ partner, event });
+					}
+				: opts.tellTalking,
 		standupDone: async (text, blocked, kind, partner) => {
 			standup.push({ text, blocked: blocked.length, kind, partner });
 		},
@@ -194,6 +203,7 @@ const setup = async (
 		remembered,
 		rememberedBy,
 		activity,
+		told,
 		writes,
 		standup,
 		intake: createIntake(deps),
@@ -3548,6 +3558,34 @@ describe("chakai の親タスクの席", () => {
 		);
 	});
 
+	it("Talking には始まりと run の終わりだけを知らせ、次の子を渡すところでは知らせない", async () => {
+		const { s, c } = await begin();
+		await vi.waitFor(() => expect(s.told).toHaveLength(1));
+		c.move("c1", "done");
+		await turnEnd(s);
+		c.move("c2", "done");
+		await turnEnd(s, "全部やりました\n状態: 完了");
+		await vi.waitFor(() => expect(s.told).toHaveLength(2));
+		// 子を持つ親は chakai が review にして owner を待つので、決めてほしいと同じに知らせる
+		expect(s.told.map((t) => t.event.event)).toEqual(["started", "asking"]);
+		expect(s.told[1]?.event).toMatchObject({
+			threadId: "thread1",
+			summary: "全部やりました",
+		});
+	});
+
+	it("席が done にした子の無い親は、完了として知らせる", async () => {
+		const { s, c } = await beginParentOnly();
+		c.move("p", "done");
+		await turnEnd(s, "やりました\n状態: 完了");
+		await vi.waitFor(() => expect(s.told).toHaveLength(2));
+		expect(s.told[1]?.event).toMatchObject({
+			event: "done",
+			status: "完了",
+			summary: "やりました",
+		});
+	});
+
 	it("子の無い親を席が review にしたら解放せず、決めてほしいで待ち、答えのあとの done で閉じる", async () => {
 		const { s, c } = await beginParentOnly();
 		c.move("p", "review", "どちらの方式にするか");
@@ -4136,5 +4174,206 @@ describe("chakai の見回りと席", () => {
 		await w.patrol();
 		expect(w.c.tasks.get("p")?.state).toBe("review");
 		expect(w.c.runs).toHaveLength(1);
+	});
+});
+
+describe("Talking への席の知らせ", () => {
+	const settle = () => new Promise((r) => setTimeout(r, 0));
+
+	it("新しく座らせた席は started を担当のパートナーに知らせ、聞いた後に答えをもらって動き出したらもう一度 started を知らせる", async () => {
+		const s = await setup();
+		const seat = await openPost(s);
+		await vi.waitFor(() => expect(s.told).toHaveLength(1));
+		expect(s.told[0]).toEqual({
+			partner: "yukarin",
+			event: {
+				event: "started",
+				threadId: "p1",
+				title: "README の誤字",
+				summary: null,
+				at: T0,
+			},
+		});
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "question",
+				dispatchId: seat.dispatchId,
+				body: "どのブランチに\npush しますか？",
+			}),
+		);
+		await vi.waitFor(() => expect(s.told).toHaveLength(2));
+		expect(s.told[1]?.event).toMatchObject({
+			event: "asking",
+			summary: "どのブランチに\npush しますか？",
+		});
+		await s.intake.handle(say("p1", "main で"));
+		await vi.waitFor(() => expect(s.told).toHaveLength(3));
+		expect(s.told[2]?.event).toMatchObject({ event: "started", summary: null });
+		// 動いている席に言葉を足しても、同じ作業の続きなので知らせない
+		await s.intake.handle(say("p1", "テストも足して"));
+		await settle();
+		expect(s.told.map((t) => t.event.event)).toEqual([
+			"started",
+			"asking",
+			"started",
+		]);
+	});
+
+	it("完了して残している席に続きを頼まれたら started を知らせる", async () => {
+		const s = await setup();
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "worker_done",
+				dispatchId: seat.dispatchId,
+				body: "直しました\n状態: 完了",
+				outcome: "succeeded",
+			}),
+		);
+		await vi.waitFor(() => expect(s.told).toHaveLength(2));
+		await s.intake.handle(say("p1", "もう一か所お願い"));
+		await vi.waitFor(() => expect(s.told).toHaveLength(3));
+		expect(s.told.map((t) => t.event.event)).toEqual([
+			"started",
+			"done",
+			"started",
+		]);
+	});
+
+	it("返事を書かずに止まった席は asking を知らせ、止まった理由を要約にする", async () => {
+		const s = await setup();
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "escalation",
+				dispatchId: seat.dispatchId,
+				body: "",
+				stopReason: "no_reply",
+			}),
+		);
+		await vi.waitFor(() => expect(s.told).toHaveLength(2));
+		expect(s.told[1]?.event).toMatchObject({
+			event: "asking",
+			summary: "返事を書かずに作業が止まった（no_reply）",
+		});
+	});
+
+	it("席を始められなかったら failed を知らせ、started は知らせない", async () => {
+		const o = fakeEngine();
+		vi.mocked(o.engine.startSeat).mockResolvedValueOnce(
+			err({ type: "SeatTrustFailed", command: "hs turn", reason: "boom" }),
+		);
+		const s = await setup({ seatEngine: o });
+		s.d.addThread("p1", "README の誤字");
+		await s.intake.handle(say("p1", "README の誤字を直して", { first: true }));
+		await vi.waitFor(() => expect(s.told).toHaveLength(1));
+		expect(s.told[0]?.event).toMatchObject({
+			event: "failed",
+			title: "README の誤字",
+			summary: expect.stringContaining("席を始められませんでした"),
+		});
+	});
+
+	it("完了・見張り中・引き継ぎは done にその状態を添え、状態の行を外した本文を要約にする", async () => {
+		for (const status of ["完了", "見張り中", "引き継ぎ"] as const) {
+			const s = await setup();
+			const seat = await openPost(s);
+			await s.intake.onSeatMessage(
+				seatMessage({
+					type: "worker_done",
+					dispatchId: seat.dispatchId,
+					body: `直して PR を出しました\n状態: ${status}`,
+					outcome: "succeeded",
+				}),
+			);
+			await vi.waitFor(() => expect(s.told).toHaveLength(2));
+			expect(s.told[1]?.event).toMatchObject({
+				event: "done",
+				status,
+				threadId: "p1",
+				title: "README の誤字",
+				summary: "直して PR を出しました",
+			});
+		}
+	});
+
+	it("決めてほしいで終えたら asking、失敗で終えたら failed を知らせる", async () => {
+		const s = await setup();
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "worker_done",
+				dispatchId: seat.dispatchId,
+				body: "A と B のどちらにしますか\n状態: 決めてほしい",
+				outcome: "succeeded",
+			}),
+		);
+		await vi.waitFor(() => expect(s.told).toHaveLength(2));
+		expect(s.told[1]?.event).toMatchObject({
+			event: "asking",
+			summary: "A と B のどちらにしますか",
+		});
+
+		const f = await setup();
+		const fseat = await openPost(f);
+		await f.intake.onSeatMessage(
+			seatMessage({
+				type: "worker_done",
+				dispatchId: fseat.dispatchId,
+				body: "席の agent が止まりました（timeout）",
+				outcome: "failed",
+			}),
+		);
+		await vi.waitFor(() => expect(f.told).toHaveLength(2));
+		expect(f.told[1]?.event).toMatchObject({
+			event: "failed",
+			summary: "席の agent が止まりました（timeout）",
+		});
+		expect(f.told[1]?.event.status).toBeUndefined();
+	});
+
+	it("作業中と書いて手を止めたときと、朝会の席では知らせない", async () => {
+		const s = await setup();
+		const seat = await openPost(s);
+		await s.intake.onSeatMessage(
+			seatMessage({
+				type: "worker_done",
+				dispatchId: seat.dispatchId,
+				body: "続きは明日\n状態: 作業中",
+			}),
+		);
+		await s.intake.startStandup("朝会の材料");
+		await settle();
+		expect(s.told.map((t) => t.event.event)).toEqual(["started"]);
+	});
+
+	it("知らせる口が投げても拒んでも、席の流れは変わらない", async () => {
+		for (const tellTalking of [
+			() => {
+				throw new Error("boom");
+			},
+			async () => {
+				throw new Error("boom");
+			},
+		]) {
+			const s = await setup({ tellTalking });
+			const seat = await openPost(s);
+			await s.intake.onSeatMessage(
+				seatMessage({
+					type: "worker_done",
+					dispatchId: seat.dispatchId,
+					body: "直して PR を出しました\n状態: 完了",
+					outcome: "succeeded",
+				}),
+			);
+			await settle();
+			expect(s.d.sentTo("p1").at(-1)).toBe(
+				`<@${OWNER}> 直して PR を出しました`,
+			);
+			expect(s.d.tagsOf("p1")).toEqual(["tag-done"]);
+			expect(s.remembered).toEqual([
+				"仕事フォーラムの「README の誤字」を終えた",
+			]);
+		}
 	});
 });
