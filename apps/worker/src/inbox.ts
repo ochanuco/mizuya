@@ -1,11 +1,11 @@
 import * as v from "valibot";
 
 /**
- * Working の受け箱。Worker が受けた仕事向けの出来事（ボタン、`/ai` コマンド、GitHub の出来事）を置き、
+ * Working の受け箱。Worker が受けた仕事向けの出来事（ボタン、`/ai` コマンド、GitHub の出来事、yunomi からの仕事の依頼）を置き、
  * 外向きの WebSocket でつないだ Working に渡す。Working は受け取った行を ack し、ack した行だけを消す。
  */
 
-export const INBOX_KINDS = ["button", "command", "github"] as const;
+export const INBOX_KINDS = ["button", "command", "github", "work"] as const;
 export type InboxKind = (typeof INBOX_KINDS)[number];
 
 export type InboxItem = {
@@ -28,9 +28,20 @@ export const BUTTON_MAX_AGE_MS = 15 * 60_000;
 export const GITHUB_MAX_AGE_MS = 6 * 60 * 60_000;
 /** 渡せないまま残った行を消すまでの時間。 */
 export const RETENTION_MS = 24 * 60 * 60_000;
+/** 仕事の依頼は 202 を返した時点で頼んだ側が受け付けられたとみなすので、Working が止まっていても保持の期限まで渡す。 */
+export const WORK_MAX_AGE_MS = RETENTION_MS;
+/**
+ * 依頼の request_id を覚えておく時間。受け箱の行は ack で消えるので、行の dedupe だけでは
+ * ack の後に届いた送り直しで投稿が二つ立つ。
+ */
+export const WORK_REQUEST_KEEP_MS = 7 * 24 * 60 * 60_000;
 
 const maxAgeOf = (kind: InboxKind) =>
-	kind === "github" ? GITHUB_MAX_AGE_MS : BUTTON_MAX_AGE_MS;
+	kind === "github"
+		? GITHUB_MAX_AGE_MS
+		: kind === "work"
+			? WORK_MAX_AGE_MS
+			: BUTTON_MAX_AGE_MS;
 
 /** Durable Object の SQLite のうち、受け箱が使う分。 */
 export type Sql = {
@@ -60,11 +71,19 @@ export type Inbox = {
 		body: unknown,
 		dedupe?: string | null,
 	) => InboxItem | null;
+	/**
+	 * 仕事の依頼を置き、行の ID を返す。同じ request_id は前に置いた行の ID を返し、二度は置かない。
+	 * item は今回置いたときだけ入る。
+	 */
+	putWork: (
+		requestId: string,
+		body: unknown,
+	) => { item: InboxItem | null; id: string };
 	/** 渡してよい行を古い順に返す。古すぎる行はここで消す。 */
 	pending: () => InboxItem[];
 	/** Working からのメッセージを読む。ack なら行を消して true。 */
 	ack: (message: string) => boolean;
-	/** 保持の期限を過ぎた行を消す。 */
+	/** 保持の期限を過ぎた行と request_id を消す。 */
 	purge: () => void;
 };
 
@@ -93,26 +112,61 @@ export const createInbox = (
 			received_at INTEGER NOT NULL
 		)`,
 	);
+	sql.exec(
+		`CREATE TABLE IF NOT EXISTS work_requests (
+			request_id TEXT PRIMARY KEY,
+			item_id TEXT NOT NULL,
+			received_at INTEGER NOT NULL
+		)`,
+	);
+	const forgetWorkRequests = () => {
+		sql.exec(
+			"DELETE FROM work_requests WHERE received_at < ?",
+			now() - WORK_REQUEST_KEEP_MS,
+		);
+	};
+	const newRow = (kind: InboxKind, body: unknown, dedupe: string | null) => ({
+		id: newId(),
+		kind,
+		dedupe,
+		body: JSON.stringify(body),
+		received_at: now(),
+	});
+	/** 置けたら true。dedupe が同じ行がもうあれば置かない。 */
+	const insert = (row: Row) =>
+		sql
+			.exec(
+				"INSERT INTO items (id, kind, dedupe, body, received_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING id",
+				row.id,
+				row.kind,
+				row.dedupe,
+				row.body,
+				row.received_at,
+			)
+			.toArray().length > 0;
 	return {
 		put: (kind, body, dedupe = null) => {
-			const row: Row = {
-				id: newId(),
-				kind,
-				dedupe,
-				body: JSON.stringify(body),
-				received_at: now(),
-			};
-			const inserted = sql
+			const row = newRow(kind, body, dedupe);
+			return insert(row) ? toItem(row) : null;
+		},
+		putWork: (requestId, body) => {
+			forgetWorkRequests();
+			const known = sql
 				.exec(
-					"INSERT INTO items (id, kind, dedupe, body, received_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING id",
-					row.id,
-					row.kind,
-					row.dedupe,
-					row.body,
-					row.received_at,
+					"SELECT item_id FROM work_requests WHERE request_id = ?",
+					requestId,
 				)
-				.toArray();
-			return inserted.length > 0 ? toItem(row) : null;
+				.toArray()[0];
+			if (known) return { item: null, id: String(known.item_id) };
+			const row = newRow("work", body, null);
+			insert(row);
+			sql.exec(
+				"INSERT INTO work_requests (request_id, item_id, received_at) VALUES (?, ?, ?)",
+				requestId,
+				row.id,
+				row.received_at,
+			);
+			return { item: toItem(row), id: row.id };
 		},
 		pending: () => {
 			const at = now();
@@ -142,6 +196,7 @@ export const createInbox = (
 		},
 		purge: () => {
 			sql.exec("DELETE FROM items WHERE received_at < ?", now() - RETENTION_MS);
+			forgetWorkRequests();
 		},
 	};
 };

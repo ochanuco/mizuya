@@ -3,7 +3,7 @@
 	"name": "mizuya",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-10-01",
-	// 入口は Discord と GitHub からの署名つきリクエストと、Access を通った Working の接続だけなので、独自ドメインに絞る
+	// 入口は Discord と GitHub からの署名つきリクエストと、Access を通った Working の接続と yunomi の仕事の依頼だけなので、独自ドメインに絞る
 	"workers_dev": false,
 	"preview_urls": false,
 	"routes": [
@@ -12,6 +12,13 @@
 			"custom_domain": true
 		}
 	],
+	// 仕事の依頼の口の Access。AUD は chabatake の /working/requests の application、client id は yunomi の Worker の service token
+	// （yunomi-worker-mizuya）のもの。どちらかを空にすると口はすべて 403 を返す
+	"vars": {
+		"ACCESS_TEAM_DOMAIN": "chanuco.cloudflareaccess.com",
+		"WORKING_REQUESTS_ACCESS_AUD": "2a34f6bc9384dbd90d79bde30ac7f17f2b4217b63ce82f9b5336b348610aa40a",
+		"WORKING_REQUESTS_CLIENT_ID": "5cceeb365705cb0d33b5164aaec6533e.access"
+	},
 	"durable_objects": {
 		"bindings": [
 			{ "name": "WORKING_INBOX", "class_name": "WorkingInbox" },

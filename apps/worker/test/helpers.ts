@@ -14,6 +14,9 @@ export const APPROVER_ID = "100000000000000001";
 export const OTHER_USER_ID = "100000000000000002";
 export const CHANNEL_ID = "200000000000000001";
 export const APPLICATION_ID = "300000000000000001";
+export const ACCESS_TEAM = "team.example.com";
+export const REQUESTS_AUD = "test-requests-aud";
+export const YUNOMI_CLIENT_ID = "test-yunomi.access";
 
 export type InboxPut = { kind: string; body: unknown; dedupe: string | null };
 
@@ -25,7 +28,16 @@ export function fakeInbox(): {
 } {
 	const puts: InboxPut[] = [];
 	const connects: Request[] = [];
+	const workIds = new Map<string, string>();
 	const stub = {
+		putWork: async (requestId: string, body: unknown) => {
+			const known = workIds.get(requestId);
+			if (known) return known;
+			const id = `item-${workIds.size + 1}`;
+			workIds.set(requestId, id);
+			puts.push({ kind: "work", body, dedupe: null });
+			return id;
+		},
 		put: async (kind: string, body: unknown, dedupe: string | null = null) => {
 			if (dedupe !== null && puts.some((p) => p.dedupe === dedupe))
 				return false;
@@ -89,6 +101,9 @@ export async function makeEnv(): Promise<{
 			WORKING_INBOX: inbox.namespace,
 			APPROVAL_LEDGER: ledger.namespace,
 			WORKING_INBOX_TOKEN: "test-inbox-token",
+			ACCESS_TEAM_DOMAIN: ACCESS_TEAM,
+			WORKING_REQUESTS_ACCESS_AUD: REQUESTS_AUD,
+			WORKING_REQUESTS_CLIENT_ID: YUNOMI_CLIENT_ID,
 			GITHUB_WEBHOOK_SECRET: "test-webhook-secret",
 			GITHUB_APPROVER_TOKEN: "test-github-token",
 			DISCORD_PUBLIC_KEY: toHex(publicKey as ArrayBuffer),

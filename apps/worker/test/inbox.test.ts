@@ -4,6 +4,8 @@ import {
 	createInbox,
 	GITHUB_MAX_AGE_MS,
 	RETENTION_MS,
+	WORK_MAX_AGE_MS,
+	WORK_REQUEST_KEEP_MS,
 } from "../src/inbox.ts";
 import { memorySql } from "./sql.ts";
 
@@ -74,5 +76,28 @@ describe("受け箱", () => {
 		inbox.purge();
 		// 消えたので、同じ配信をもう一度置ける
 		expect(inbox.put("github", { n: 1 }, "github:d1")).not.toBeNull();
+	});
+
+	it("仕事の依頼は request_id ごとに 1 行だけ置く。ack の後に送り直されても置かない", () => {
+		const { inbox } = setup();
+		const first = inbox.putWork("r1", { n: 1 });
+		expect(first.item?.kind).toBe("work");
+		inbox.ack(JSON.stringify({ type: "ack", id: first.id }));
+		const again = inbox.putWork("r1", { n: 1 });
+		expect(again).toEqual({ item: null, id: first.id });
+		expect(inbox.pending()).toEqual([]);
+		expect(inbox.putWork("r2", { n: 2 }).item).not.toBeNull();
+	});
+
+	it("仕事の依頼は保持の期限まで渡し、request_id は 7 日で忘れる", () => {
+		const { inbox, advance } = setup();
+		const { id } = inbox.putWork("r1", { n: 1 });
+		advance(WORK_MAX_AGE_MS - 1);
+		expect(inbox.pending().map((i) => i.id)).toEqual([id]);
+		advance(2);
+		expect(inbox.pending()).toEqual([]);
+		advance(WORK_REQUEST_KEEP_MS);
+		inbox.purge();
+		expect(inbox.putWork("r1", { n: 1 }).item).not.toBeNull();
 	});
 });

@@ -5,6 +5,7 @@ import {
 	INBOX_PING,
 	INBOX_PONG,
 	type Inbox,
+	type InboxItem,
 	type InboxKind,
 	type InboxPush,
 	RETENTION_MS,
@@ -48,6 +49,18 @@ export class WorkingInbox extends DurableObject<Bindings> {
 	): Promise<boolean> {
 		const item = this.inbox.put(kind, body, dedupe);
 		if (!item) return false;
+		await this.deliver(item);
+		return true;
+	}
+
+	/** 仕事の依頼を置いて渡し、行の ID を返す。同じ request_id なら置かずに前の ID を返す。 */
+	async putWork(requestId: string, body: unknown): Promise<string> {
+		const { item, id } = this.inbox.putWork(requestId, body);
+		if (item) await this.deliver(item);
+		return id;
+	}
+
+	private async deliver(item: InboxItem): Promise<void> {
 		const message = JSON.stringify({
 			type: "item",
 			...item,
@@ -62,7 +75,6 @@ export class WorkingInbox extends DurableObject<Bindings> {
 		if ((await this.ctx.storage.getAlarm()) === null) {
 			await this.ctx.storage.setAlarm(Date.now() + RETENTION_MS);
 		}
-		return true;
 	}
 
 	override async webSocketMessage(
