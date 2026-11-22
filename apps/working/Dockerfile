@@ -21,7 +21,7 @@ RUN npx -y takt@0.74.0 install claude-sdk
 # 人格の元ファイル。正本は yunomi の partners にあり、版をコミット SHA で固定して取り込む。YUNOMI_REF は Renovate が yunomi の main に追従して上げる。
 FROM node:26.13.0-slim AS persona
 # renovate: datasource=git-refs depName=https://github.com/ochanuco/yunomi currentValue=main
-ARG YUNOMI_REF=2d2ac81a0352af141ff80212ede6f696d56a335f
+ARG YUNOMI_REF=4f66c018142360b8b9e32ea3a83f304abd7c561a
 ADD https://github.com/ochanuco/yunomi.git#${YUNOMI_REF}:partners /partners
 RUN for p in yukarin akarin; do \
 		mkdir -p "/persona/$p" \
