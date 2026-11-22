@@ -42,7 +42,7 @@ Working（仕事）を受け持つコンテナ。Claude CLI、Codex CLI、hishak
 
 席のメッセージに付けたボタンは、mizuya の application の Interactions Endpoint URL、つまり mizuya の Worker に届く。Worker はそれを受け箱に置き、受付は `MIZUYA_INBOX_URL`（`wss://mizuya.chanu.co/working/inbox`）に外向きの WebSocket でつないで受け取る。接続には Access の service token（`MIZUYA_ACCESS_CLIENT_ID` / `MIZUYA_ACCESS_CLIENT_SECRET`）と `Authorization: Bearer <MIZUYA_INBOX_TOKEN>` を付け、30 秒ごとに `ping` を送る。受け取った行は ack する。切れたら 1 秒から 60 秒まで間をのばしながらつなぎ直し、その間に置かれたボタンは次の接続で届く（押してから 15 分まで）。
 
-`/ai` コマンドも同じ受け箱で届く（mizuya の README の「Working の受け箱」）。
+`/ai` コマンドと会話で頼まれた仕事も同じ受け箱で届く（mizuya の README の「Working の受け箱」）。受け箱の kind は `button`（ボタン）、`command`（`/ai`）、`github`（GitHub の出来事）、`work`（会話で頼まれた仕事）。読めない行と知らない kind は捨てて ack する。
 
 `PORT`（既定は `8080`）の `GET /healthz` は生存確認用で、image の HEALTHCHECK が読む。
 
@@ -400,6 +400,16 @@ CI の失敗、PR のレビュー、issue と PR のコメントがあると、�
 - 拾った issue には「Working の〜の席が拾い、Discord の仕事フォーラムで作業します。」とコメントする。public の repo にも書くので、Discord へのリンクは載せない。
 - 席には、PR の本文に `Closes <repo>#<番号>` を書いてマージで issue を閉じること、label を付け外ししないことを渡す。分からないことは投稿で聞く。
 - 席が完了を報告したら、mizuya の bot が持ち主（朝会と同じ人）にメンションして知らせる。issue が開いていれば「issue を閉じる」のボタンを付け、持ち主が押すとコメントを添えて閉じる。席には閉じさせない。PR のマージでもう閉じていれば、知らせるだけにする。どの issue から立てた投稿かは `seats.json` の `issues` に残すので、受付を起動し直してもボタンは効く。
+
+### 会話で頼まれた仕事
+
+yunomi の Talking がオーナーに頼まれて了承を得た仕事は、mizuya の Worker の受け箱に kind `work` で届く（形は mizuya の README の「仕事の依頼の口」）。
+
+- `requested_by` が `WORKING_OWNER_DISCORD_USER_IDS` に無ければ、投稿を立てずに warn を残して捨てる。Akarin の席が無いときの `akarin` 宛ても同じ。
+- 投稿は `partner` の bot で立てる。件名は `title`、本文は「<依頼者> さんから会話で頼まれた仕事」と依頼（1500 字で切る）、`context_url` があれば「会話: <リンク>」。タグは `作業中` で、依頼者に通知する。席には依頼の全文と会話のリンクを渡す。
+- 席はほかの投稿と同じく動き、Talking への席の知らせも送る。席の上限を超えていれば順番待ちになる。
+- 投稿を立てたら、席が動き出すのを待たずに ack する。立てられなければ 30 秒おきに 3 回まで試し、それでも立たなければ error を残して ack する。
+- 同じ `request_id` は受付が動いているあいだ一つの投稿にまとめ、つなぎ直しで同じ行が届き直しても投稿を重ねない。立てられなかった依頼だけは、届き直したときにもう一度試す。
 
 ### chakai のタスク
 

@@ -36,6 +36,7 @@ import { seatNameOf } from "./guard/env.ts";
 import type { Ledger, Pending } from "./guard/ledger.ts";
 import type { Operation } from "./guard/operation.ts";
 import type { Hishaku, SessionMeta } from "./hishaku.ts";
+import type { WorkRequest } from "./inbox.ts";
 import {
 	CLOSE_ISSUE_BUTTON,
 	type IssueTracker,
@@ -104,6 +105,8 @@ import {
 	seatSpec,
 	unnumberedTitle,
 	wakeNote,
+	workPostBody,
+	workPrompt,
 } from "./prompts.ts";
 import type {
 	SeatAgent,
@@ -350,6 +353,13 @@ export type Intake = {
 		issue: PickedIssue,
 		partner: PartnerId,
 	) => Promise<Result<{ threadId: string }, { type: string }>>;
+	/**
+	 * yunomi の Talking が会話で頼まれた仕事から投稿を立て、partner の席で作業させる。投稿を立てたら返り、席は待たない。
+	 * 持ち主でない人の依頼と、開いていない席への依頼は捨てる。同じ request_id は一度だけ投稿にする。
+	 */
+	startFromWork: (
+		request: WorkRequest,
+	) => Promise<Result<{ threadId: string }, WorkStartError>>;
 	/** chakai の親タスクから投稿を立て（その親の投稿が残っていれば同じ投稿で）、partner の席に子タスクを続けて渡す。 */
 	startFromTask: (
 		input: TaskStart,
@@ -371,6 +381,14 @@ export type Intake = {
 	/** Mac に貸している投稿の meta を読み、Mac が借りた・返したことを投稿に書く。返していれば席を起こす。 */
 	watchLends: () => Promise<void>;
 };
+
+export type WorkStartError = {
+	type: "NotOwner" | "PartnerClosed" | "PostFailed";
+};
+
+/** 仕事の依頼の投稿を立てられなかったときに立て直す回数と、間の待ち。受け箱は生きた接続には届け直さないので、ここで繰り返す。 */
+const WORK_POST_ATTEMPTS = 3;
+const WORK_POST_RETRY_MS = 30_000;
 
 export type SeatSummary = {
 	/** すべてのパートナーの合計。 */
@@ -2726,6 +2744,93 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 		return ok({ threadId });
 	};
 
+	/** 受けた依頼の request_id と、その投稿を立てる途中か立て終えた結果。受け箱がつなぎ直しで同じ行を届け直しても投稿は一つ。 */
+	const workStarts = new Map<
+		string,
+		Promise<Result<{ threadId: string }, WorkStartError>>
+	>();
+
+	const postWork = async (
+		request: WorkRequest,
+	): Promise<Result<{ threadId: string }, WorkStartError>> => {
+		const ids = { request_id: request.request_id, partner: request.partner };
+		if (!deps.ownerUserIds.has(request.requested_by)) {
+			log.warn("work request dropped", { ...ids, reason: "not owner" });
+			return err({ type: "NotOwner" });
+		}
+		const partner = request.partner;
+		if (partner === "akarin" && !deps.akarin) {
+			log.warn("work request dropped", { ...ids, reason: "partner closed" });
+			return err({ type: "PartnerClosed" });
+		}
+		const bot = speaker(partner).discord;
+		const tags = await statusTags();
+		const working = tags.get("作業中");
+		const author = `<@${request.requested_by}>`;
+		let post: Awaited<ReturnType<DiscordApi["createForumPost"]>> | null = null;
+		for (let attempt = 1; attempt <= WORK_POST_ATTEMPTS; attempt++) {
+			if (attempt > 1) {
+				await new Promise<void>((r) => after(WORK_POST_RETRY_MS, r));
+			}
+			post = await bot.createForumPost(deps.workForumChannelId, {
+				name: request.title,
+				content: workPostBody({
+					authorName: author,
+					content: request.request,
+					link: request.context_url,
+				}),
+				tagIds: working ? [working] : [],
+				notify: [request.requested_by],
+			});
+			if (post.ok) break;
+			log.warn("forum post failed", {
+				...ids,
+				attempt,
+				error: post.error.type,
+			});
+		}
+		if (!post?.ok) {
+			log.error("work request dropped", { ...ids, reason: "post failed" });
+			return err({ type: "PostFailed" });
+		}
+		const { threadId } = post.value;
+		await deps.seats.assign(threadId, partner);
+		parentOf.set(threadId, deps.workForumChannelId);
+		log.info("forum post created", { ...ids, thread_id: threadId });
+		void queue.run(threadId, async () => {
+			if (seats.get(threadId) !== null) return;
+			await openSeat(
+				newSeat(threadId),
+				workPrompt({
+					now: now(),
+					content: request.request,
+					link: request.context_url,
+				}),
+			);
+		});
+		return ok({ threadId });
+	};
+
+	const startFromWork = (request: WorkRequest) => {
+		const known = workStarts.get(request.request_id);
+		if (known) return known;
+		// 投稿を立てられなかった依頼は、届け直されたらもう一度試す
+		const started = postWork(request).then(
+			(r) => {
+				if (!r.ok && r.error.type === "PostFailed") {
+					workStarts.delete(request.request_id);
+				}
+				return r;
+			},
+			(e: unknown) => {
+				workStarts.delete(request.request_id);
+				throw e;
+			},
+		);
+		workStarts.set(request.request_id, started);
+		return started;
+	};
+
 	const startFromTask = async (
 		input: TaskStart,
 	): Promise<Result<{ threadId: string }, TaskStartError>> => {
@@ -3408,6 +3513,7 @@ export const createIntake = (deps: IntakeDeps): Intake => {
 				deps.seatReplied?.();
 		},
 		startFromIssue,
+		startFromWork,
 		startFromTask,
 		chakaiHolds,
 		sweepChakai,

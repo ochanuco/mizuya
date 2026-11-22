@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ButtonPressEvent, CommandEvent } from "./discord-events.ts";
 import type { GithubWorkEvent } from "./github-events.ts";
-import { dispatchInboxMessage } from "./inbox.ts";
+import { dispatchInboxMessage, type WorkRequest } from "./inbox.ts";
 import { silentLogger } from "./logger.ts";
 
 const button = (customId: string) => ({
@@ -142,5 +142,83 @@ describe("受け箱の行", () => {
 			"g1",
 		);
 		expect(broken).toEqual([]);
+	});
+
+	describe("仕事の依頼", () => {
+		const request: WorkRequest = {
+			request_id: "019a8f3e-7c00-7abc-8def-0123456789ab",
+			partner: "akarin",
+			title: "件名",
+			request: "やってほしいこと",
+			requested_by: "u1",
+			context_url: null,
+		};
+		const item = (body: unknown) =>
+			JSON.stringify({
+				type: "item",
+				id: "w1",
+				kind: "work",
+				received_at: "2026-11-07T00:00:00.000Z",
+				body,
+			});
+		const handlers = (work?: (r: WorkRequest) => Promise<void>) => ({
+			press: () => {},
+			command: () => {},
+			...(work ? { work } : {}),
+		});
+
+		it("渡し先が終わってから ack する", async () => {
+			const got: WorkRequest[] = [];
+			let finish = () => {};
+			const ack = dispatchInboxMessage(
+				item(request),
+				handlers(async (r) => {
+					got.push(r);
+					await new Promise<void>((resolve) => {
+						finish = resolve;
+					});
+				}),
+				silentLogger,
+			);
+			expect(ack).toBeInstanceOf(Promise);
+			let acked: string | null = null;
+			void (ack as Promise<string>).then((id) => {
+				acked = id;
+			});
+			await Promise.resolve();
+			expect(got).toEqual([request]);
+			expect(acked).toBeNull();
+			finish();
+			await expect(ack).resolves.toBe("w1");
+		});
+
+		it("渡し先が投げても ack する", async () => {
+			const ack = dispatchInboxMessage(
+				item(request),
+				handlers(async () => {
+					throw new Error("boom");
+				}),
+				silentLogger,
+			);
+			await expect(ack).resolves.toBe("w1");
+		});
+
+		it("読めない依頼と、渡し先が無い依頼は渡さずにすぐ ack する", () => {
+			const got: WorkRequest[] = [];
+			const work = async (r: WorkRequest) => {
+				got.push(r);
+			};
+			expect(
+				dispatchInboxMessage(
+					item({ ...request, partner: "other" }),
+					handlers(work),
+					silentLogger,
+				),
+			).toBe("w1");
+			expect(
+				dispatchInboxMessage(item(request), handlers(), silentLogger),
+			).toBe("w1");
+			expect(got).toEqual([]);
+		});
 	});
 });

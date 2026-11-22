@@ -4177,6 +4177,108 @@ describe("chakai の見回りと席", () => {
 	});
 });
 
+describe("会話で頼まれた仕事", () => {
+	const WORK = {
+		request_id: "019a8f3e-7c00-7abc-8def-0123456789ab",
+		partner: "akarin" as const,
+		title: "依頼の件名",
+		request: `設定を見直して${"。".repeat(1600)}最後の一文`,
+		requested_by: OWNER,
+		context_url: "https://discord.com/channels/g1/c1/m1",
+	};
+
+	it("投稿を立てて指定した席で作業を始め、Talking に started を知らせる", async () => {
+		const s = await setup({ akarin: true });
+		const r = await s.intake.startFromWork(WORK);
+		expect(r).toEqual({ ok: true, value: { threadId: "thread1" } });
+		expect(s.d.posts[0]).toMatchObject({
+			name: "依頼の件名",
+			tagIds: ["tag-working"],
+			notify: [OWNER],
+		});
+		expect(s.d.posts[0]?.content).toContain("会話で頼まれた仕事");
+		expect(s.d.posts[0]?.content).toContain(`会話: ${WORK.context_url}`);
+		expect(s.seats.partnerOf("thread1")).toBe("akarin");
+		await vi.waitFor(() => expect(s.o.opsOf("startSeat")).toHaveLength(1));
+		const [start] = s.o.opsOf("startSeat") as { spec: string; agent: string }[];
+		expect(start?.agent).toBe("codex");
+		// 投稿は本文を切り詰めるので、席には全文を渡す
+		expect(start?.spec).toContain("最後の一文");
+		expect(start?.spec).toContain(WORK.context_url);
+		expect(s.writes.yukarin).toEqual([]);
+		await vi.waitFor(() => expect(s.told).toHaveLength(1));
+		expect(s.told[0]).toMatchObject({
+			partner: "akarin",
+			event: { event: "started", threadId: "thread1" },
+		});
+	});
+
+	it("会話のリンクが無ければ本文にも書かない", async () => {
+		const s = await setup();
+		await s.intake.startFromWork({
+			...WORK,
+			partner: "yukarin",
+			context_url: null,
+		});
+		expect(s.d.posts[0]?.content).not.toContain("会話:");
+		expect(s.seats.partnerOf("thread1")).toBe("yukarin");
+	});
+
+	it("持ち主でない人の依頼と、開いていない席への依頼は投稿にしない", async () => {
+		const s = await setup();
+		expect(
+			await s.intake.startFromWork({
+				...WORK,
+				request_id: "from-someone",
+				requested_by: "someone",
+			}),
+		).toEqual({ ok: false, error: { type: "NotOwner" } });
+		expect(await s.intake.startFromWork(WORK)).toEqual({
+			ok: false,
+			error: { type: "PartnerClosed" },
+		});
+		expect(s.d.posts).toEqual([]);
+	});
+
+	it("同じ request_id は届き直しても投稿を一つにする", async () => {
+		const s = await setup({ akarin: true });
+		const [a, b] = await Promise.all([
+			s.intake.startFromWork(WORK),
+			s.intake.startFromWork(WORK),
+		]);
+		const c = await s.intake.startFromWork(WORK);
+		expect([a, b, c]).toEqual(
+			Array(3).fill({ ok: true, value: { threadId: "thread1" } }),
+		);
+		expect(s.d.posts).toHaveLength(1);
+	});
+
+	it("投稿を立てられなければ待って立て直し、続けて失敗したら諦めて次の届き直しで試す", async () => {
+		const s = await setup({ akarin: true });
+		const failed = err(externalServiceUnavailable({ service: "discord" }));
+		const create = vi.mocked(s.d.api.createForumPost);
+		create.mockResolvedValueOnce(failed);
+		const retried = s.intake.startFromWork(WORK);
+		await vi.waitFor(() => expect(s.delayed).toHaveLength(1));
+		s.fireDelayed();
+		expect(await retried).toMatchObject({ ok: true });
+
+		create
+			.mockResolvedValueOnce(failed)
+			.mockResolvedValueOnce(failed)
+			.mockResolvedValueOnce(failed);
+		const other = { ...WORK, request_id: "other" };
+		const given = s.intake.startFromWork(other);
+		for (let i = 0; i < 2; i++) {
+			await vi.waitFor(() => expect(s.delayed).toHaveLength(1));
+			s.fireDelayed();
+		}
+		expect(await given).toEqual({ ok: false, error: { type: "PostFailed" } });
+		expect(await s.intake.startFromWork(other)).toMatchObject({ ok: true });
+		expect(s.d.posts).toHaveLength(2);
+	});
+});
+
 describe("Talking への席の知らせ", () => {
 	const settle = () => new Promise((r) => setTimeout(r, 0));
 
