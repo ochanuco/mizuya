@@ -384,6 +384,7 @@ export const gatherStandupMaterials = async (
 			),
 		),
 	);
+	// アーカイブした repo は読み取り専用で PR も申し送りも動かせないので、検索から外す
 	const [memory, latest, openPrs, failingPrs, handoffs, auth] =
 		await Promise.all([
 			run("記憶", deps.memoryBin, ["read"], v.unknown()),
@@ -398,6 +399,7 @@ export const gatherStandupMaterials = async (
 					owner,
 					"--state",
 					"open",
+					"--archived=false",
 					"--json",
 					prFields,
 					"--limit",
@@ -415,6 +417,7 @@ export const gatherStandupMaterials = async (
 					owner,
 					"--state",
 					"open",
+					"--archived=false",
 					"--checks",
 					"failure",
 					"--json",
@@ -436,6 +439,7 @@ export const gatherStandupMaterials = async (
 					"working-handoff",
 					"--state",
 					"open",
+					"--archived=false",
 					"--json",
 					"repository,number,title,url,labels",
 					"--limit",

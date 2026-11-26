@@ -592,6 +592,10 @@ describe("gatherStandupMaterials", () => {
 			expires_at: new Date("2026-11-10T00:00:00.000Z"),
 			expires_soon: true,
 		});
+		// アーカイブした repo の PR や申し送りは、もう動かせないので朝会に出さない
+		const searches = run.mock.calls.filter(([, args]) => args[0] === "search");
+		expect(searches).toHaveLength(3);
+		for (const [, args] of searches) expect(args).toContain("--archived=false");
 	});
 
 	it("見張りは全員の記憶から読み、持ち主のパートナーを付ける。記憶は既定のパートナーの分だけ", async () => {
