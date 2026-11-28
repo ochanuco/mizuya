@@ -31,7 +31,7 @@ concurrency:
 
 jobs:
   plan:
-    uses: ochanuco/.github/.github/workflows/deploy-plan.yml@194995de7425c6457f8d802510787afd02ed9235 # v1.7.0
+    uses: ochanuco/.github/.github/workflows/deploy-plan.yml@ddb8e656d5e975d255c122b0090df4efcb7a5cae # v1.8.0
     permissions:
       contents: read
       actions: read
@@ -43,7 +43,7 @@ jobs:
         apps/budget/migrations/=D1 migration を手で apply する（apps/budget/README.md）
   deploy:
     needs: plan
-    uses: ochanuco/.github/.github/workflows/deploy.yml@194995de7425c6457f8d802510787afd02ed9235 # v1.7.0
+    uses: ochanuco/.github/.github/workflows/deploy.yml@ddb8e656d5e975d255c122b0090df4efcb7a5cae # v1.8.0
     with:
       ref: ${{ needs.plan.outputs.sha }}
       approval-environment: ${{ needs.plan.outputs.approval-environment }}
